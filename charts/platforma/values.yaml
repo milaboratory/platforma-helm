@@ -114,9 +114,7 @@ auth:
 #    Size: Depends on data volume. This is your working data area.
 #
 # 3. MAIN (optional) - Long-term result storage exposed to Desktop App.
-#    Options: filesystem (requires httpIngress), S3, or GCS.
-#    When using S3/GCS, Desktop App accesses cloud storage directly.
-#    When using filesystem, chart exposes S3-compatible API via HTTP ingress.
+#    Options: S3 or GCS. Desktop App accesses cloud storage directly.
 # =============================================================================
 
 storage:
@@ -202,16 +200,10 @@ storage:
     storageClass: ""
     existingClaim: ""
 
-  # -- Main storage (S3 API exposed to Desktop App)
-  # Defaults to filesystem (fs). No configuration needed for basic setups.
+  # -- Main storage (exposed to Desktop App)
+  # Desktop App downloads results from this storage. Configure S3 or GCS.
   main:
-    type: fs  # fs | s3 | gcs
-
-    # -- Filesystem storage (requires separate ingress for HTTP access)
-    fs:
-      size: 100Gi
-      storageClass: ""
-      existingClaim: ""
+    type: ""  # s3 | gcs
 
     # -- S3 storage (when type: s3)
     s3:
@@ -260,7 +252,7 @@ dataSources: []
 #   - light:    Priority 10   (low priority batch)
 #
 # Each queue is mapped to a runner backend via queueRunners.
-# Supported runners: k8s, google-batch, local
+# Supported runners: k8s, local
 # =============================================================================
 
 # -- Queue to runner backend mapping
@@ -318,50 +310,9 @@ kueue:
       ui: ""       # Existing LocalQueue name for UI tasks
       batch: ""    # Existing LocalQueue name for batch tasks
 
-# -- SLURM backend configuration (via interLink VirtualKubelet)
-# interLink bridges K8S pods to Slurm jobs. The VK is deployed separately
-# (oci://ghcr.io/interlink-hq/interlink-helm-chart/interlink). This section
-# configures how Platforma creates pods that the VK intercepts.
-# When enabled: job template creates bare Pods (not AppWrappers), Kueue is skipped.
+# -- Internal: Slurm backend (not yet released)
 slurm:
   enabled: false
-
-  interlink:
-    # -- Virtual node name registered by interLink VirtualKubelet
-    nodeName: "slurm-virtual-node"
-
-  # -- Apptainer bind mounts passed via slurm-job.vk.io/singularity-mounts annotation.
-  # Must map shared filesystem to the same container path used by workspace
-  # (/data/workspace) so environment variables (PL_JOB_WORKDIR, etc.) resolve correctly.
-  bindMounts: "--bind /shared/workspace:/data/workspace"
-
-  # -- Slurm account for job submission (requires slurmdbd)
-  # All jobs are submitted under this account. Must be pre-created via:
-  #   sacctmgr add account <name>
-  #   sacctmgr add user root account=<name>
-  # Leave empty to skip --account flag.
-  account: ""
-
-  # -- Pool → Slurm partition mapping
-  # ui-tasks queue maps to interactive pool; light/medium/heavy map to batch pool.
-  # Partitions must be pre-created in slurm.conf.
-  pools:
-    interactive:
-      partition: "interactive"
-      defaultTimeLimit: "1:00:00"    # fallback when Platforma doesn't set .TimeLimit
-    batch:
-      partition: "batch"
-      defaultTimeLimit: "72:00:00"   # fallback when Platforma doesn't set .TimeLimit
-
-  # -- Slurm QOS for each Platforma queue (requires slurmdbd)
-  # Controls job priority ordering when resources are contended.
-  # Must be pre-created in Slurm via: sacctmgr add qos <name> set priority=<N>
-  # Leave empty to skip --qos flag (all jobs get default priority).
-  qos:
-    ui-tasks: ""    # e.g., "qos-ui" (priority=1000)
-    heavy: ""       # e.g., "qos-high" (priority=1000)
-    medium: ""      # e.g., "qos-normal" (priority=100)
-    light: ""       # e.g., "qos-low" (priority=10)
 
 # =============================================================================
 # NETWORKING
@@ -371,17 +322,16 @@ service:
   type: ClusterIP
   # -- gRPC port
   grpcPort: 6345
-  # -- HTTP port (for S3 API when using filesystem storage)
+  # -- HTTP port (S3-compatible API for result downloads)
   httpPort: 6347
   annotations: {}
 
 # -- Ingress configuration
 # Platforma exposes two ports:
 #   - gRPC (6345): API endpoint — Desktop App connects here
-#   - HTTP (6347): S3-compatible API — only when storage.main.type=fs (embedded S3)
+#   - HTTP (6347): S3-compatible data API (when using embedded storage)
 #
-# Each ingress block has api (gRPC) and data (HTTP/S3) sub-sections.
-# api is always needed. data is only needed when storage.main.type=fs.
+# Each ingress block has api (gRPC) and data (HTTP) sub-sections.
 ingress:
   enabled: false
   className: ""
@@ -395,7 +345,7 @@ ingress:
     annotations: {}
       # nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
 
-  # -- HTTP/S3 data endpoint (only when storage.main.type=fs)
+  # -- HTTP/S3 data endpoint (when using embedded storage)
   data:
     host: ""
     tls:
@@ -522,12 +472,6 @@ extraArgs: []
   # - "--log-level=debug"
   # - "--network-mode=proxy"
   # - "--self-check"
-  #
-  # GCP Batch backend (instead of Kueue):
-  # - "--queue-runner=heavy:google-batch"
-  # - "--google-batch-project=my-project"
-  # - "--google-batch-region=us-central1"
-  # - "--google-batch-shared-storage=/mnt/shared=nfs://10.0.0.1/share"
 
 # =============================================================================
 # OBSERVABILITY

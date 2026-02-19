@@ -22,7 +22,6 @@ Before installing, set up your cluster infrastructure. Follow the guide for your
 
 - **[AWS EKS](infrastructure/aws/)** — EKS cluster, EFS, S3, Cluster Autoscaler, Kueue, AppWrapper
 - **[GCP GKE](infrastructure/gcp/)** — GKE cluster, Filestore, GCS, Kueue, AppWrapper
-- **[HPC/Slurm](infrastructure/hpc/)** — Slurm cluster with interLink VirtualKubelet (no Kueue)
 
 These guides cover cluster creation, storage, node pools, autoscaling, and all prerequisites.
 
@@ -31,8 +30,6 @@ These guides cover cluster creation, storage, node pools, autoscaling, and all p
 > **Note:** Steps 1-4 reference values files from the chart repository. Clone the repo or download files from [GitHub](https://github.com/milaboratory/platforma-helm).
 
 ### 1. Install Kueue
-
-> **HPC/Slurm users:** Skip steps 1-2. The Slurm backend does not use Kueue or AppWrapper.
 
 ```bash
 helm install kueue oci://registry.k8s.io/kueue/charts/kueue \
@@ -58,14 +55,6 @@ kubectl create secret generic platforma-license \
 
 ### 4. Install Platforma
 
-**AWS EKS (filesystem primary storage):**
-```bash
-helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-  --version 3.0.0 \
-  -n platforma \
-  -f infrastructure/aws/values-aws.yaml
-```
-
 **AWS EKS (S3 primary storage):**
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
@@ -74,15 +63,6 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   -f infrastructure/aws/values-aws-s3.yaml \
   --set storage.main.s3.bucket=my-platforma-bucket \
   --set storage.main.s3.region=eu-central-1
-```
-
-**GCP GKE (filesystem primary storage):**
-```bash
-helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-  --version 3.0.0 \
-  -n platforma \
-  -f infrastructure/gcp/values-gcp.yaml \
-  --set storage.workspace.filestore.ip=10.0.0.2
 ```
 
 **GCP GKE (GCS primary storage):**
@@ -94,16 +74,6 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set storage.workspace.filestore.ip=10.0.0.2 \
   --set storage.main.gcs.bucket=my-platforma-bucket \
   --set storage.main.gcs.projectId=my-project
-```
-
-**HPC/Slurm (via interLink):**
-```bash
-helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-  --version 3.0.0 \
-  -n platforma \
-  -f infrastructure/hpc/values-slurm-example.yaml \
-  --set storage.workspace.nfs.server=nfs-server.internal \
-  --set storage.workspace.nfs.path=/shared/workspace
 ```
 
 **Generic NFS:**
@@ -213,15 +183,14 @@ Filestore and NFS servers can usually be configured at the server level to set t
 
 ### Main storage (desktop app access)
 
-The main storage is where Platforma stores results that the Desktop App downloads. Three options:
+The main storage is where Platforma stores results that the Desktop App downloads:
 
 | Type | When to use | Desktop App access |
 |------|-------------|-------------------|
-| `fs` (default) | Simple setup, no cloud storage | Via HTTP ingress (chart exposes S3-compatible API) |
-| `s3` | AWS deployments | Direct to S3 (no ingress needed for data) |
-| `gcs` | GCP deployments | Direct to GCS (no ingress needed for data) |
+| `s3` | AWS deployments | Direct to S3 |
+| `gcs` | GCP deployments | Direct to GCS |
 
-With `s3` or `gcs`, the Desktop App accesses cloud storage directly — you only need the gRPC ingress for API connectivity. With `fs`, you need both gRPC and HTTP ingress.
+The Desktop App accesses cloud storage directly — you only need the gRPC ingress for API connectivity.
 
 ### Authentication
 
@@ -268,19 +237,42 @@ See [values.yaml](charts/platforma/values.yaml) `auth` section for TLS, CA certi
 
 ### Networking
 
-Platforma exposes two ports:
+Platforma exposes a gRPC API on port 6345. The Desktop App connects here for all operations. When using S3 or GCS main storage, the Desktop App downloads results directly from the cloud — no additional ingress is needed.
 
-| Port | Protocol | Purpose | When needed |
-|------|----------|---------|-------------|
-| 6345 | gRPC | API endpoint — Desktop App connects here | Always |
-| 6347 | HTTP | S3-compatible API for result downloads | Only when `storage.main.type=fs` |
+The chart generates Ingress resources from `ingress` and `additionalIngress` blocks. Each block has `api` (gRPC) and `data` (HTTP) sub-sections with independent annotations.
 
-**Ingress (recommended for production):**
+#### AWS ALB Ingress Controller
+
+The [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/) creates an ALB per Ingress resource by default. To share a single ALB between Platforma and other services in the cluster, use the `group.name` annotation:
 
 ```yaml
 ingress:
   enabled: true
-  className: "nginx"  # or "alb" for AWS
+  className: alb
+
+  api:
+    host: "platforma.example.com"
+    annotations:
+      alb.ingress.kubernetes.io/group.name: "shared"
+      alb.ingress.kubernetes.io/group.order: "100"
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:..."
+```
+
+How it works: all Ingress resources with the same `group.name` merge into one ALB. Each becomes a host-based routing rule pointing to its own target group. Other services in the cluster can join the same ALB by using the same `group.name` value. All resources in a group must agree on `scheme` (internet-facing vs internal).
+
+#### nginx Ingress Controller
+
+nginx runs as pods behind a single LoadBalancer Service. All Ingress resources are routing rules inside the controller — no additional load balancers per Ingress.
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+
   api:
     host: "platforma.example.com"
     tls:
@@ -288,14 +280,32 @@ ingress:
       secretName: "platforma-tls"
     annotations:
       nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-  data:  # Only needed when storage.main.type=fs
-    host: "platforma-data.example.com"
-    tls:
-      enabled: true
-      secretName: "platforma-data-tls"
 ```
 
-**LoadBalancer (simpler alternative):**
+nginx handles gRPC natively via the `backend-protocol: "GRPC"` annotation.
+
+#### traefik Ingress Controller
+
+traefik is the default ingress controller in k3s. It handles gRPC via HTTP/2 (h2c) to the backend:
+
+```yaml
+ingress:
+  enabled: true
+  className: traefik
+
+  api:
+    host: "platforma.example.com"
+    tls:
+      enabled: true
+      secretName: "platforma-tls"
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/service.serversscheme: h2c
+```
+
+#### LoadBalancer service (no ingress)
+
+For simpler setups without an ingress controller:
 
 ```yaml
 service:
@@ -306,11 +316,23 @@ service:
     service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
 ```
 
-For port-forwarding during development:
+This exposes the raw gRPC port. The Desktop App connects to `<lb-address>:6345`. No TLS termination — configure TLS in Platforma directly or accept unencrypted connections.
+
+#### Port-forwarding (development)
 
 ```bash
 kubectl port-forward svc/platforma -n platforma 6345:6345
 ```
+
+#### Choosing an approach
+
+| Environment | Recommended | Notes |
+|---|---|---|
+| AWS with ALB Controller | ALB + `group.name` | Native AWS, ACM certs, WAF support |
+| AWS with nginx/traefik | Use existing controller | One NLB already handles all services |
+| GKE | GKE Ingress or nginx | GKE LB pricing differs from AWS |
+| k3s / bare metal | traefik (ships with k3s) | Default, no extra install |
+| Development | Port-forward | No ingress needed |
 
 ### Logging
 
@@ -384,18 +406,9 @@ dataSources:
       existingClaim: "shared-data-pvc"
 ```
 
-### Alternative job backends
+### Extra CLI arguments
 
-Kueue with AppWrapper is the default and recommended backend. Alternative backends can be configured via CLI options:
-
-```yaml
-extraArgs:
-  - "--queue-runner=heavy:google-batch"       # Route heavy queue to GCP Batch
-  - "--google-batch-project=my-project"
-  - "--google-batch-region=us-central1"
-```
-
-See [values.yaml](charts/platforma/values.yaml) `extraArgs` for all options.
+Additional Platforma CLI arguments can be passed via `extraArgs`. See [values.yaml](charts/platforma/values.yaml) for examples.
 
 ## Upgrade
 

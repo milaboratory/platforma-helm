@@ -1,0 +1,66 @@
+# Platforma values for Slurm/interLink integration
+#
+# Prerequisites:
+#   1. interLink VirtualKubelet deployed via its own Helm chart:
+#      helm install slurm-virtual-node oci://ghcr.io/interlink-hq/interlink-helm-chart/interlink \
+#        --version 0.6.0 -n interlink-system --create-namespace -f interlink-values.yaml
+#   2. interLink API server + SLURM plugin running on SLURM head node
+#   3. Shared filesystem mounted on SLURM nodes (NFS/Lustre/BeeGFS)
+#   4. Workspace PVC in K8S backed by the same shared filesystem
+#
+# Deployment:
+#   helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
+#     --version 3.0.0 -n platforma -f values-slurm-example.yaml \
+#     --set storage.workspace.nfs.server=NFS_SERVER \
+#     --set storage.workspace.nfs.path=/shared/workspace
+
+# --- Slurm backend ---
+slurm:
+  enabled: true
+  # account: "platforma"    # Requires slurmdbd; see README Step 1
+  interlink:
+    nodeName: "slurm-virtual-node"
+  # Map shared filesystem to container workspace path.
+  # The host path must match where workspace data lives on SLURM nodes.
+  # The container path must match platforma.path.workspace (/data/workspace).
+  bindMounts: "--bind /shared/workspace:/data/workspace"
+  pools:
+    interactive:
+      partition: "interactive"
+      defaultTimeLimit: "1:00:00"
+    batch:
+      partition: "batch"
+      defaultTimeLimit: "72:00:00"
+  # qos:                     # Requires slurmdbd for priority ordering
+  #   ui-tasks: "qos-ui"
+  #   heavy: "qos-high"
+  #   medium: "qos-normal"
+  #   light: "qos-low"
+
+# --- Storage ---
+# Workspace MUST be on a shared filesystem accessible from both K8S and SLURM nodes.
+# Use NFS PVC so the Platforma backend can read/write, and SLURM workers access
+# the same data via Apptainer bind mounts.
+storage:
+  workspace:
+    nfs:
+      enabled: true
+      server: "nfs-server.cluster.local"
+      path: "/shared/workspace"
+
+  database:
+    size: 10Gi
+    # storageClass: ""  # Use cluster default
+
+  main:
+    type: fs
+    fs:
+      size: 100Gi
+      # storageClass: ""
+
+# --- Queue runners (all k8s — VK intercepts the pods) ---
+queueRunners:
+  ui-tasks: k8s
+  light: k8s
+  medium: k8s
+  heavy: k8s

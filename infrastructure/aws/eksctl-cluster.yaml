@@ -1,0 +1,133 @@
+# =============================================================================
+# AWS EKS Cluster Configuration (eksctl)
+# =============================================================================
+# Creates EKS cluster with:
+# - System node group (Kueue, Platforma server)
+# - UI node group (UI tasks - fast response, scales 0-4)
+# - Batch node groups: medium, large, xlarge (scales 0-16 each)
+# - EFS CSI driver addon (for RWX workspace storage)
+# - EBS CSI driver addon (for gp3 database/main storage)
+#
+# Usage:
+#   eksctl create cluster -f eksctl-cluster.yaml
+#
+# Cluster Autoscaler autodiscovery uses tags:
+#   k8s.io/cluster-autoscaler/enabled=true
+#   k8s.io/cluster-autoscaler/<cluster-name>=owned
+# =============================================================================
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: platforma-cluster
+  region: eu-central-1
+  version: "1.31"
+
+iam:
+  withOIDC: true
+
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+  - name: aws-ebs-csi-driver
+    version: latest
+    attachPolicyARNs:
+      - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+  - name: aws-efs-csi-driver
+    version: latest
+    attachPolicyARNs:
+      - arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy
+
+managedNodeGroups:
+  # System nodes - runs Kueue, Platforma server, AppWrapper controller
+  - name: system
+    instanceType: t3.large
+    desiredCapacity: 2
+    minSize: 1
+    maxSize: 3
+    labels:
+      node.kubernetes.io/pool: system
+    tags:
+      nodegroup-type: system
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+
+  # UI nodes - fast response for interactive tasks
+  - name: ui
+    instanceType: t3.xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 4
+    labels:
+      node.kubernetes.io/pool: ui
+    taints:
+      - key: dedicated
+        value: ui
+        effect: NoSchedule
+    tags:
+      nodegroup-type: ui
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+
+  # Batch nodes - small/medium compute workloads (scales from 0)
+  - name: batch-medium
+    instanceType: m5.2xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 16
+    labels:
+      node.kubernetes.io/pool: batch
+    taints:
+      - key: dedicated
+        value: batch
+        effect: NoSchedule
+    tags:
+      nodegroup-type: batch
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+
+  # Batch nodes - medium/large compute workloads (scales from 0)
+  - name: batch-large
+    instanceType: m5.4xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 16
+    labels:
+      node.kubernetes.io/pool: batch
+    taints:
+      - key: dedicated
+        value: batch
+        effect: NoSchedule
+    tags:
+      nodegroup-type: batch
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+
+  # Batch nodes - large compute workloads (scales from 0)
+  - name: batch-xlarge
+    instanceType: m5.8xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 16
+    labels:
+      node.kubernetes.io/pool: batch
+    taints:
+      - key: dedicated
+        value: batch
+        effect: NoSchedule
+    tags:
+      nodegroup-type: batch
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+
+cloudWatch:
+  clusterLogging:
+    enableTypes:
+      - api
+      - audit
+      - authenticator

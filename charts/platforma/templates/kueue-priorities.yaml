@@ -1,0 +1,50 @@
+{{- if and (eq .Values.kueue.mode "dedicated") (not .Values.slurm.enabled) }}
+# =============================================================================
+# WorkloadPriorityClasses
+# =============================================================================
+# Defines job priority within the batch queue.
+# Higher priority jobs are admitted first when resources are available.
+#
+# Priority values (hardcoded):
+#   - ui-tasks: 1000 (highest, for interactive work)
+#   - heavy:    1000 (high priority batch)
+#   - medium:   100  (normal batch)
+#   - light:    10   (low priority batch)
+# =============================================================================
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: {{ include "platforma.fullname" . }}-ui
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+value: 1000
+description: "Priority for UI tasks - highest priority for interactive work"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: {{ include "platforma.fullname" . }}-high
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+value: 1000
+description: "High priority for heavy compute jobs"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: {{ include "platforma.fullname" . }}-normal
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+value: 100
+description: "Normal priority for medium compute jobs"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: {{ include "platforma.fullname" . }}-low
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+value: 10
+description: "Low priority for light compute jobs"
+{{- end }}

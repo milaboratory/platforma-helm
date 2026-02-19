@@ -1,0 +1,31 @@
+{{- if and (eq .Values.kueue.mode "dedicated") (not .Values.slurm.enabled) }}
+# =============================================================================
+# LocalQueues (dedicated mode only)
+# =============================================================================
+# Jobs reference LocalQueues. The template maps:
+# - ui-tasks queue → ui-tasks LocalQueue → UI ClusterQueue
+# - light/medium/heavy queues → batch-tasks LocalQueue → Batch ClusterQueue
+#
+# In shared mode, LocalQueues are pre-existing and not created by this chart.
+# =============================================================================
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: {{ include "platforma.kueue.uiQueueName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  clusterQueue: {{ include "platforma.kueue.uiClusterQueueName" . }}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: {{ include "platforma.kueue.batchQueueName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  clusterQueue: {{ include "platforma.kueue.batchClusterQueueName" . }}
+{{- end }}

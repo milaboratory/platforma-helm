@@ -1,0 +1,66 @@
+# =============================================================================
+# RBAC for Platforma Server
+# =============================================================================
+# Server needs permissions to create/watch/delete Jobs and related resources.
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "platforma.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+rules:
+  # Job management
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
+
+  # Pod logs and events for job monitoring
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+  # Kueue workloads
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: ["workloads"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: ["localqueues"]
+    verbs: ["get", "list"]
+
+  # AppWrapper resources
+  - apiGroups: ["workload.codeflare.dev"]
+    resources: ["appwrappers"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
+
+  # ConfigMaps for job scripts
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+
+  # Secrets for environment variables
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "platforma.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "platforma.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "platforma.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

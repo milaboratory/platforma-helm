@@ -1,0 +1,26 @@
+{{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
+{{- if not .Values.storage.logs.existingClaim }}
+# =============================================================================
+# Logs PVC (for dir:// logging destination)
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.fullname" . }}-logs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.storage.logs.storageClass }}
+  storageClassName: {{ .Values.storage.logs.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.logs.size }}
+{{- end }}
+{{- end }}

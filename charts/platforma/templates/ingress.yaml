@@ -1,0 +1,179 @@
+# =============================================================================
+# Platforma Ingress Resources
+# =============================================================================
+# Generates up to 4 ingress resources:
+#   1. {fullname}                — ingress.api (gRPC)
+#   2. {fullname}-data           — ingress.data (HTTP/S3, only when storage.main.type=fs)
+#   3. {fullname}-additional     — additionalIngress.api (gRPC)
+#   4. {fullname}-additional-data — additionalIngress.data (HTTP/S3)
+# =============================================================================
+
+{{/* ---- Validation ---- */}}
+{{- if .Values.ingress.enabled }}
+{{- if not .Values.ingress.api.host }}
+{{- fail "ingress.enabled=true requires ingress.api.host to be set" }}
+{{- end }}
+{{- if and (eq .Values.storage.main.type "fs") (not .Values.ingress.data.host) }}
+{{- fail "Embedded S3 storage (storage.main.type: fs) requires ingress.data.host to be set when ingress is enabled" }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.additionalIngress.enabled }}
+{{- if not .Values.additionalIngress.api.host }}
+{{- fail "additionalIngress.enabled=true requires additionalIngress.api.host to be set" }}
+{{- end }}
+{{- if and (eq .Values.storage.main.type "fs") (not .Values.additionalIngress.data.host) }}
+{{- fail "Embedded S3 storage (storage.main.type: fs) requires additionalIngress.data.host to be set when additionalIngress is enabled" }}
+{{- end }}
+{{- end }}
+
+{{/* ---- 1. Primary API ingress (gRPC) ---- */}}
+{{- if and .Values.ingress.enabled .Values.ingress.api.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "platforma.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.ingress.api.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.api.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.api.host | quote }}
+      secretName: {{ .Values.ingress.api.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.api.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "platforma.fullname" . }}
+                port:
+                  number: {{ .Values.service.grpcPort }}
+{{- end }}
+
+{{/* ---- 2. Primary Data ingress (HTTP/S3) ---- */}}
+{{- if and .Values.ingress.enabled .Values.ingress.data.host }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "platforma.fullname" . }}-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: data
+  {{- with .Values.ingress.data.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.data.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.data.host | quote }}
+      secretName: {{ .Values.ingress.data.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.data.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "platforma.fullname" . }}
+                port:
+                  number: {{ .Values.service.httpPort }}
+{{- end }}
+
+{{/* ---- 3. Additional API ingress (gRPC) ---- */}}
+{{- if and .Values.additionalIngress.enabled .Values.additionalIngress.api.host }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "platforma.fullname" . }}-additional
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.additionalIngress.api.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.additionalIngress.className }}
+  ingressClassName: {{ .Values.additionalIngress.className }}
+  {{- end }}
+  {{- if .Values.additionalIngress.api.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.additionalIngress.api.host | quote }}
+      secretName: {{ .Values.additionalIngress.api.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.additionalIngress.api.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "platforma.fullname" . }}
+                port:
+                  number: {{ .Values.service.grpcPort }}
+{{- end }}
+
+{{/* ---- 4. Additional Data ingress (HTTP/S3) ---- */}}
+{{- if and .Values.additionalIngress.enabled .Values.additionalIngress.data.host }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "platforma.fullname" . }}-additional-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: data
+  {{- with .Values.additionalIngress.data.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.additionalIngress.className }}
+  ingressClassName: {{ .Values.additionalIngress.className }}
+  {{- end }}
+  {{- if .Values.additionalIngress.data.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.additionalIngress.data.host | quote }}
+      secretName: {{ .Values.additionalIngress.data.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.additionalIngress.data.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "platforma.fullname" . }}
+                port:
+                  number: {{ .Values.service.httpPort }}
+{{- end }}

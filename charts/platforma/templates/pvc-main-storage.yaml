@@ -1,0 +1,26 @@
+{{- if and (eq .Values.storage.main.type "fs") (not .Values.storage.main.fs.existingClaim) }}
+# =============================================================================
+# Main Storage PVC (Filesystem mode)
+# =============================================================================
+# Platforma exposes S3 API to this storage for Desktop App access.
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.mainStoragePvcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: main-storage
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.storage.main.fs.storageClass }}
+  storageClassName: {{ .Values.storage.main.fs.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.main.fs.size }}
+{{- end }}

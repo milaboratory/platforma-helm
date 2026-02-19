@@ -1,0 +1,78 @@
+# =============================================================================
+# Platforma Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platforma.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: grpc
+      port: {{ .Values.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "platforma.selectorLabels" . | nindent 4 }}
+---
+{{- if .Values.monitoring.enabled }}
+# =============================================================================
+# Metrics Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platforma.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with .Values.monitoring.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.monitoring.service.type }}
+  ports:
+    - name: metrics
+      port: {{ .Values.monitoring.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "platforma.selectorLabels" . | nindent 4 }}
+{{- end }}
+---
+{{- if .Values.debug.enabled }}
+{{- $debugPort := .Values.debug.port | default "9091" }}
+# =============================================================================
+# Debug Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platforma.fullname" . }}-debug
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: debug
+spec:
+  type: ClusterIP
+  ports:
+    - name: debug
+      port: {{ $debugPort }}
+      targetPort: debug
+      protocol: TCP
+  selector:
+    {{- include "platforma.selectorLabels" . | nindent 4 }}
+{{- end }}

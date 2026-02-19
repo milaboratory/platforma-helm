@@ -275,12 +275,58 @@ Platforma exposes two ports:
 | 6345 | gRPC | API endpoint — Desktop App connects here | Always |
 | 6347 | HTTP | S3-compatible API for result downloads | Only when `storage.main.type=fs` |
 
-**Ingress (recommended for production):**
+When `storage.main.type` is `s3` or `gcs`, the Desktop App downloads results directly from cloud storage. You only need the gRPC ingress. When using `fs` (the default), the chart runs an embedded S3-compatible server on port 6347 and you need **both** the gRPC and HTTP ingress — on separate hostnames.
+
+The chart generates up to 4 Ingress resources from `ingress` and `additionalIngress` blocks. Each block has `api` (gRPC) and `data` (HTTP/S3) sub-sections with independent annotations, so different backend protocols work on the same ingress controller.
+
+#### AWS ALB Ingress Controller
+
+The [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/) creates an ALB per Ingress resource by default. For Platforma with `fs` storage, that means 2 ALBs (~$32-44/month). To share a single ALB — either between Platforma's own ingress resources or with other services in the cluster — use the `group.name` annotation:
 
 ```yaml
 ingress:
   enabled: true
-  className: "nginx"  # or "alb" for AWS
+  className: alb
+
+  api:
+    host: "platforma.example.com"
+    annotations:
+      alb.ingress.kubernetes.io/group.name: "shared"
+      alb.ingress.kubernetes.io/group.order: "100"
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:..."
+
+  data:
+    host: "data.platforma.example.com"
+    tls:
+      enabled: true  # controls --primary-storage-fs-url scheme (https://)
+    annotations:
+      alb.ingress.kubernetes.io/group.name: "shared"
+      alb.ingress.kubernetes.io/group.order: "101"
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:..."
+```
+
+How it works: all Ingress resources with the same `group.name` merge into one ALB. Each becomes a host-based routing rule pointing to its own target group. The gRPC API target group uses `backend-protocol-version: GRPC`; the HTTP data target group uses standard HTTP. Both DNS records (`platforma.example.com` and `data.platforma.example.com`) point to the same ALB.
+
+Other services in the cluster can join the same ALB by using the same `group.name` value on their Ingress resources. All resources in a group must agree on `scheme` (internet-facing vs internal).
+
+If `storage.main.type` is `s3`, omit the `data` section — only the gRPC API ingress is needed.
+
+#### nginx Ingress Controller
+
+nginx runs as pods behind a single LoadBalancer Service. All Ingress resources are routing rules inside the controller — no additional load balancers per Ingress.
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+
   api:
     host: "platforma.example.com"
     tls:
@@ -288,14 +334,48 @@ ingress:
       secretName: "platforma-tls"
     annotations:
       nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+
   data:  # Only needed when storage.main.type=fs
-    host: "platforma-data.example.com"
+    host: "data.platforma.example.com"
     tls:
       enabled: true
       secretName: "platforma-data-tls"
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "0"  # no upload size limit
 ```
 
-**LoadBalancer (simpler alternative):**
+nginx handles gRPC natively via the `backend-protocol: "GRPC"` annotation. The `proxy-body-size: "0"` on the data ingress removes the default 1 MB upload limit for result file transfers.
+
+#### traefik Ingress Controller
+
+traefik is the default ingress controller in k3s. It handles gRPC via HTTP/2 (h2c) to the backend:
+
+```yaml
+ingress:
+  enabled: true
+  className: traefik
+
+  api:
+    host: "platforma.example.com"
+    tls:
+      enabled: true
+      secretName: "platforma-tls"
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/service.serversscheme: h2c
+
+  data:  # Only needed when storage.main.type=fs
+    host: "data.platforma.example.com"
+    tls:
+      enabled: true
+      secretName: "platforma-data-tls"
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+```
+
+#### LoadBalancer service (no ingress)
+
+For simpler setups without an ingress controller:
 
 ```yaml
 service:
@@ -306,11 +386,26 @@ service:
     service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
 ```
 
-For port-forwarding during development:
+This exposes the raw gRPC and HTTP ports. The Desktop App connects to `<lb-address>:6345` (gRPC) and `<lb-address>:6347` (HTTP, if `fs` type). No TLS termination — configure TLS in Platforma directly or accept unencrypted connections.
+
+#### Port-forwarding (development)
 
 ```bash
 kubectl port-forward svc/platforma -n platforma 6345:6345
+# If using fs storage, also forward the data port:
+kubectl port-forward svc/platforma -n platforma 6347:6347
 ```
+
+#### Choosing an approach
+
+| Environment | Recommended | Cost | Notes |
+|---|---|---|---|
+| AWS with ALB Controller | ALB + `group.name` | $0 incremental if ALB exists | Native AWS, ACM certs, WAF support |
+| AWS with nginx/traefik | Use existing controller | $0 incremental | One NLB already handles all services |
+| AWS greenfield | nginx behind NLB | ~$16-22/month (1 NLB) | Simpler than ALB for small clusters |
+| GKE | GKE Ingress or nginx | Varies | GKE LB pricing differs from AWS |
+| k3s / bare metal | traefik (ships with k3s) | $0 | Default, no extra install |
+| Development | Port-forward | $0 | No ingress needed |
 
 ### Logging
 

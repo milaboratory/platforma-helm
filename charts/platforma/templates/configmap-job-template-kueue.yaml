@@ -1,14 +1,13 @@
 # =============================================================================
-# Job Template ConfigMap
+# Job Template ConfigMap — Kueue path
 # =============================================================================
-# Template used by Platforma backend to create K8s Jobs.
-# Uses << .Parameter >> delimiters (Go text/template with custom delimiters).
-# Helm bakes release-specific values, Platforma fills per-job parameters.
+# AppWrapper wrapping a Job → Kueue scheduler → K8s node
 #
-# Two paths:
-#   - Slurm (slurm.enabled): Bare Pod with annotations → interLink VK → sbatch
-#   - Kueue (default): AppWrapper wrapping a Job → Kueue scheduler → K8s node
+# Template uses << .Parameter >> delimiters (Go text/template with custom
+# delimiters). Helm bakes release-specific values at install time, Platforma
+# fills per-job parameters (<< >>) at runtime when creating jobs.
 # =============================================================================
+{{- if not .Values.slurm.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -18,127 +17,6 @@ metadata:
     {{- include "platforma.labels" . | nindent 4 }}
 data:
   job-template.yaml: |
-    {{- if .Values.slurm.enabled }}
-    # =========================================================================
-    # Slurm path: bare Pod with interLink annotations
-    # =========================================================================
-    # VirtualKubelet intercepts pods scheduled to the virtual node and
-    # translates them to Slurm jobs (sbatch/scancel/squeue).
-    #
-    # Key differences from Kueue path:
-    #   - No PVC mounts (virtual nodes can't mount PVCs)
-    #   - No ConfigMap mounts (virtual nodes can't mount ConfigMaps)
-    #   - Job script inlined in container command
-    #   - Resource limits mandatory (interLink defaults to 1 CPU / 1MB)
-    #   - Slurm scheduling via annotations, not Kueue
-    # =========================================================================
-    apiVersion: v1
-    kind: Pod
-    metadata:
-      name: << .JobID >>
-      labels:
-        platforma.bio/job-id: << .JobID >>
-        app.kubernetes.io/managed-by: platforma
-        app.kubernetes.io/instance: {{ .Release.Name }}
-      annotations:
-        <<- if eq .PlatformaQueue "ui-tasks" >>
-        slurm-job.vk.io/flags: "--partition={{ .Values.slurm.pools.interactive.partition }}{{ with .Values.slurm.account }} --account={{ . }}{{ end }}{{ with (index .Values.slurm.qos "ui-tasks") }} --qos={{ . }}{{ end }} --time=<<- if .TimeLimit >><< .TimeLimit >><<- else >>{{ .Values.slurm.pools.interactive.defaultTimeLimit }}<<- end >><<- if .Resources >><<- if .Resources.CPU >> --cpus-per-task=<< .Resources.CPU >><<- end >><<- if .Resources.Memory >> --mem=<< .Resources.Memory >><<- end >><<- end >>"
-        <<- else if eq .PlatformaQueue "heavy" >>
-        slurm-job.vk.io/flags: "--partition={{ .Values.slurm.pools.batch.partition }}{{ with .Values.slurm.account }} --account={{ . }}{{ end }}{{ with .Values.slurm.qos.heavy }} --qos={{ . }}{{ end }} --time=<<- if .TimeLimit >><< .TimeLimit >><<- else >>{{ .Values.slurm.pools.batch.defaultTimeLimit }}<<- end >><<- if .Resources >><<- if .Resources.CPU >> --cpus-per-task=<< .Resources.CPU >><<- end >><<- if .Resources.Memory >> --mem=<< .Resources.Memory >><<- end >><<- end >>"
-        <<- else if eq .PlatformaQueue "medium" >>
-        slurm-job.vk.io/flags: "--partition={{ .Values.slurm.pools.batch.partition }}{{ with .Values.slurm.account }} --account={{ . }}{{ end }}{{ with .Values.slurm.qos.medium }} --qos={{ . }}{{ end }} --time=<<- if .TimeLimit >><< .TimeLimit >><<- else >>{{ .Values.slurm.pools.batch.defaultTimeLimit }}<<- end >><<- if .Resources >><<- if .Resources.CPU >> --cpus-per-task=<< .Resources.CPU >><<- end >><<- if .Resources.Memory >> --mem=<< .Resources.Memory >><<- end >><<- end >>"
-        <<- else >>
-        slurm-job.vk.io/flags: "--partition={{ .Values.slurm.pools.batch.partition }}{{ with .Values.slurm.account }} --account={{ . }}{{ end }}{{ with .Values.slurm.qos.light }} --qos={{ . }}{{ end }} --time=<<- if .TimeLimit >><< .TimeLimit >><<- else >>{{ .Values.slurm.pools.batch.defaultTimeLimit }}<<- end >><<- if .Resources >><<- if .Resources.CPU >> --cpus-per-task=<< .Resources.CPU >><<- end >><<- if .Resources.Memory >> --mem=<< .Resources.Memory >><<- end >><<- end >>"
-        <<- end >>
-        slurm-job.vk.io/singularity-mounts: "{{ .Values.slurm.bindMounts }}"
-    spec:
-      nodeSelector:
-        kubernetes.io/hostname: {{ .Values.slurm.interlink.nodeName }}
-      tolerations:
-        - key: virtual-node.interlink/no-schedule
-          operator: Exists
-          effect: NoSchedule
-      restartPolicy: Never
-      automountServiceAccountToken: false
-      containers:
-        - name: << .ContainerName >>
-          image: << .Image >>
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -e
-              if [ -n "${PL_JOB_PATH:-}" ]; then export PATH="${PL_JOB_PATH}:${PATH}"; fi
-              cd "${PL_JOB_WORKDIR}"
-              if [ -n "${PL_JOB_STDOUT_PATH:-}" ]; then exec 1>>"${PL_JOB_STDOUT_PATH}"; fi
-              if [ -n "${PL_JOB_STDERR_PATH:-}" ]; then
-                if [ "${PL_JOB_STDOUT_PATH:-}" = "${PL_JOB_STDERR_PATH:-}" ]; then exec 2>&1; else exec 2>>"${PL_JOB_STDERR_PATH}"; fi
-              fi
-              exec sh -c "$PL_JOB_CMD_AND_ARGS"
-          env:
-            - name: PL_JOB_CMD_AND_ARGS
-              value: << toShellCmd .Command | quote >>
-            - name: PL_JOB_WORKDIR
-              value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>
-            <<- if .StdOutRelativePath >>
-            - name: PL_JOB_STDOUT_PATH
-              value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .StdOutRelativePath >>
-            <<- end >>
-            <<- if .StdErrRelativePath >>
-            - name: PL_JOB_STDERR_PATH
-              value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .StdErrRelativePath >>
-            <<- end >>
-            <<- range .Env >>
-            - name: << .Name >>
-              <<- if .SecretKey >>
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.jobs.secretName }}
-                  key: << .SecretKey >>
-              <<- else >>
-              value: << .Value | quote >>
-              <<- end >>
-            <<- end >>
-            - name: TMP
-              value: "/tmp"
-            - name: HOME
-              value: "/tmp"
-          resources:
-            requests:
-              <<- if .Resources >>
-              <<- if .Resources.CPU >>
-              cpu: "<< .Resources.CPU >>"
-              <<- else >>
-              cpu: "1"
-              <<- end >>
-              <<- if .Resources.Memory >>
-              memory: "<< .Resources.Memory >>"
-              <<- else >>
-              memory: "1Gi"
-              <<- end >>
-              <<- else >>
-              cpu: "1"
-              memory: "1Gi"
-              <<- end >>
-            limits:
-              <<- if .Resources >>
-              <<- if .Resources.CPU >>
-              cpu: "<< .Resources.CPU >>"
-              <<- else >>
-              cpu: "1"
-              <<- end >>
-              <<- if .Resources.Memory >>
-              memory: "<< .Resources.Memory >>"
-              <<- else >>
-              memory: "1Gi"
-              <<- end >>
-              <<- else >>
-              cpu: "1"
-              memory: "1Gi"
-              <<- end >>
-    {{- else }}
-    # =========================================================================
-    # Kueue path: AppWrapper wrapping a Job
-    # =========================================================================
     apiVersion: workload.codeflare.dev/v1beta2
     kind: AppWrapper
     metadata:
@@ -281,4 +159,4 @@ data:
                         defaultMode: 0755
                     - name: temp-volume
                       emptyDir: {}
-    {{- end }}
+{{- end }}

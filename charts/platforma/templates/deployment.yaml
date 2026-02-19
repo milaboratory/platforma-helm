@@ -27,7 +27,11 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/job-template: {{ include (print $.Template.BasePath "/configmap-job-template.yaml") . | sha256sum }}
+        {{- if .Values.slurm.enabled }}
+        checksum/job-template: {{ include (print $.Template.BasePath "/configmap-job-template-slurm.yaml") . | sha256sum }}
+        {{- else }}
+        checksum/job-template: {{ include (print $.Template.BasePath "/configmap-job-template-kueue.yaml") . | sha256sum }}
+        {{- end }}
         checksum/watch-config: {{ include (print $.Template.BasePath "/configmap-watch-config.yaml") . | sha256sum }}
         {{- with .Values.deployment.podAnnotations }}
         {{- toYaml . | nindent 8 }}

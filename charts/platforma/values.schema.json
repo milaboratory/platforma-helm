@@ -182,11 +182,10 @@
         "main": {
           "type": "object",
           "properties": {
-            "type": { "type": "string", "enum": ["fs", "s3", "gcs"] },
+            "type": { "type": "string", "enum": ["", "fs", "s3", "gcs"] },
             "fs": {
               "type": "object",
               "properties": {
-                "enabled": { "type": "boolean" },
                 "size": { "type": "string" },
                 "storageClass": { "type": "string" },
                 "existingClaim": { "type": "string" }
@@ -356,50 +355,8 @@
     "slurm": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "interlink": {
-          "type": "object",
-          "properties": {
-            "nodeName": { "type": "string" }
-          },
-          "additionalProperties": false
-        },
-        "bindMounts": { "type": "string" },
-        "account": { "type": "string" },
-        "pools": {
-          "type": "object",
-          "properties": {
-            "interactive": {
-              "type": "object",
-              "properties": {
-                "partition": { "type": "string" },
-                "defaultTimeLimit": { "type": "string" }
-              },
-              "additionalProperties": false
-            },
-            "batch": {
-              "type": "object",
-              "properties": {
-                "partition": { "type": "string" },
-                "defaultTimeLimit": { "type": "string" }
-              },
-              "additionalProperties": false
-            }
-          },
-          "additionalProperties": false
-        },
-        "qos": {
-          "type": "object",
-          "properties": {
-            "ui-tasks": { "type": "string" },
-            "heavy": { "type": "string" },
-            "medium": { "type": "string" },
-            "light": { "type": "string" }
-          },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
+        "enabled": { "type": "boolean" }
+      }
     },
     "service": {
       "type": "object",

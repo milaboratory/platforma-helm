@@ -1,0 +1,57 @@
+# Platforma values for AWS EKS with S3 primary storage
+# Designed for CloudFormation deployments where S3 bucket and IRSA are pre-created.
+# Requires: EFS StorageClass "efs-platforma" created per README instructions.
+# Usage:
+#   helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
+#     --version 3.0.0 -n platforma -f values-aws-s3.yaml \
+#     --set storage.main.s3.bucket=BUCKET --set storage.main.s3.region=REGION
+
+storage:
+  database:
+    size: 50Gi
+    storageClass: gp3  # EBS gp3
+
+  workspace:
+    # Recommended: use EFS StorageClass with uid/gid Access Points (see README).
+    # This creates an Access Point enforcing UID/GID 1010 — no chownOnInit needed.
+    # Requires: StorageClass "efs-platforma" created per README instructions.
+    pvc:
+      enabled: true
+      storageClass: efs-platforma
+      size: 100Gi
+
+  main:
+    type: s3
+    s3:
+      bucket: ""    # Set via --set (from CloudFormation S3BucketName output)
+      region: ""    # Set via --set (from CloudFormation Region output)
+
+kueue:
+  mode: dedicated
+  dedicated:
+    pools:
+      ui:
+        resources:
+          cpu: 4
+          memory: 16Gi
+        nodeSelector:
+          node.kubernetes.io/pool: ui
+        tolerations:
+          - key: dedicated
+            value: ui
+            effect: NoSchedule
+
+      batch:
+        resources:
+          cpu: 60
+          memory: 240Gi
+        nodeSelector:
+          node.kubernetes.io/pool: batch
+        tolerations:
+          - key: dedicated
+            value: batch
+            effect: NoSchedule
+
+# Schedule Platforma server on system nodes
+nodeSelector:
+  node.kubernetes.io/pool: system

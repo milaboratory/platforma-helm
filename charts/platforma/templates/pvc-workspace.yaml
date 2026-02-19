@@ -1,0 +1,237 @@
+# =============================================================================
+# Workspace PVC (RWX - shared between server and jobs)
+# =============================================================================
+# Note: Workspace MUST be shared storage (RWX). Block storage is NOT supported.
+# Configure exactly ONE of: existingClaim, efs, fsxLustre, filestore, azureFiles, nfs
+# =============================================================================
+
+{{- if .Values.storage.workspace.efs.enabled }}
+# -- AWS EFS PV + PVC
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}-pv
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  capacity:
+    storage: 1Pi  # EFS is elastic
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: {{ .Values.storage.workspace.efs.fileSystemId }}:{{ .Values.storage.workspace.efs.path | default "/" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
+  resources:
+    requests:
+      storage: 1Pi
+{{- end }}
+
+{{- if .Values.storage.workspace.filestore.enabled }}
+# -- GCP Filestore PV + PVC
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}-pv
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  capacity:
+    storage: 1Ti  # Placeholder - Filestore has fixed size
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: {{ .Values.storage.workspace.filestore.ip }}
+    path: /{{ .Values.storage.workspace.filestore.shareName }}{{ .Values.storage.workspace.filestore.path | default "" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
+  resources:
+    requests:
+      storage: 1Ti
+{{- end }}
+
+{{- if .Values.storage.workspace.fsxLustre.enabled }}
+# -- AWS FSx for Lustre PV + PVC
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}-pv
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  capacity:
+    storage: 1200Gi  # Minimum FSx Lustre size
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: fsx.csi.aws.com
+    volumeHandle: {{ .Values.storage.workspace.fsxLustre.fileSystemId }}
+    volumeAttributes:
+      dnsname: {{ .Values.storage.workspace.fsxLustre.dnsName }}
+      mountname: {{ .Values.storage.workspace.fsxLustre.mountName }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
+  resources:
+    requests:
+      storage: 1200Gi
+{{- end }}
+
+{{- if .Values.storage.workspace.azureFiles.enabled }}
+# -- Azure Files PV + PVC
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}-pv
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  capacity:
+    storage: 100Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  azureFile:
+    secretName: {{ .Values.storage.workspace.azureFiles.secretName }}
+    shareName: {{ .Values.storage.workspace.azureFiles.shareName }}
+    readOnly: false
+  mountOptions:
+    - dir_mode=0777
+    - file_mode=0777
+    - uid={{ .Values.jobs.securityContext.runAsUser | default 1010 }}
+    - gid={{ .Values.jobs.securityContext.runAsGroup | default 1010 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
+  resources:
+    requests:
+      storage: 100Gi
+{{- end }}
+
+{{- if .Values.storage.workspace.nfs.enabled }}
+# -- Generic NFS PV + PVC
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}-pv
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  capacity:
+    storage: 1Ti
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: {{ .Values.storage.workspace.nfs.server }}
+    path: {{ .Values.storage.workspace.nfs.path | default "/" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
+  resources:
+    requests:
+      storage: 1Ti
+{{- end }}
+
+{{- if .Values.storage.workspace.pvc.enabled }}
+# -- Generic RWX PVC via StorageClass
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.workspacePvcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workspace
+spec:
+  accessModes:
+    - ReadWriteMany
+  {{- if .Values.storage.workspace.pvc.storageClass }}
+  storageClassName: {{ .Values.storage.workspace.pvc.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.workspace.pvc.size }}
+{{- end }}

@@ -1,0 +1,69 @@
+{{- if and (eq .Values.kueue.mode "dedicated") (not .Values.slurm.enabled) }}
+# =============================================================================
+# ClusterQueues
+# =============================================================================
+# Two ClusterQueues in the same cohort:
+#
+# 1. UI ClusterQueue (ui-tasks):
+#    - Interactive work, highest priority
+#    - GUARANTEED resources via borrowingLimit: 0 (doesn't borrow from batch)
+#    - Always has its nominal quota available
+#
+# 2. Batch ClusterQueue (light, medium, heavy):
+#    - Priority ordering: heavy (1000) > medium (100) > light (10)
+#    - CAN borrow from UI when UI is idle (up to borrowingLimit)
+#    - Jobs are NOT preemptable (reclaimWithinCohort: Never)
+#
+# Resource flow: UI resources stay reserved; Batch can use idle UI capacity.
+# =============================================================================
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: {{ include "platforma.kueue.uiClusterQueueName" . }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  cohortName: {{ include "platforma.fullname" . }}
+  namespaceSelector: {}
+  preemption:
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: {{ include "platforma.fullname" . }}-ui-flavor
+          resources:
+            - name: cpu
+              nominalQuota: {{ .Values.kueue.dedicated.pools.ui.resources.cpu | quote }}
+              # UI queue does NOT borrow - guarantees resources for interactive work
+              borrowingLimit: "0"
+            - name: memory
+              nominalQuota: {{ .Values.kueue.dedicated.pools.ui.resources.memory | quote }}
+              borrowingLimit: "0"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: {{ include "platforma.kueue.batchClusterQueueName" . }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  cohortName: {{ include "platforma.fullname" . }}
+  namespaceSelector: {}
+  preemption:
+    reclaimWithinCohort: Never   # Jobs not retryable, never preempt
+    withinClusterQueue: Never    # No preemption within batch queue
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: {{ include "platforma.fullname" . }}-batch-flavor
+          resources:
+            - name: cpu
+              nominalQuota: {{ .Values.kueue.dedicated.pools.batch.resources.cpu | quote }}
+              # Batch CAN borrow idle UI capacity (limited to UI's quota)
+              borrowingLimit: {{ .Values.kueue.dedicated.pools.ui.resources.cpu | quote }}
+            - name: memory
+              nominalQuota: {{ .Values.kueue.dedicated.pools.batch.resources.memory | quote }}
+              borrowingLimit: {{ .Values.kueue.dedicated.pools.ui.resources.memory | quote }}
+{{- end }}

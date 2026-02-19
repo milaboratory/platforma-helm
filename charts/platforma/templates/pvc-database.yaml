@@ -1,0 +1,24 @@
+{{- if not .Values.storage.database.existingClaim }}
+# =============================================================================
+# Database PVC (RocksDB)
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.databasePvcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.storage.database.storageClass }}
+  storageClassName: {{ .Values.storage.database.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.database.size }}
+{{- end }}

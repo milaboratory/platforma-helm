@@ -1,0 +1,59 @@
+# =============================================================================
+# Debug Pod — for inspecting logs and volumes of a crash-looping Platforma pod
+# =============================================================================
+{{- if .Values.debug.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "platforma.fullname" . }}-debug
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: debug
+spec:
+  serviceAccountName: {{ include "platforma.serviceAccountName" . }}
+  securityContext:
+    {{- toYaml .Values.deployment.podSecurityContext | nindent 4 }}
+  containers:
+    - name: debug
+      image: busybox:1.36
+      command: ["sh", "-c", "echo 'Debug pod ready. Use kubectl exec to inspect volumes.'; sleep infinity"]
+      securityContext:
+        {{- toYaml .Values.deployment.securityContext | nindent 8 }}
+      volumeMounts:
+        - name: database
+          mountPath: {{ include "platforma.path.database" . }}
+          readOnly: true
+        - name: workspace
+          mountPath: /data/workspace
+          {{- with (include "platforma.workspaceSubPath" $) }}
+          subPath: {{ . }}
+          {{- end }}
+          readOnly: true
+        {{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
+        - name: logs
+          mountPath: {{ trimPrefix "dir://" .Values.logging.destination }}
+          readOnly: true
+        {{- end }}
+  volumes:
+    - name: database
+      persistentVolumeClaim:
+        claimName: {{ include "platforma.databasePvcName" . }}
+    - name: workspace
+      persistentVolumeClaim:
+        claimName: {{ include "platforma.workspacePvcName" . }}
+    {{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
+    - name: logs
+      persistentVolumeClaim:
+        claimName: {{ .Values.storage.logs.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
+    {{- end }}
+  {{- with .Values.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  restartPolicy: Never
+{{- end }}

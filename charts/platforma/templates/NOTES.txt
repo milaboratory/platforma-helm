@@ -1,0 +1,103 @@
+Platforma has been deployed!
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+=============================================================================
+SERVICES
+=============================================================================
+
+gRPC endpoint: {{ include "platforma.fullname" . }}:{{ .Values.service.grpcPort }}
+HTTP endpoint: {{ include "platforma.fullname" . }}:{{ .Values.service.httpPort }}
+
+{{- if .Values.ingress.enabled }}
+
+Ingress endpoints:
+{{- if .Values.ingress.api.host }}
+  - gRPC API: {{ if .Values.ingress.api.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.api.host }}
+{{- end }}
+{{- if .Values.ingress.data.host }}
+  - HTTP Data: {{ if .Values.ingress.data.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.data.host }}
+{{- end }}
+{{- end }}
+
+=============================================================================
+STORAGE
+=============================================================================
+
+Database PVC: {{ include "platforma.databasePvcName" . }}
+Workspace PVC: {{ include "platforma.workspacePvcName" . }}
+{{- if eq .Values.storage.main.type "fs" }}
+Main Storage PVC: {{ include "platforma.mainStoragePvcName" . }}
+{{- else if eq .Values.storage.main.type "s3" }}
+Main Storage: S3 bucket {{ .Values.storage.main.s3.bucket }}
+{{- else if eq .Values.storage.main.type "gcs" }}
+Main Storage: GCS bucket {{ .Values.storage.main.gcs.bucket }}
+{{- end }}
+
+=============================================================================
+JOB EXECUTION
+=============================================================================
+
+{{- if .Values.slurm.enabled }}
+Backend: Slurm (via interLink VirtualKubelet)
+Virtual Node: {{ .Values.slurm.interlink.nodeName }}
+{{- if .Values.slurm.account }}
+Slurm Account: {{ .Values.slurm.account }}
+{{- end }}
+Pools:
+  - Interactive: partition={{ .Values.slurm.pools.interactive.partition }}
+  - Batch: partition={{ .Values.slurm.pools.batch.partition }}
+
+Note: Kueue and AppWrapper are not used with the Slurm backend.
+Jobs are submitted as bare Pods intercepted by the VirtualKubelet.
+{{- else }}
+Backend: Kueue + AppWrapper
+Kueue Mode: {{ .Values.kueue.mode }}
+{{- if eq .Values.kueue.mode "dedicated" }}
+
+Kueue Resources Created:
+- ClusterQueue: {{ include "platforma.kueue.uiClusterQueueName" . }} (UI tasks)
+- ClusterQueue: {{ include "platforma.kueue.batchClusterQueueName" . }} (Batch tasks)
+- LocalQueue: {{ include "platforma.kueue.uiQueueName" . }}
+- LocalQueue: {{ include "platforma.kueue.batchQueueName" . }}
+{{- end }}
+{{- end }}
+
+=============================================================================
+VERIFICATION
+=============================================================================
+
+1. Check deployment status:
+   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+2. Check PVC status:
+   kubectl get pvc -n {{ .Release.Namespace }}
+
+{{- if .Values.slurm.enabled }}
+3. Check VirtualKubelet node:
+   kubectl get node {{ .Values.slurm.interlink.nodeName }}
+
+4. View logs:
+   kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -f
+{{- else }}
+3. Check Kueue queues:
+   kubectl get clusterqueues,localqueues -n {{ .Release.Namespace }}
+
+4. Check AppWrapper controller:
+   kubectl get pods -n appwrapper-system
+
+5. View logs:
+   kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -f
+{{- end }}
+
+=============================================================================
+CONNECT FROM DESKTOP APP
+=============================================================================
+
+To connect from Platforma Desktop App, use:
+  Server: {{ include "platforma.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.grpcPort }}
+
+Or if using port-forward:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "platforma.fullname" . }} {{ .Values.service.grpcPort }}:{{ .Values.service.grpcPort }}
+  Server: localhost:{{ .Values.service.grpcPort }}

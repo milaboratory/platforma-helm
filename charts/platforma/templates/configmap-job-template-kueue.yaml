@@ -1,0 +1,162 @@
+# =============================================================================
+# Job Template ConfigMap — Kueue path
+# =============================================================================
+# AppWrapper wrapping a Job → Kueue scheduler → K8s node
+#
+# Template uses << .Parameter >> delimiters (Go text/template with custom
+# delimiters). Helm bakes release-specific values at install time, Platforma
+# fills per-job parameters (<< >>) at runtime when creating jobs.
+# =============================================================================
+{{- if not .Values.slurm.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "platforma.fullname" . }}-job-template
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+data:
+  job-template.yaml: |
+    apiVersion: workload.codeflare.dev/v1beta2
+    kind: AppWrapper
+    metadata:
+      name: << .JobID >>
+      labels:
+        platforma.bio/job-id: << .JobID >>
+        app.kubernetes.io/managed-by: platforma
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        # Queue label for Kueue - maps Platforma queue to Kueue LocalQueue
+        <<- if eq .PlatformaQueue "ui-tasks" >>
+        kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.uiQueueName" . }}"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-ui"
+        <<- else if eq .PlatformaQueue "heavy" >>
+        kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.batchQueueName" . }}"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-high"
+        <<- else if eq .PlatformaQueue "medium" >>
+        kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.batchQueueName" . }}"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-normal"
+        <<- else >>
+        kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.batchQueueName" . }}"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-low"
+        <<- end >>
+      annotations:
+        workload.codeflare.dev.appwrapper/warmupGracePeriodDuration: "2m"
+        workload.codeflare.dev.appwrapper/failureGracePeriodDuration: "30s"
+        workload.codeflare.dev.appwrapper/retryPausePeriodDuration: "45s"
+        workload.codeflare.dev.appwrapper/retryLimit: "2"
+    spec:
+      components:
+        - template:
+            apiVersion: batch/v1
+            kind: Job
+            metadata:
+              name: << .JobID >>
+              labels:
+                platforma.bio/job-id: << .JobID >>
+                app.kubernetes.io/managed-by: platforma
+            spec:
+              backoffLimit: 0  # AppWrapper handles retries
+              ttlSecondsAfterFinished: 3600
+              template:
+                metadata:
+                  labels:
+                    platforma.bio/job-id: << .JobID >>
+                    app.kubernetes.io/managed-by: platforma
+                spec:
+                  serviceAccountName: {{ include "platforma.jobServiceAccountName" . }}
+                  restartPolicy: Never
+                  <<- if eq .PlatformaQueue "ui-tasks" >>
+                  {{- with .Values.kueue.dedicated.pools.ui.nodeSelector }}
+                  nodeSelector:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  {{- with .Values.kueue.dedicated.pools.ui.tolerations }}
+                  tolerations:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  <<- else >>
+                  {{- with .Values.kueue.dedicated.pools.batch.nodeSelector }}
+                  nodeSelector:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  {{- with .Values.kueue.dedicated.pools.batch.tolerations }}
+                  tolerations:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  <<- end >>
+                  containers:
+                    - name: << .ContainerName >>
+                      image: << .Image >>
+                      command: ["/bin/sh"]
+                      args: ["{{ include "platforma.path.scripts" . }}/job_script.sh"]
+                      workingDir: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>
+                      env:
+                        - name: PL_JOB_CMD_AND_ARGS
+                          value: << toShellCmd .Command | quote >>
+                        - name: PL_JOB_WORKDIR
+                          value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>
+                        <<- if .StdOutRelativePath >>
+                        - name: PL_JOB_STDOUT_PATH
+                          value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .StdOutRelativePath >>
+                        <<- end >>
+                        <<- if .StdErrRelativePath >>
+                        - name: PL_JOB_STDERR_PATH
+                          value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .StdErrRelativePath >>
+                        <<- end >>
+                        <<- range .Env >>
+                        - name: << .Name >>
+                          <<- if .SecretKey >>
+                          valueFrom:
+                            secretKeyRef:
+                              name: {{ .Values.jobs.secretName }}
+                              key: << .SecretKey >>
+                          <<- else >>
+                          value: << .Value | quote >>
+                          <<- end >>
+                        <<- end >>
+                        - name: TMP # MiXCR requires the existed tmp directory
+                          value: "/tmp"
+                        - name: HOME
+                          value: "/tmp"
+                      securityContext:
+                        runAsUser: {{ .Values.jobs.securityContext.runAsUser }}
+                        runAsGroup: {{ .Values.jobs.securityContext.runAsGroup }}
+                      <<- if .Resources >>
+                      resources:
+                        requests:
+                          <<- if .Resources.CPU >>
+                          cpu: "<< .Resources.CPU >>"
+                          <<- end >>
+                          <<- if .Resources.Memory >>
+                          memory: "<< .Resources.Memory >>"
+                          <<- end >>
+                        limits:
+                          <<- if .Resources.CPU >>
+                          cpu: "<< .Resources.CPU >>"
+                          <<- end >>
+                          <<- if .Resources.Memory >>
+                          memory: "<< .Resources.Memory >>"
+                          <<- end >>
+                      <<- end >>
+                      volumeMounts:
+                        - name: workspace
+                          mountPath: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>
+                          subPath: work/<< .WorkDirRelativePath >>
+                        - name: job-script
+                          mountPath: {{ include "platforma.path.scripts" . }}/job_script.sh
+                          subPath: job_script.sh
+                          readOnly: true
+                        - name: temp-volume
+                          mountPath: /tmp
+
+                  volumes:
+                    - name: workspace
+                      persistentVolumeClaim:
+                        claimName: {{ include "platforma.workspacePvcName" . }}
+                    - name: job-script
+                      configMap:
+                        name: {{ include "platforma.fullname" . }}-job-script
+                        defaultMode: 0755
+                    - name: temp-volume
+                      emptyDir: {}
+{{- end }}

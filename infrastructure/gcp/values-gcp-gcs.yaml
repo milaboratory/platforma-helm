@@ -1,0 +1,79 @@
+# Platforma values for GCP GKE with GCS primary storage
+# Desktop App accesses GCS directly (no embedded S3 proxy needed).
+#
+# Prerequisites:
+#   - Workload Identity GSA bound to K8s SA "platforma" (see README.md Step 4)
+#   - GSA has roles/storage.objectAdmin on the GCS bucket
+#   - Filestore instance created (see README.md Step 3)
+#
+# Usage:
+#   helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
+#     --version 3.0.0 -n platforma -f values-gcp-gcs.yaml \
+#     --set storage.workspace.filestore.ip=$FILESTORE_IP \
+#     --set storage.workspace.filestore.location=$ZONE \
+#     --set storage.main.gcs.bucket=$GCS_BUCKET \
+#     --set storage.main.gcs.projectId=$PROJECT_ID
+
+storage:
+  database:
+    size: 50Gi
+    storageClass: standard-rwo
+
+  workspace:
+    filestore:
+      enabled: true
+      instanceName: platforma-filestore
+      location: ""  # Set via --set (e.g., europe-west3-a)
+      shareName: vol1
+      ip: ""  # Set via --set or replace with your Filestore IP
+      path: "/"
+    # Required for Filestore (no NFS squash or uid/gid enforcement)
+    chownOnInit: true
+
+  main:
+    type: gcs
+    gcs:
+      bucket: ""      # Set via --set (e.g., platforma-storage-PROJECT_ID)
+      projectId: ""   # Set via --set
+
+kueue:
+  mode: dedicated
+  dedicated:
+    pools:
+      ui:
+        resources:
+          cpu: 4
+          memory: 16Gi
+        nodeSelector:
+          pool: ui
+        tolerations:
+          - key: dedicated
+            value: ui
+            effect: NoSchedule
+
+      batch:
+        resources:
+          cpu: 60
+          memory: 240Gi
+        nodeSelector:
+          pool: batch
+        tolerations:
+          - key: dedicated
+            value: batch
+            effect: NoSchedule
+
+# Schedule Platforma server on system nodes
+nodeSelector:
+  pool: system
+
+# Use pre-created Workload Identity SA (see README.md Step 4)
+serviceAccount:
+  create: false
+  name: platforma
+
+# Enable GKE PodMonitoring
+monitoring:
+  enabled: true
+  podMonitoring:
+    enabled: true
+    interval: 30s

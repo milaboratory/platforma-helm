@@ -430,6 +430,7 @@ Resources:
   NatGateway:
     Type: AWS::EC2::NatGateway
     Condition: CreateNewVpc
+    DependsOn: VpcGatewayAttachment
     Properties:
       AllocationId: !GetAtt NatEip.AllocationId
       SubnetId: !Ref PublicSubnet1
@@ -493,8 +494,15 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
 
+  EksClusterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/eks/${ClusterName}/cluster'
+      RetentionInDays: 30
+
   EksCluster:
     Type: AWS::EKS::Cluster
+    DependsOn: EksClusterLogGroup
     Properties:
       Name: !Ref ClusterName
       Version: !Ref KubernetesVersion
@@ -1144,6 +1152,7 @@ Resources:
   # ---------------------------------------------------------------------------
   EfsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    DependsOn: EksCluster
     Properties:
       GroupDescription: !Sub 'Allow NFS traffic to Platforma EFS - ${ClusterName}'
       VpcId: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
@@ -1151,18 +1160,14 @@ Resources:
         - IpProtocol: tcp
           FromPort: 2049
           ToPort: 2049
-          # For new VPC, use exact CIDR. For existing VPC, use broad RFC 1918
-          # range since the actual VPC CIDR is unknown. Tighten for production.
-          CidrIp: !If
-            - CreateNewVpc
-            - !Ref VpcCidr
-            - '10.0.0.0/8'
+          SourceSecurityGroupId: !GetAtt EksCluster.ClusterSecurityGroupId
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-efs-sg'
 
   EfsFileSystem:
     Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
     Properties:
       PerformanceMode: !Ref EfsPerformanceMode
       ThroughputMode: !Ref EfsThroughputMode
@@ -1236,18 +1241,11 @@ Resources:
             Condition:
               Bool:
                 aws:SecureTransport: 'false'
-          - Sid: RestrictToPlatformaRole
-            Effect: Deny
-            Principal: '*'
-            Action: 's3:*'
-            Resource:
-              - !GetAtt S3Bucket.Arn
-              - !Sub '${S3Bucket.Arn}/*'
-            Condition:
-              StringNotLike:
-                aws:PrincipalArn:
-                  - !GetAtt PlatformaIrsaRole.Arn
-                  - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+          # Access control relies on IAM: only the Platforma IRSA role has
+          # s3:* permissions on this bucket via its inline policy. Removing
+          # the previous deny-all-except-role pattern because it locked out
+          # account administrators from cleanup after stack deletion
+          # (the IRSA role is deleted with the stack, leaving no one with access).
 
   # ---------------------------------------------------------------------------
   # 8. ACM Certificate (DNS-validated via Route53)
@@ -1341,6 +1339,14 @@ Outputs:
       ACM certificate ARN for TLS termination on ALB.
       Use in ALB Ingress annotation: alb.ingress.kubernetes.io/certificate-arn=<value>
     Value: !Ref Certificate
+
+  VpcId:
+    Description: VPC ID (created or provided)
+    Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
+
+  NodeGroupRoleArn:
+    Description: IAM role ARN shared by all node groups
+    Value: !GetAtt NodeGroupRole.Arn
 
   PostDeploySteps:
     Description: >

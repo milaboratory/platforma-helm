@@ -620,8 +620,10 @@ kubectl logs -n appwrapper-system -l control-plane=controller-manager --tail=50
 
 ## Cleanup
 
+> **You must uninstall all Helm releases before deleting the CloudFormation stack.** Kubernetes-created resources (ALB load balancers, DNS records, EFS mounts) block EKS cluster deletion. If you delete the stack first, these resources become orphaned and require manual cleanup.
+
 ```bash
-# Delete Helm releases first
+# 1. Uninstall Helm releases (removes ALBs, DNS records, K8s resources)
 helm uninstall platforma -n platforma
 helm uninstall external-dns -n kube-system
 helm uninstall aws-load-balancer-controller -n kube-system
@@ -629,14 +631,19 @@ helm uninstall kueue -n kueue-system
 helm uninstall cluster-autoscaler -n kube-system
 kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
 
-# Empty S3 bucket (required before stack deletion)
-# If your IAM user/role is blocked by the bucket policy, delete the policy first:
-#   aws s3api delete-bucket-policy --bucket <S3BucketName>
-aws s3 rm s3://<S3BucketName> --recursive
+# 2. Verify no load balancers remain in the VPC (blocks VPC deletion)
+kubectl get svc --all-namespaces -o wide | grep LoadBalancer
+kubectl get ingress --all-namespaces
 
-# Delete CloudFormation stack (removes EKS, EFS, all IAM roles)
-# Note: S3 bucket has DeletionPolicy: Retain — delete manually after stack removal:
-#   aws s3 rb s3://<S3BucketName> --force
+# 3. Delete CloudFormation stack (removes EKS, VPC, all IAM roles)
 aws cloudformation delete-stack --stack-name platforma-stack
 aws cloudformation wait stack-delete-complete --stack-name platforma-stack
+
+# 4. Delete retained resources manually (kept for data safety)
+aws s3 rm s3://<S3BucketName> --recursive
+aws s3 rb s3://<S3BucketName>
+aws efs delete-file-system --file-system-id <EfsFileSystemId>
+
+# 5. Delete orphaned CloudWatch log group
+aws logs delete-log-group --log-group-name /aws/eks/<ClusterName>/cluster
 ```

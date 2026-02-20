@@ -89,7 +89,9 @@ graph LR
 
 Open the AWS Console and navigate to **CloudFormation → Create Stack → With new resources**.
 
-Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters:
+Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
+
+![Create stack — upload template](images/cf-create-stack.png)
 
 ### Cluster parameters
 
@@ -140,11 +142,17 @@ Default values work for most deployments. Adjust batch instance types and max co
 
 These are **required**. The stack creates an ACM certificate with automatic DNS validation via Route53. The Desktop App requires TLS — it connects only with a valid domain and certificate.
 
+![CloudFormation parameters — storage and DNS/TLS](images/cf-parameters.png)
+
 ### Create the stack
 
 Click **Create Stack**. The stack takes **~15-20 minutes**.
 
-Once complete, go to the **Outputs** tab. You'll need these values in subsequent steps:
+Once complete, go to the **Outputs** tab. You'll need these values in subsequent steps.
+
+![CloudFormation outputs — role ARNs and cluster info](images/cf-outputs-1.png)
+![CloudFormation outputs — EFS, DNS, OIDC, namespace](images/cf-outputs-2.png)
+![CloudFormation outputs — post-deploy steps, region, S3 bucket](images/cf-outputs-3.png)
 
 | Output | Used in |
 |--------|---------|

@@ -49,7 +49,7 @@ managedNodeGroups:
     instanceType: t3.large
     desiredCapacity: 2
     minSize: 1
-    maxSize: 3
+    maxSize: 4
     labels:
       node.kubernetes.io/pool: system
     tags:

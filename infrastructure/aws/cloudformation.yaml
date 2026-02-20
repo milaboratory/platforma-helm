@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Platforma infrastructure on AWS EKS. Creates EKS cluster with 5 node groups
-  (system, ui, 3 batch tiers), EFS for shared workspace, optional S3 bucket,
+  (system, ui, 3 batch tiers), EFS for shared workspace, S3 bucket,
   and all IAM roles including IRSA for Platforma and Cluster Autoscaler.
   Does NOT install Kueue, AppWrapper, or Platforma — see post-deploy steps in Outputs.
 
@@ -43,16 +43,9 @@ Metadata:
         Parameters:
           - EfsPerformanceMode
           - EfsThroughputMode
-          - CreateS3Bucket
           - S3BucketName
       - Label:
-          default: 'IAM / IRSA roles — always created: cluster, node group, EBS CSI, EFS CSI, Platforma S3. Optional below:'
-        Parameters:
-          - CreateAutoscalerRole
-          - CreateALBControllerRole
-          - CreateExternalDNSRole
-      - Label:
-          default: DNS / TLS
+          default: 'DNS / TLS (required for connectivity)'
         Parameters:
           - HostedZoneId
           - DomainName
@@ -91,16 +84,8 @@ Metadata:
         default: EFS performance mode
       EfsThroughputMode:
         default: EFS throughput mode
-      CreateS3Bucket:
-        default: Create S3 bucket
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
-      CreateAutoscalerRole:
-        default: 'Create Cluster Autoscaler IRSA role'
-      CreateALBControllerRole:
-        default: 'Create ALB Controller IRSA role and policy'
-      CreateExternalDNSRole:
-        default: 'Create External DNS IRSA role and policy'
       HostedZoneId:
         default: Route53 hosted zone ID
       DomainName:
@@ -145,10 +130,14 @@ Parameters:
 
   PrivateSubnetIds:
     Type: CommaDelimitedList
-    Default: ''
+    # Default must be ',,' (two commas) so the list always has 3 elements.
+    # CloudFormation validates !Select expressions in all conditional branches,
+    # even those not taken — fewer than 3 elements causes an out-of-bounds error.
+    Default: ',,'
     Description: >
       Comma-separated list of exactly 3 existing private subnet IDs (one per AZ).
       Required if VpcId is provided. Leave empty when creating a new VPC.
+      Note: the default ',,' is a CloudFormation workaround, not a typo.
 
   PublicSubnetIds:
     Type: CommaDelimitedList
@@ -177,8 +166,8 @@ Parameters:
     Type: Number
     Default: 2
     MinValue: 1
-    MaxValue: 10
-    Description: System node group desired count
+    MaxValue: 4
+    Description: System node group desired count (max 4)
 
   UiNodeInstanceType:
     Type: String
@@ -227,12 +216,6 @@ Parameters:
     AllowedValues: [bursting, elastic]
     Description: EFS throughput mode
 
-  CreateS3Bucket:
-    Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-    Description: Whether to create an S3 bucket for primary storage
-
   S3BucketName:
     Type: String
     Default: ''
@@ -247,63 +230,34 @@ Parameters:
   #   - EBS CSI driver IRSA role (for gp3 StorageClass)
   #   - EFS CSI driver IRSA role (for shared workspace)
   #   - Platforma IRSA role (S3 access for primary storage)
-  # Optional:
   #   - Cluster Autoscaler IRSA role (for node group scaling)
   #   - ALB Controller IRSA role + policy (for Ingress via Application Load Balancer)
   #   - External DNS IRSA role + policy (for automatic Route53 DNS record management)
-  CreateAutoscalerRole:
-    Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-    Description: >
-      Create IRSA role for Cluster Autoscaler. Set to false if you manage
-      autoscaler IAM separately.
 
-  CreateALBControllerRole:
-    Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-    Description: >
-      Create IRSA role and IAM policy for AWS Load Balancer Controller.
-      Set to false if you manage ALB Controller IAM separately.
-
-  CreateExternalDNSRole:
-    Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-    Description: >
-      Create IRSA role and IAM policy for External DNS.
-      Required for automatic Route53 DNS record management.
-      Set to false if you manage External DNS IAM separately.
-
-  # --- DNS / TLS ---
+  # --- DNS / TLS (required) ---
   HostedZoneId:
     Type: String
-    Default: ''
+    AllowedPattern: '^Z[A-Z0-9]+$'
+    ConstraintDescription: 'Must be a valid Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
     Description: >
-      Route53 hosted zone ID for DNS validation. If provided with DomainName,
-      creates an ACM certificate with automatic DNS validation.
+      Route53 hosted zone ID. Required — used for ACM certificate DNS validation
+      and External DNS record management. The Desktop App connects via TLS,
+      so a valid domain with a certificate is mandatory.
 
   DomainName:
     Type: String
-    Default: ''
+    AllowedPattern: '^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$'
+    ConstraintDescription: 'Must be a valid domain name (e.g. platforma.example.com)'
     Description: >
-      Domain name for ACM certificate (e.g. platforma.example.com).
-      Required if HostedZoneId is provided.
+      Domain name for the Platforma endpoint (e.g. platforma.example.com).
+      An ACM certificate will be created and validated via Route53.
 
 # =============================================================================
 # Conditions
 # =============================================================================
 Conditions:
   CreateNewVpc: !Equals [!Ref VpcId, '']
-  CreateS3: !Equals [!Ref CreateS3Bucket, 'true']
   AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
-  CreateAutoscaler: !Equals [!Ref CreateAutoscalerRole, 'true']
-  CreateALBController: !Equals [!Ref CreateALBControllerRole, 'true']
-  CreateExternalDNS: !Equals [!Ref CreateExternalDNSRole, 'true']
-  CreateCertificate: !And
-    - !Not [!Equals [!Ref HostedZoneId, '']]
-    - !Not [!Equals [!Ref DomainName, '']]
   HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
 
 # =============================================================================
@@ -697,10 +651,7 @@ Resources:
                 Action:
                   - s3:ListBucket
                   - s3:ListBucketMultipartUploads
-                Resource: !If
-                  - CreateS3
-                  - !GetAtt S3Bucket.Arn
-                  - !Sub 'arn:aws:s3:::${S3BucketName}'
+                Resource: !GetAtt S3Bucket.Arn
               - Sid: ReadWriteObjects
                 Effect: Allow
                 Action:
@@ -710,14 +661,10 @@ Resources:
                   - s3:GetObjectAttributes
                   - s3:AbortMultipartUpload
                   - s3:ListMultipartUploadParts
-                Resource: !If
-                  - CreateS3
-                  - !Sub '${S3Bucket.Arn}/*'
-                  - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+                Resource: !Sub '${S3Bucket.Arn}/*'
 
   AutoscalerIrsaRole:
     Type: AWS::IAM::Role
-    Condition: CreateAutoscaler
     Properties:
       RoleName: !Sub '${ClusterName}-autoscaler-irsa'
       AssumeRolePolicyDocument:
@@ -782,7 +729,6 @@ Resources:
 
   ALBControllerPolicy:
     Type: AWS::IAM::ManagedPolicy
-    Condition: CreateALBController
     Properties:
       ManagedPolicyName: !Sub '${ClusterName}-alb-controller-policy'
       PolicyDocument:
@@ -963,7 +909,6 @@ Resources:
 
   ALBControllerRole:
     Type: AWS::IAM::Role
-    Condition: CreateALBController
     Properties:
       RoleName: !Sub '${ClusterName}-alb-controller-irsa'
       AssumeRolePolicyDocument:
@@ -990,7 +935,6 @@ Resources:
 
   ExternalDNSPolicy:
     Type: AWS::IAM::ManagedPolicy
-    Condition: CreateExternalDNS
     Properties:
       ManagedPolicyName: !Sub '${ClusterName}-external-dns-policy'
       PolicyDocument:
@@ -1011,7 +955,6 @@ Resources:
 
   ExternalDNSRole:
     Type: AWS::IAM::Role
-    Condition: CreateExternalDNS
     Properties:
       RoleName: !Sub '${ClusterName}-external-dns-irsa'
       AssumeRolePolicyDocument:
@@ -1050,7 +993,7 @@ Resources:
       ScalingConfig:
         DesiredSize: !Ref SystemNodeCount
         MinSize: 1
-        MaxSize: 3
+        MaxSize: 4
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1254,11 +1197,10 @@ Resources:
         - !Ref EfsSecurityGroup
 
   # ---------------------------------------------------------------------------
-  # 7. Storage — S3 bucket (conditional — primary storage)
+  # 7. Storage — S3 bucket (primary storage)
   # ---------------------------------------------------------------------------
   S3Bucket:
     Type: AWS::S3::Bucket
-    Condition: CreateS3
     DeletionPolicy: Retain
     Properties:
       BucketName: !If
@@ -1279,7 +1221,6 @@ Resources:
 
   S3BucketPolicy:
     Type: AWS::S3::BucketPolicy
-    Condition: CreateS3
     Properties:
       Bucket: !Ref S3Bucket
       PolicyDocument:
@@ -1309,11 +1250,10 @@ Resources:
                   - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
 
   # ---------------------------------------------------------------------------
-  # 8. ACM Certificate (conditional — Route53 + domain name)
+  # 8. ACM Certificate (DNS-validated via Route53)
   # ---------------------------------------------------------------------------
   Certificate:
     Type: AWS::CertificateManager::Certificate
-    Condition: CreateCertificate
     Properties:
       DomainName: !Ref DomainName
       ValidationMethod: DNS
@@ -1353,7 +1293,6 @@ Outputs:
     Value: !Ref EfsFileSystem
 
   S3BucketName:
-    Condition: CreateS3
     Description: >
       S3 bucket for primary storage.
       Use: --set storage.main.s3.bucket=<value>
@@ -1366,21 +1305,18 @@ Outputs:
     Value: !GetAtt PlatformaIrsaRole.Arn
 
   AutoscalerRoleArn:
-    Condition: CreateAutoscaler
     Description: >
       IRSA role ARN for Cluster Autoscaler service account.
       Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
     Value: !GetAtt AutoscalerIrsaRole.Arn
 
   ALBControllerRoleArn:
-    Condition: CreateALBController
     Description: >
       IRSA role ARN for AWS Load Balancer Controller.
       Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
     Value: !GetAtt ALBControllerRole.Arn
 
   ExternalDNSRoleArn:
-    Condition: CreateExternalDNS
     Description: >
       IRSA role ARN for External DNS.
       Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
@@ -1401,21 +1337,22 @@ Outputs:
     Value: !Ref PlatformaNamespace
 
   CertificateArn:
-    Condition: CreateCertificate
     Description: >
-      ACM certificate ARN. Use for ALB/NLB TLS termination.
-      Helm: --set ingress.api.tls.enabled=true and configure ALB annotations.
+      ACM certificate ARN for TLS termination on ALB.
+      Use in ALB Ingress annotation: alb.ingress.kubernetes.io/certificate-arn=<value>
     Value: !Ref Certificate
 
   PostDeploySteps:
     Description: >
-      After stack creation, complete these steps:
-      1. Run: aws eks update-kubeconfig --name <ClusterName> --region <Region>
-      2. Create gp3 and EFS StorageClasses (see README.md Steps 1-2)
-      3. Install Cluster Autoscaler (see README.md Step 3)
-      4. Install ALB Controller (see README.md Step 4)
-      5. Install External DNS (see README.md Step 5)
-      6. Create platforma namespace + SA, annotate with PlatformaRoleArn (see README.md Step 6)
-      7. Install Kueue and AppWrapper (see README.md Step 7)
-      8. Create license secret and install Platforma (see README.md Steps 8-9)
+      After stack creation, complete these steps (see README.md):
+      1. Configure kubectl (Step 2)
+      2. Create gp3 and EFS StorageClasses (Step 3)
+      3. Install Cluster Autoscaler (Step 4)
+      4. Install ALB Controller (Step 5)
+      5. Install External DNS (Step 6)
+      6. Create platforma namespace + SA, annotate with PlatformaRoleArn (Step 7)
+      7. Install Kueue and AppWrapper (Step 8)
+      8. Create license secret (Step 9)
+      9. Install Platforma (Step 10)
+      10. Connect from Desktop App (Step 11)
     Value: 'See infrastructure/aws/README.md for detailed post-deploy instructions'

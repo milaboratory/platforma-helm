@@ -22,6 +22,7 @@ IAM actions required by the user or role deploying infrastructure (via CloudForm
 | `eks:DescribeAddon` | `*` | Read addon status |
 | `eks:DeleteAddon` | `*` | Cleanup |
 | `eks:TagResource` | `*` | Tag cluster resources |
+| `eks:ListNodegroups` | `*` | List node groups for ASG tagging |
 
 ### EC2 / VPC
 
@@ -62,6 +63,12 @@ IAM actions required by the user or role deploying infrastructure (via CloudForm
 | `ec2:DescribeLaunchTemplateVersions` | `*` | Read launch templates |
 | `ec2:RunInstances` | `*` | Launch EC2 instances for node groups |
 
+### Auto Scaling
+
+| Permission | Resource | Purpose |
+|-----------|----------|---------|
+| `autoscaling:CreateOrUpdateTags` | `*` | Tag ASGs for Cluster Autoscaler discovery (post-deploy step) |
+
 ### EFS
 
 | Permission | Resource | Purpose |
@@ -87,7 +94,7 @@ IAM actions required by the user or role deploying infrastructure (via CloudForm
 | `s3:GetBucketPolicy` | `*` | Read bucket policy state |
 | `s3:DeleteBucketPolicy` | `*` | Cleanup |
 
-### ACM / Route53 (optional — only for TLS certificate)
+### ACM / Route53 (required — TLS certificate and DNS)
 
 | Permission | Resource | Purpose |
 |-----------|----------|---------|
@@ -256,6 +263,21 @@ Full policy sourced from [aws-load-balancer-controller v2.11.0](https://github.c
 
 ---
 
-## 8. Kubernetes RBAC
+## 8. External DNS service account (IRSA)
+
+Bound to Kubernetes service account `external-dns` in namespace `kube-system` via OIDC federation.
+
+| Permission | Resource | Purpose |
+|-----------|----------|---------|
+| `route53:ChangeResourceRecordSets` | `arn:aws:route53:::hostedzone/<zone-id>` | Create/update DNS records for Ingress resources |
+| `route53:ListHostedZones` | `*` | Discover hosted zones |
+| `route53:ListResourceRecordSets` | `*` | Read existing DNS records |
+| `route53:ListTagsForResource` | `*` | Read hosted zone tags |
+
+Write access is scoped to the specific hosted zone provided during stack creation. Read-only actions use wildcard resources.
+
+---
+
+## 9. Kubernetes RBAC
 
 The Helm chart creates a `Role` and `RoleBinding` in the release namespace granting the Platforma service account access to: pods, jobs, configmaps, secrets, events, persistentvolumeclaims. No cluster-level permissions.

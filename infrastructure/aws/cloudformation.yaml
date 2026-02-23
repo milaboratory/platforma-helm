@@ -1390,12 +1390,8 @@ Outputs:
     Value: !GetAtt NodeGroupRole.Arn
 
   PostDeploySteps:
-    Description: >
-      After stack creation, complete these steps (see README.md):
-      1. Configure kubectl (Step 2)
-      2. Install Kueue and AppWrapper (Step 3)
-      3. Create license secret (Step 4)
-      4. helm install platforma — installs Platforma + Cluster Autoscaler +
-         ALB Controller + External DNS + StorageClasses in one command (Step 5)
-      5. Connect from Desktop App (Step 6)
-    Value: 'See infrastructure/aws/README.md for detailed post-deploy instructions'
+    Description: See infrastructure/aws/README.md for full instructions
+    Value: >-
+      Next steps: (2) kubectl update-kubeconfig, (3) helm install kueue,
+      (4) create license secret, (5) helm install platforma [CA + ALB + ExternalDNS + StorageClasses],
+      (6) connect Desktop App. See infrastructure/aws/README.md.

@@ -1,20 +1,14 @@
 # Platforma values for AWS EKS with S3 primary storage
 # Designed for CloudFormation deployments where S3 bucket and IRSA are pre-created.
-# Requires: EFS StorageClass "efs-platforma" created per README instructions.
-# Usage:
-#   helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-#     --version 3.0.0 -n platforma -f values-aws-s3.yaml \
-#     --set storage.main.s3.bucket=BUCKET --set storage.main.s3.region=REGION
+# Usage: see infrastructure/aws/README.md
 
 storage:
   database:
     size: 50Gi
-    storageClass: gp3  # EBS gp3
+    storageClass: gp3
 
   workspace:
-    # Recommended: use EFS StorageClass with uid/gid Access Points (see README).
-    # This creates an Access Point enforcing UID/GID 1010 — no chownOnInit needed.
-    # Requires: StorageClass "efs-platforma" created per README instructions.
+    # EFS Access Point enforces UID/GID 1010 (Platforma's container user) — no chownOnInit needed.
     pvc:
       enabled: true
       storageClass: efs-platforma
@@ -23,8 +17,50 @@ storage:
   main:
     type: s3
     s3:
-      bucket: ""    # Set via --set (from CloudFormation S3BucketName output)
-      region: ""    # Set via --set (from CloudFormation Region output)
+      bucket: ""    # --set storage.main.s3.bucket=<S3BucketName>
+      region: ""    # --set storage.main.s3.region=<Region>
+
+storageClasses:
+  gp3:
+    create: true
+  efs:
+    create: true
+    name: efs-platforma
+    fileSystemId: ""  # --set storageClasses.efs.fileSystemId=<EfsFileSystemId>
+    uid: "1010"
+    gid: "1010"
+
+cluster-autoscaler:
+  enabled: true
+  autoDiscovery:
+    clusterName: ""   # --set cluster-autoscaler.autoDiscovery.clusterName=<ClusterName>
+  awsRegion: ""       # --set cluster-autoscaler.awsRegion=<Region>
+  rbac:
+    serviceAccount:
+      create: true
+      annotations: {}  # --set "cluster-autoscaler.rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<AutoscalerRoleArn>"
+  extraArgs:
+    scale-down-delay-after-add: 10m
+    scale-down-unneeded-time: 10m
+    scale-down-utilization-threshold: "0.5"
+    expander: least-waste
+
+aws-load-balancer-controller:
+  enabled: true
+  clusterName: ""     # --set aws-load-balancer-controller.clusterName=<ClusterName>
+  serviceAccount:
+    create: true
+    annotations: {}   # --set "aws-load-balancer-controller.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<ALBControllerRoleArn>"
+
+external-dns:
+  enabled: true
+  policy: upsert-only
+  registry: txt
+  txtOwnerId: ""      # --set external-dns.txtOwnerId=<ClusterName>
+  domainFilters: []   # --set external-dns.domainFilters[0]=<root domain, e.g. example.com>
+  serviceAccount:
+    create: true
+    annotations: {}   # --set "external-dns.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<ExternalDNSRoleArn>"
 
 kueue:
   mode: dedicated

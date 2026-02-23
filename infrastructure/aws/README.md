@@ -33,7 +33,7 @@ The deployment has three phases:
 
 **Phase 1 — AWS Console:** Deploy the CloudFormation stack. It creates the EKS cluster, node groups, EFS filesystem, S3 bucket, and all IAM roles. Takes ~15-20 minutes.
 
-**Phase 2 — CLI:** Configure kubectl, create StorageClasses, and install Kubernetes components via Helm: Cluster Autoscaler, ALB Controller, External DNS, Kueue, and Platforma.
+**Phase 2 — CLI:** Configure kubectl, tag node groups for autoscaler discovery, then install Kueue and Platforma via Helm. The Platforma chart includes Cluster Autoscaler, ALB Controller, and External DNS as bundled sub-charts — all enabled with flags in a single `helm install`.
 
 **Phase 3 — Desktop App:** Download the Platforma Desktop App, connect to your cluster at `platforma.example.com`, and start running analyses.
 
@@ -136,15 +136,15 @@ Once complete, go to the **Outputs** tab. You'll need these values in subsequent
 
 | Output | Used in |
 |--------|---------|
-| `ClusterName` | Step 2 (kubeconfig) |
-| `Region` | Step 2, Step 10 |
-| `EfsFileSystemId` | Step 3 (EFS StorageClass) |
-| `S3BucketName` | Step 10 (Platforma install) |
-| `AutoscalerRoleArn` | Step 4 |
-| `ALBControllerRoleArn` | Step 5 |
-| `ExternalDNSRoleArn` | Step 6 |
-| `PlatformaRoleArn` | Step 7 |
-| `CertificateArn` | Step 10 (ingress) |
+| `ClusterName` | Step 2 (kubeconfig), Step 3 (ASG tags) |
+| `Region` | Step 2, Step 7 |
+| `EfsFileSystemId` | Step 7 (EFS StorageClass) |
+| `S3BucketName` | Step 7 (Platforma install) |
+| `AutoscalerRoleArn` | Step 7 |
+| `ALBControllerRoleArn` | Step 7 |
+| `ExternalDNSRoleArn` | Step 7 |
+| `PlatformaRoleArn` | Step 4 |
+| `CertificateArn` | Step 7 (ingress) |
 
 ---
 
@@ -183,68 +183,13 @@ You should see 2 system nodes.
 
 ---
 
-## Step 3: Create StorageClasses
+## Step 3: Tag node groups for autoscaler discovery
 
-CloudFormation manages only AWS resources. Create the two required StorageClasses manually.
-
-### gp3 (EBS block storage for database)
+Cluster Autoscaler uses ASG tags to discover which node groups it manages. CloudFormation cannot set tag keys with dynamic values, so add them after the stack is created:
 
 ```bash
-kubectl apply -f - <<'EOF'
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: gp3
-provisioner: ebs.csi.aws.com
-parameters:
-  type: gp3
-volumeBindingMode: WaitForFirstConsumer
-reclaimPolicy: Delete
-allowVolumeExpansion: true
-EOF
-```
-
-### EFS (shared workspace for jobs)
-
-Replace `<EfsFileSystemId>` with the value from CloudFormation Outputs:
-
-```bash
-kubectl apply -f - <<EOF
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: efs-platforma
-provisioner: efs.csi.aws.com
-parameters:
-  provisioningMode: efs-ap
-  fileSystemId: <EfsFileSystemId>
-  directoryPerms: "755"
-  uid: "1010"
-  gid: "1010"
-  basePath: "/dynamic"
-EOF
-```
-
-The `uid`/`gid` enforce UID 1010 / GID 1010 on EFS Access Points, matching Platforma's non-root container user.
-
----
-
-## Step 4: Install Cluster Autoscaler
-
-Cluster Autoscaler adds nodes when pending pods need capacity. Required for batch and UI node groups that start at 0 nodes.
-
-Create the service account and annotate it with the IRSA role from CloudFormation:
-
-```bash
-AUTOSCALER_ROLE_ARN=<AutoscalerRoleArn from outputs>
 CLUSTER_NAME=<ClusterName from outputs>
 
-kubectl create serviceaccount cluster-autoscaler -n kube-system
-kubectl annotate serviceaccount cluster-autoscaler \
-  -n kube-system \
-  eks.amazonaws.com/role-arn=$AUTOSCALER_ROLE_ARN
-
-# Tag ASGs for autoscaler discovery (CloudFormation cannot set dynamic tag keys)
 for NG in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --query 'nodegroups[]' --output text); do
   ASG=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG \
     --query 'nodegroup.resources.autoScalingGroups[0].name' --output text)
@@ -253,106 +198,9 @@ for NG in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --query 'nodegr
 done
 ```
 
-Install via Helm:
-
-```bash
-helm repo add autoscaler https://kubernetes.github.io/autoscaler
-helm repo update
-
-helm install cluster-autoscaler autoscaler/cluster-autoscaler \
-  --namespace kube-system \
-  --set autoDiscovery.clusterName=$CLUSTER_NAME \
-  --set awsRegion=<Region> \
-  --set rbac.serviceAccount.create=false \
-  --set rbac.serviceAccount.name=cluster-autoscaler \
-  --set extraArgs.scale-down-delay-after-add=10m \
-  --set extraArgs.scale-down-unneeded-time=10m \
-  --set extraArgs.scale-down-utilization-threshold=0.5 \
-  --set extraArgs.expander=least-waste
-```
-
-Verify:
-
-```bash
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler
-```
-
 ---
 
-## Step 5: Install AWS Load Balancer Controller
-
-The ALB Controller creates Application Load Balancers from Kubernetes Ingress resources.
-
-```bash
-ALB_ROLE_ARN=<ALBControllerRoleArn from outputs>
-
-kubectl create serviceaccount aws-load-balancer-controller -n kube-system
-kubectl annotate serviceaccount aws-load-balancer-controller \
-  -n kube-system \
-  eks.amazonaws.com/role-arn=$ALB_ROLE_ARN
-```
-
-Install via Helm:
-
-```bash
-helm repo add eks https://aws.github.io/eks-charts
-helm repo update
-
-helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  -n kube-system \
-  --set clusterName=$CLUSTER_NAME \
-  --set serviceAccount.create=false \
-  --set serviceAccount.name=aws-load-balancer-controller
-```
-
-Verify:
-
-```bash
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
-```
-
----
-
-## Step 6: Install External DNS
-
-External DNS manages Route53 records from Kubernetes Ingress annotations.
-
-```bash
-EXTERNALDNS_ROLE_ARN=<ExternalDNSRoleArn from outputs>
-
-kubectl create serviceaccount external-dns -n kube-system
-kubectl annotate serviceaccount external-dns \
-  -n kube-system \
-  eks.amazonaws.com/role-arn=$EXTERNALDNS_ROLE_ARN
-```
-
-Install via Helm. Set `DOMAIN_FILTER` to the root domain of your hosted zone (e.g. `example.com`):
-
-```bash
-DOMAIN_FILTER=<your root domain, e.g. example.com>
-
-helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
-helm repo update
-
-helm install external-dns external-dns/external-dns \
-  -n kube-system \
-  --set serviceAccount.create=false \
-  --set serviceAccount.name=external-dns \
-  --set domainFilters[0]=$DOMAIN_FILTER \
-  --set policy=upsert-only \
-  --set registry=txt \
-  --set txtOwnerId=$CLUSTER_NAME
-```
-
-Verify:
-
-```bash
-kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns
-```
-
----
-
-## Step 7: Create Platforma namespace and service account
+## Step 4: Create Platforma namespace and service account
 
 ```bash
 PLATFORMA_ROLE_ARN=<PlatformaRoleArn from outputs>
@@ -365,7 +213,7 @@ kubectl annotate serviceaccount platforma -n platforma \
 
 ---
 
-## Step 8: Install Kueue with AppWrapper support
+## Step 5: Install Kueue with AppWrapper support
 
 Kueue manages job queuing and resource allocation. AppWrapper provides single-resource status monitoring with automatic retries.
 
@@ -401,7 +249,7 @@ kubectl get pods -n appwrapper-system
 
 ---
 
-## Step 9: Create license secret
+## Step 6: Create license secret
 
 ```bash
 kubectl create secret generic platforma-license \
@@ -411,24 +259,45 @@ kubectl create secret generic platforma-license \
 
 ---
 
-## Step 10: Install Platforma
+## Step 7: Install Platforma
 
-Use values from CloudFormation Outputs:
+This installs Platforma along with the bundled sub-charts: Cluster Autoscaler, ALB Controller, External DNS, and the two StorageClasses (gp3 + EFS). Fill in all values from CloudFormation Outputs:
 
 ```bash
-CERTIFICATE_ARN=<CertificateArn from outputs>
-S3_BUCKET=<S3BucketName from outputs>
+CLUSTER_NAME=<ClusterName from outputs>
 REGION=<Region from outputs>
+EFS_ID=<EfsFileSystemId from outputs>
+S3_BUCKET=<S3BucketName from outputs>
+CERTIFICATE_ARN=<CertificateArn from outputs>
+AUTOSCALER_ROLE_ARN=<AutoscalerRoleArn from outputs>
+ALB_ROLE_ARN=<ALBControllerRoleArn from outputs>
+EXTERNALDNS_ROLE_ARN=<ExternalDNSRoleArn from outputs>
 DOMAIN=<your domain, e.g. platforma.example.com>
+DOMAIN_FILTER=<root domain of your hosted zone, e.g. example.com>
 
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version 3.0.0 \
   -n platforma \
   -f values-aws-s3.yaml \
+  \
   --set storage.main.s3.bucket=$S3_BUCKET \
   --set storage.main.s3.region=$REGION \
   --set serviceAccount.create=false \
   --set serviceAccount.name=platforma \
+  \
+  --set storageClasses.efs.fileSystemId=$EFS_ID \
+  \
+  --set cluster-autoscaler.autoDiscovery.clusterName=$CLUSTER_NAME \
+  --set cluster-autoscaler.awsRegion=$REGION \
+  --set "cluster-autoscaler.rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$AUTOSCALER_ROLE_ARN" \
+  \
+  --set aws-load-balancer-controller.clusterName=$CLUSTER_NAME \
+  --set "aws-load-balancer-controller.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
+  \
+  --set external-dns.domainFilters[0]=$DOMAIN_FILTER \
+  --set external-dns.txtOwnerId=$CLUSTER_NAME \
+  --set "external-dns.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \
+  \
   --set ingress.enabled=true \
   --set ingress.className=alb \
   --set ingress.api.host=$DOMAIN \
@@ -463,7 +332,7 @@ nslookup $DOMAIN
 
 ---
 
-## Step 11: Connect from Desktop App
+## Step 8: Connect from Desktop App
 
 1. **Open** the Platforma Desktop App (download from [platforma.bio](https://platforma.bio) if needed)
 2. **Add** a new connection
@@ -623,11 +492,9 @@ kubectl logs -n appwrapper-system -l control-plane=controller-manager --tail=50
 
 ```bash
 # 1. Uninstall Helm releases (removes ALBs, DNS records, K8s resources)
+# platforma includes cluster-autoscaler, aws-load-balancer-controller, external-dns as sub-charts
 helm uninstall platforma -n platforma
-helm uninstall external-dns -n kube-system
-helm uninstall aws-load-balancer-controller -n kube-system
 helm uninstall kueue -n kueue-system
-helm uninstall cluster-autoscaler -n kube-system
 kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
 
 # 2. Verify no load balancers remain in the VPC (blocks VPC deletion)

@@ -1069,6 +1069,10 @@ Resources:
               for asg in ng['resources']['autoScalingGroups']:
                 asc.create_or_update_tags(Tags=[
                   {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
+                   'Key': 'Name',
+                   'Value': props['ClusterName'] + '/' + props['NodegroupName'],
+                   'PropagateAtLaunch': True},
+                  {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
                    'Key': 'k8s.io/cluster-autoscaler/enabled', 'Value': 'true',
                    'PropagateAtLaunch': True},
                   {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',

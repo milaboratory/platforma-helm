@@ -10,6 +10,7 @@ For the recommended CloudFormation setup (all infrastructure and controllers man
 - eksctl v0.170.0+
 - kubectl v1.28+
 - Helm v3.12+
+- Python 3 (used in Step 7 for ACM certificate validation record extraction)
 - A Route53 hosted zone with a registered domain
 
 ## Configuration

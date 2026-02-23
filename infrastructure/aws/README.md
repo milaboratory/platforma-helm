@@ -187,6 +187,8 @@ You should see 2 system nodes.
 
 Kueue manages job queuing and resource allocation. AppWrapper provides single-resource status monitoring with automatic retries.
 
+Run from the `infrastructure/aws/` directory where `kueue-values.yaml` is located:
+
 ```bash
 helm install kueue oci://registry.k8s.io/kueue/charts/kueue \
   --version 0.16.1 \
@@ -232,20 +234,33 @@ kubectl create secret generic platforma-license \
 
 ## Step 5: Install Platforma
 
-One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). The namespace and service accounts are created automatically. Fill in all values from CloudFormation Outputs:
+One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). The namespace and service accounts are created automatically.
+
+Run from the `infrastructure/aws/` directory where `values-aws-s3.yaml` is located.
+
+Fill in values from CloudFormation Outputs (nine variables) plus two you supply yourself:
 
 ```bash
-CLUSTER_NAME=<ClusterName from outputs>
-REGION=<Region from outputs>
-EFS_ID=<EfsFileSystemId from outputs>
-S3_BUCKET=<S3BucketName from outputs>
-CERTIFICATE_ARN=<CertificateArn from outputs>
-PLATFORMA_ROLE_ARN=<PlatformaRoleArn from outputs>
-AUTOSCALER_ROLE_ARN=<AutoscalerRoleArn from outputs>
-ALB_ROLE_ARN=<ALBControllerRoleArn from outputs>
-EXTERNALDNS_ROLE_ARN=<ExternalDNSRoleArn from outputs>
-DOMAIN=<your domain, e.g. platforma.example.com>
+# From CloudFormation Outputs tab:
+CLUSTER_NAME=<ClusterName>
+REGION=<Region>
+EFS_ID=<EfsFileSystemId>
+S3_BUCKET=<S3BucketName>
+CERTIFICATE_ARN=<CertificateArn>
+PLATFORMA_ROLE_ARN=<PlatformaRoleArn>
+AUTOSCALER_ROLE_ARN=<AutoscalerRoleArn>
+ALB_ROLE_ARN=<ALBControllerRoleArn>
+EXTERNALDNS_ROLE_ARN=<ExternalDNSRoleArn>
+
+# Your domain choices (not in Outputs — same values you used as stack parameters):
+DOMAIN=<the domain you entered, e.g. platforma.example.com>
 DOMAIN_FILTER=<root domain of your hosted zone, e.g. example.com>
+# DOMAIN_FILTER is the parent zone — if your domain is platforma.example.com,
+# use example.com. External DNS uses it to know which Route53 zone to manage.
+# CLUSTER_NAME is also used as the External DNS txtOwnerId — a unique string
+# written into TXT records so External DNS knows which records it created.
+# If you have multiple clusters sharing a hosted zone, each must have a distinct
+# cluster name (and therefore a distinct txtOwnerId).
 
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version 3.0.0 \
@@ -373,15 +388,15 @@ kubectl get nodes -L node.kubernetes.io/pool
 
 echo ""
 echo "=== Cluster Autoscaler ==="
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler
+kubectl get pods -n platforma -l app.kubernetes.io/name=aws-cluster-autoscaler
 
 echo ""
 echo "=== ALB Controller ==="
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+kubectl get pods -n platforma -l app.kubernetes.io/name=aws-load-balancer-controller
 
 echo ""
 echo "=== External DNS ==="
-kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns
+kubectl get pods -n platforma -l app.kubernetes.io/name=external-dns
 
 echo ""
 echo "=== Kueue ==="
@@ -419,8 +434,8 @@ Expected:
 # Check if Kueue admitted the workload
 kubectl get workloads -A
 
-# Check Cluster Autoscaler logs
-kubectl logs -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler --tail=50
+# Check Cluster Autoscaler logs (sub-chart deploys to platforma namespace)
+kubectl logs -n platforma -l app.kubernetes.io/name=aws-cluster-autoscaler --tail=50
 
 # Check node group scaling activity
 aws autoscaling describe-scaling-activities --auto-scaling-group-name <asg-name> --max-items 5
@@ -463,8 +478,13 @@ kubectl logs -n appwrapper-system -l control-plane=controller-manager --tail=50
 > **You must uninstall all Helm releases before deleting the CloudFormation stack.** Kubernetes-created resources (ALB load balancers, DNS records, EFS mounts) block EKS cluster deletion. If you delete the stack first, these resources become orphaned and require manual cleanup.
 
 ```bash
+STACK_NAME=<your CloudFormation stack name>   # the name you gave the stack in Step 1
+CLUSTER_NAME=<ClusterName from outputs>
+S3_BUCKET=<S3BucketName from outputs>
+EFS_ID=<EfsFileSystemId from outputs>
+
 # 1. Uninstall Helm releases (removes ALBs, DNS records, K8s resources)
-# platforma includes cluster-autoscaler, aws-load-balancer-controller, external-dns as sub-charts
+# platforma uninstall also removes the sub-charts: CA, ALB controller, External DNS
 helm uninstall platforma -n platforma
 helm uninstall kueue -n kueue-system
 kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
@@ -474,14 +494,14 @@ kubectl get svc --all-namespaces -o wide | grep LoadBalancer
 kubectl get ingress --all-namespaces
 
 # 3. Delete CloudFormation stack (removes EKS, VPC, all IAM roles)
-aws cloudformation delete-stack --stack-name platforma-stack
-aws cloudformation wait stack-delete-complete --stack-name platforma-stack
+aws cloudformation delete-stack --stack-name $STACK_NAME
+aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME
 
 # 4. Delete retained resources manually (kept for data safety)
-aws s3 rm s3://<S3BucketName> --recursive
-aws s3 rb s3://<S3BucketName>
-aws efs delete-file-system --file-system-id <EfsFileSystemId>
+aws s3 rm s3://$S3_BUCKET --recursive
+aws s3 rb s3://$S3_BUCKET
+aws efs delete-file-system --file-system-id $EFS_ID
 
 # 5. Delete orphaned CloudWatch log group
-aws logs delete-log-group --log-group-name /aws/eks/<ClusterName>/cluster
+aws logs delete-log-group --log-group-name /aws/eks/$CLUSTER_NAME/cluster
 ```

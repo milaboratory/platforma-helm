@@ -167,13 +167,12 @@ aws sso login --profile <your-profile>
 export AWS_PROFILE=<your-profile>
 ```
 
-Then update your kubeconfig:
+Set `$REGION` here — it's reused in the install commands:
 
 ```bash
+REGION=<Region>   # from CloudFormation Outputs
 aws eks update-kubeconfig --name <ClusterName> --region $REGION
 ```
-
-Replace `<ClusterName>` with the `ClusterName` output from Step 1. `$REGION` is the same region variable you'll use in Step 5 — set it now if you want to reuse it in later commands.
 
 Verify:
 
@@ -181,7 +180,7 @@ Verify:
 kubectl get nodes
 ```
 
-You should see 2 system nodes. If the stack just completed, nodes may still be initializing — wait ~1 minute and retry if they show `NotReady`.
+You should see the number of system nodes you configured (2 by default). If the stack just completed, nodes may still be initializing — wait ~1 minute and retry if they show `NotReady`.
 
 ---
 
@@ -189,9 +188,10 @@ You should see 2 system nodes. If the stack just completed, nodes may still be i
 
 Kueue manages job queuing and resource allocation. AppWrapper provides single-resource status monitoring with automatic retries.
 
-Run from the `infrastructure/aws/` directory where `kueue-values.yaml` is located:
+`kueue-values.yaml` is included in the repository and pre-configured for Platforma — no edits needed.
 
 ```bash
+cd infrastructure/aws   # steps 3 and 5 both read files from this directory
 helm install kueue oci://registry.k8s.io/kueue/charts/kueue \
   --version 0.16.1 \
   -n kueue-system --create-namespace \
@@ -240,14 +240,18 @@ kubectl create secret generic platforma-license \
 
 One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. Service accounts are created automatically. The namespace must already exist — create it in Step 4 before running this command.
 
-Run from the `infrastructure/aws/` directory. `values-aws-s3.yaml` is included in the repository at that path — no separate download needed.
+If you changed directories since Step 3, switch back: `cd infrastructure/aws`.
 
-Fill in values from CloudFormation Outputs (nine variables) plus two you supply yourself:
+Fill in values from CloudFormation Outputs (nine variables) plus two you supply yourself (`DOMAIN` and `DOMAIN_FILTER`).
+
+> **`DOMAIN_FILTER` must be set correctly.** It is the domain of your Route53 hosted zone — the zone External DNS writes DNS records into. For most users this is the registered domain root (e.g. `example.com`). If you created a dedicated hosted zone for a subdomain like `platforma.example.com`, use `platforma.example.com` instead. **Using the wrong value causes External DNS to silently skip record creation** — the cluster will appear healthy but the domain won't resolve.
+
+> `CLUSTER_NAME` doubles as the External DNS `txtOwnerId` — a unique string written into TXT records so External DNS tracks which records it owns. If multiple clusters share a hosted zone, each must have a distinct cluster name.
 
 ```bash
 # From CloudFormation Outputs tab:
 CLUSTER_NAME=<ClusterName>
-REGION=<Region>
+REGION=<Region>   # same value as set in Step 2
 EFS_ID=<EfsFileSystemId>
 S3_BUCKET=<S3BucketName>
 CERTIFICATE_ARN=<CertificateArn>
@@ -256,19 +260,9 @@ AUTOSCALER_ROLE_ARN=<AutoscalerRoleArn>
 ALB_ROLE_ARN=<ALBControllerRoleArn>
 EXTERNALDNS_ROLE_ARN=<ExternalDNSRoleArn>
 
-# Your domain choices (not in Outputs — same values you used as stack parameters):
+# Not in Outputs — same values you entered as stack parameters:
 DOMAIN=<the domain you entered, e.g. platforma.example.com>
-DOMAIN_FILTER=<your Route53 hosted zone domain, e.g. example.com>
-# DOMAIN_FILTER is the domain of the Route53 hosted zone you provided in the stack
-# parameters — the zone External DNS will write records into.
-# Common case: hosted zone is example.com → use example.com.
-# Sub-zone case: if you created a dedicated hosted zone for platforma.example.com,
-# use platforma.example.com. Using the wrong value causes External DNS to silently
-# skip record creation.
-# CLUSTER_NAME is also used as the External DNS txtOwnerId — a unique string
-# written into TXT records so External DNS knows which records it created.
-# If you have multiple clusters sharing a hosted zone, each must have a distinct
-# cluster name (and therefore a distinct txtOwnerId).
+DOMAIN_FILTER=<your Route53 hosted zone domain, e.g. example.com>   # see note above
 
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version 3.0.0 \
@@ -545,6 +539,9 @@ aws cloudformation delete-stack --stack-name $STACK_NAME
 aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME
 
 # 4. Delete retained resources manually (kept for data safety)
+# S3 and EFS use DeletionPolicy: Retain in the CloudFormation template — the stack
+# deletion in step 3 intentionally preserves them. Delete here only when you are
+# certain the data is no longer needed.
 # WARNING: the commands below permanently destroy all Platforma data. There is no undo.
 aws s3 rm s3://$S3_BUCKET --recursive
 aws s3 rb s3://$S3_BUCKET

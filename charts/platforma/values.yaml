@@ -545,10 +545,10 @@ external-dns:
     annotations: {}   # eks.amazonaws.com/role-arn: <ExternalDNSRoleArn>
 
 # =============================================================================
-# STORAGE CLASSES
+# STORAGE CLASSES (AWS EKS)
 # =============================================================================
-# Optional StorageClasses to create alongside the release.
-# Useful on cloud clusters where the required StorageClasses don't exist yet.
+# Optional StorageClasses to create alongside the release. AWS EKS only —
+# GKE and AKS ship with the required StorageClasses pre-configured.
 # These are cluster-scoped resources — created once per cluster, not per release.
 # =============================================================================
 

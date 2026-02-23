@@ -91,6 +91,9 @@ kueue:
   dedicated:
     pools:
       ui:
+        # resources = Kueue ClusterQueue quota: max simultaneous CPU/memory admitted across all UI workloads.
+        # Default (4 CPU / 16Gi) matches one t3.xlarge. Increase to match UiNodeMaxCount × instance size
+        # if you want multiple concurrent UI jobs (e.g. 16 CPU / 64Gi for 4 × t3.xlarge).
         resources:
           cpu: 4
           memory: 16Gi
@@ -102,6 +105,9 @@ kueue:
             effect: NoSchedule
 
       batch:
+        # resources = Kueue ClusterQueue quota: max simultaneous CPU/memory admitted across all batch workloads.
+        # Default (60 CPU / 240Gi) is a conservative starting point (~7 × m5.2xlarge concurrent).
+        # Increase to match your expected concurrent workload, up to BatchMaxCountPerGroup × instance size.
         resources:
           cpu: 60
           memory: 240Gi

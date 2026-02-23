@@ -1371,8 +1371,8 @@ Outputs:
 
   PlatformaNamespace:
     Description: >
-      Kubernetes namespace for Platforma.
-      Run: kubectl create namespace <value>
+      Kubernetes namespace for Platforma (reference only — created via kubectl in Step 4,
+      not by this stack). Used in IRSA trust policies for all service accounts.
     Value: !Ref PlatformaNamespace
 
   CertificateArn:

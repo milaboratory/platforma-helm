@@ -1001,25 +1001,87 @@ Resources:
         - !Ref ExternalDNSPolicy
 
   # ---------------------------------------------------------------------------
+  # ASG tagging Lambda — sets Cluster Autoscaler autodiscovery tags on each
+  # nodegroup's underlying ASG. EC2 launch template TagSpecifications do not
+  # support auto-scaling-group as a resource type, and EKS nodegroup Tags do not
+  # propagate to the ASG. A Lambda custom resource is the only pure-CloudFormation
+  # way to set dynamic tag keys (containing the cluster name) on the ASG.
+  # ---------------------------------------------------------------------------
+  ASGTaggingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-asg-tagger'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TagASG
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeNodegroup
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:CreateOrUpdateTags
+                Resource: '*'
+
+  ASGTaggingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ClusterName}-asg-tagger'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ASGTaggingRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3, json, urllib.request
+          def send(event, ctx, status, data=None):
+            body = json.dumps({
+              'Status': status,
+              'Reason': f'See {ctx.log_stream_name}',
+              'PhysicalResourceId': event.get('PhysicalResourceId', ctx.log_stream_name),
+              'StackId': event['StackId'], 'RequestId': event['RequestId'],
+              'LogicalResourceId': event['LogicalResourceId'], 'Data': data or {}
+            })
+            req = urllib.request.Request(
+              event['ResponseURL'], data=body.encode(), method='PUT',
+              headers={'Content-Type': ''}
+            )
+            urllib.request.urlopen(req)
+          def handler(event, context):
+            try:
+              if event['RequestType'] == 'Delete':
+                send(event, context, 'SUCCESS')
+                return
+              props = event['ResourceProperties']
+              ng = boto3.client('eks').describe_nodegroup(
+                clusterName=props['ClusterName'], nodegroupName=props['NodegroupName']
+              )['nodegroup']
+              asc = boto3.client('autoscaling')
+              for asg in ng['resources']['autoScalingGroups']:
+                asc.create_or_update_tags(Tags=[
+                  {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
+                   'Key': 'k8s.io/cluster-autoscaler/enabled', 'Value': 'true',
+                   'PropagateAtLaunch': True},
+                  {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
+                   'Key': 'k8s.io/cluster-autoscaler/' + props['ClusterName'],
+                   'Value': 'owned', 'PropagateAtLaunch': True},
+                ])
+              send(event, context, 'SUCCESS')
+            except Exception as e:
+              send(event, context, 'FAILED', {'Error': str(e)})
+
+  # ---------------------------------------------------------------------------
   # 4. Node groups
   # ---------------------------------------------------------------------------
-
-  # Launch template used by all managed nodegroups.
-  # TagSpecifications with ResourceType: auto-scaling-group propagates tags to
-  # the underlying ASG — the only way to set dynamic tag keys (containing the
-  # cluster name) in CloudFormation, since !Sub cannot be used in map key position.
-  NodeGroupLaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Properties:
-      LaunchTemplateData:
-        # Do NOT set ImageId — EKS selects the optimised AMI automatically.
-        TagSpecifications:
-          - ResourceType: auto-scaling-group
-            Tags:
-              - Key: k8s.io/cluster-autoscaler/enabled
-                Value: 'true'
-              - Key: !Sub 'k8s.io/cluster-autoscaler/${ClusterName}'
-                Value: owned
 
   SystemNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1033,9 +1095,6 @@ Resources:
         DesiredSize: !Ref SystemNodeCount
         MinSize: 1
         MaxSize: 4
-      LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1059,9 +1118,6 @@ Resources:
         DesiredSize: !If [UiAlwaysOn, 1, 0]
         MinSize: !If [UiAlwaysOn, 1, 0]
         MaxSize: !Ref UiNodeMaxCount
-      LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1089,9 +1145,6 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !Ref BatchMaxCountPerGroup
-      LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1119,9 +1172,6 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !Ref BatchMaxCountPerGroup
-      LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1149,9 +1199,6 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !Ref BatchMaxCountPerGroup
-      LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1166,6 +1213,46 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch
+
+  TagSystemNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: SystemNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: system
+
+  TagUiNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: UiNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: ui
+
+  TagBatchMediumNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: BatchMediumNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: batch-medium
+
+  TagBatchLargeNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: BatchLargeNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: batch-large
+
+  TagBatchXlargeNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: BatchXlargeNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: batch-xlarge
 
   # ---------------------------------------------------------------------------
   # 5. EKS addons — CSI drivers (DependsOn: SystemNodeGroup for running pods)

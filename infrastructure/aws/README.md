@@ -236,7 +236,7 @@ kubectl create secret generic platforma-license \
 
 ## Step 5: Install Platforma
 
-One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. The namespace and service accounts are created automatically.
+One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. Service accounts are created automatically; the namespace must already exist (created in Step 4).
 
 Run from the `infrastructure/aws/` directory where `values-aws-s3.yaml` is located.
 
@@ -256,9 +256,13 @@ EXTERNALDNS_ROLE_ARN=<ExternalDNSRoleArn>
 
 # Your domain choices (not in Outputs — same values you used as stack parameters):
 DOMAIN=<the domain you entered, e.g. platforma.example.com>
-DOMAIN_FILTER=<root domain of your hosted zone, e.g. example.com>
-# DOMAIN_FILTER is the parent zone — if your domain is platforma.example.com,
-# use example.com. External DNS uses it to know which Route53 zone to manage.
+DOMAIN_FILTER=<your Route53 hosted zone domain, e.g. example.com>
+# DOMAIN_FILTER is the domain of the Route53 hosted zone you provided in the stack
+# parameters — the zone External DNS will write records into.
+# Common case: hosted zone is example.com → use example.com.
+# Sub-zone case: if you created a dedicated hosted zone for platforma.example.com,
+# use platforma.example.com. Using the wrong value causes External DNS to silently
+# skip record creation.
 # CLUSTER_NAME is also used as the External DNS txtOwnerId — a unique string
 # written into TXT records so External DNS knows which records it created.
 # If you have multiple clusters sharing a hosted zone, each must have a distinct
@@ -489,6 +493,10 @@ EFS_ID=<EfsFileSystemId from outputs>
 # platforma uninstall also removes the sub-charts: CA, ALB controller, External DNS
 helm uninstall platforma -n platforma
 helm uninstall kueue -n kueue-system
+
+# Delete all AppWrapper CRs before removing the controller — the CRD finalizer
+# blocks controller deletion until no AppWrapper objects remain.
+kubectl delete appwrappers --all -A 2>/dev/null || true
 kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
 
 # 2. Verify no load balancers remain in the VPC (blocks VPC deletion)

@@ -191,15 +191,6 @@ storage:
     # The init container runs as root and changes ownership to deployment.securityContext uid/gid.
     chownOnInit: false
 
-  # -- Persistent logs storage
-  # PVC is only created when BOTH logs.enabled=true AND logging.destination starts with "dir://".
-  # Enabled by default so switching to dir:// logging automatically provisions storage.
-  logs:
-    enabled: true
-    size: 10Gi
-    storageClass: ""
-    existingClaim: ""
-
   # -- Main storage (exposed to Desktop App)
   # Desktop App downloads results from this storage. Configure S3 or GCS.
   main:
@@ -478,18 +469,18 @@ extraArgs: []
 # =============================================================================
 
 logging:
-  # -- Log destination
-  # Options:
-  #   - stream://stderr (default, logs to container stderr)
-  #   - dir:///var/log/platforma (logs to directory with rotation)
-  destination: "stream://stderr"
-
-  # -- Rotation settings (only used when destination is dir://)
-  rotation:
-    # -- Max size per log file
-    size: 1Gi
-    # -- Number of rotated files to keep
-    count: 15
+  # -- Enable persistent log storage
+  # When false (default), logs stream to container stderr — collected by the cluster log driver.
+  # When true, logs write to a PVC at /var/log/platforma with rotation.
+  # Required for log inspection via the debug sidecar during crash loops.
+  persistence:
+    enabled: false
+    size: 10Gi
+    storageClass: ""      # "" = cluster default
+    existingClaim: ""     # Use pre-created PVC instead of creating one
+    rotation:
+      size: 1Gi           # Max size per log file before rotation
+      count: 15           # Number of rotated log files to keep
 
 monitoring:
   # -- Enable metrics endpoint
@@ -505,6 +496,53 @@ monitoring:
   podMonitoring:
     enabled: false
     interval: 30s
+
+# =============================================================================
+# BUNDLED CONTROLLERS (optional, AWS EKS)
+# =============================================================================
+# Sub-charts for AWS-specific controllers. All disabled by default.
+# Enable in AWS deployments to avoid separate Helm installs for each controller.
+# Provide IRSA role ARNs from CloudFormation Outputs via serviceAccount.annotations.
+# =============================================================================
+
+# -- Cluster Autoscaler
+# Scales EC2 node groups when pods are pending. Required for UI and batch pools
+# that start at 0 nodes.
+cluster-autoscaler:
+  enabled: false
+  autoDiscovery:
+    clusterName: ""   # Set to EKS cluster name (ClusterName from CF outputs)
+  awsRegion: ""       # Set to AWS region (Region from CF outputs)
+  rbac:
+    serviceAccount:
+      create: true
+      annotations: {}  # eks.amazonaws.com/role-arn: <AutoscalerRoleArn>
+  extraArgs:
+    scale-down-delay-after-add: 10m
+    scale-down-unneeded-time: 10m
+    scale-down-utilization-threshold: "0.5"
+    expander: least-waste
+
+# -- AWS Load Balancer Controller
+# Creates Application Load Balancers from Kubernetes Ingress resources.
+aws-load-balancer-controller:
+  enabled: false
+  clusterName: ""     # Set to EKS cluster name
+  serviceAccount:
+    create: true
+    annotations: {}   # eks.amazonaws.com/role-arn: <ALBControllerRoleArn>
+
+# -- External DNS
+# Manages Route53 DNS records from Kubernetes Ingress annotations.
+external-dns:
+  enabled: false
+  policy: upsert-only
+  registry: txt
+  txtOwnerId: ""      # Set to EKS cluster name
+  domainFilters: []   # Set to root domain (e.g. [example.com])
+  serviceAccount:
+    create: true
+    annotations: {}   # eks.amazonaws.com/role-arn: <ExternalDNSRoleArn>
 
 # =============================================================================
 # STORAGE CLASSES

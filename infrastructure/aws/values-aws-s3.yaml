@@ -5,13 +5,13 @@
 storage:
   database:
     size: 50Gi
-    storageClass: gp3
+    storageClass: gp3          # must match storageClasses.gp3.name below
 
   workspace:
     # EFS Access Point enforces UID/GID 1010 (Platforma's container user) — no chownOnInit needed.
     pvc:
       enabled: true
-      storageClass: efs-platforma
+      storageClass: efs-platforma  # must match storageClasses.efs.name below
       size: 100Gi
 
   main:
@@ -20,12 +20,15 @@ storage:
       bucket: ""    # --set storage.main.s3.bucket=<S3BucketName>
       region: ""    # --set storage.main.s3.region=<Region>
 
+# StorageClasses created by the chart (AWS EKS only).
+# Names here must match storage.database.storageClass and storage.workspace.pvc.storageClass above.
 storageClasses:
   gp3:
     create: true
+    name: gp3                  # referenced by storage.database.storageClass
   efs:
     create: true
-    name: efs-platforma
+    name: efs-platforma        # referenced by storage.workspace.pvc.storageClass
     fileSystemId: ""  # --set storageClasses.efs.fileSystemId=<EfsFileSystemId>
     uid: "1010"
     gid: "1010"

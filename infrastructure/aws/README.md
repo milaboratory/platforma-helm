@@ -33,7 +33,7 @@ The deployment has three phases:
 
 **Phase 1 — AWS Console:** Deploy the CloudFormation stack. It creates the EKS cluster, node groups, EFS filesystem, S3 bucket, and all IAM roles. Takes ~15-20 minutes.
 
-**Phase 2 — CLI:** Configure kubectl, then install Kueue and Platforma via Helm. The Platforma chart includes Cluster Autoscaler, ALB Controller, and External DNS as bundled sub-charts — all configured in a single `helm install`. The namespace and service accounts are created automatically.
+**Phase 2 — CLI:** Configure kubectl, then install Kueue and Platforma via Helm. The Platforma chart includes Cluster Autoscaler, ALB Controller, and External DNS as bundled sub-charts — all configured in a single `helm install`. Service accounts are created automatically; the namespace and license secret are created manually before the install (Steps 3-4).
 
 **Phase 3 — Desktop App:** Download the Platforma Desktop App, connect to your cluster at `platforma.example.com`, and start running analyses.
 
@@ -332,7 +332,7 @@ nslookup $DOMAIN
 3. **Enter** your endpoint: `platforma.example.com:443` (use your actual domain)
 4. The ACM certificate secures the connection via TLS
 
-For quick testing before DNS propagates, use port-forwarding:
+For quick testing before DNS propagates, use port-forwarding. The Desktop App supports non-TLS connections to `localhost` — no certificate needed for this mode:
 
 ```bash
 kubectl port-forward svc/platforma -n platforma 6345:6345
@@ -434,6 +434,22 @@ Expected:
 
 ## Troubleshooting
 
+### CloudFormation stack stuck in CREATE_IN_PROGRESS after 20+ minutes
+
+The most common cause is ACM certificate validation failure. The stack creates an ACM certificate and validates it by writing a DNS record to your Route53 hosted zone. This fails silently if the hosted zone ID is wrong or if the domain's NS records are not pointing at Route53.
+
+```bash
+# Check certificate status in the AWS Console → Certificate Manager → your domain
+# Or via CLI:
+aws acm list-certificates --query "CertificateSummaryList[?DomainName=='<your-domain>']"
+aws acm describe-certificate --certificate-arn <arn> \
+  --query "Certificate.DomainValidationOptions"
+```
+
+If the certificate shows `PENDING_VALIDATION` after 5+ minutes, verify:
+1. The **Route53 hosted zone ID** parameter matches the actual zone that controls your domain's DNS
+2. Your domain's NS records are delegated to Route53 (check with `nslookup -type=NS <domain>`)
+
 ### Pods stuck in Pending
 
 ```bash
@@ -508,6 +524,7 @@ aws cloudformation delete-stack --stack-name $STACK_NAME
 aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME
 
 # 4. Delete retained resources manually (kept for data safety)
+# WARNING: the commands below permanently destroy all Platforma data. There is no undo.
 aws s3 rm s3://$S3_BUCKET --recursive
 aws s3 rb s3://$S3_BUCKET
 aws efs delete-file-system --file-system-id $EFS_ID

@@ -1,8 +1,8 @@
 # Advanced installation (manual CLI)
 
-Manual setup using `eksctl` and AWS CLI. Use this guide if you need full control over every resource, have custom VPC requirements, or prefer automation-friendly CLI-only workflows.
+Manual setup using `eksctl` and AWS CLI. Use this guide if you need full control over every resource, have custom VPC requirements, or want to manage Cluster Autoscaler, ALB Controller, and External DNS yourself — in your own namespace, with your own IAM policies and lifecycle.
 
-For the recommended one-click setup, see the [main guide](README.md).
+For the recommended CloudFormation setup (all infrastructure and controllers managed as a single stack, controllers bundled as Helm sub-charts), see the [main guide](README.md).
 
 ## Prerequisites
 
@@ -548,6 +548,8 @@ kubectl create secret generic platforma-license \
 
 ## Step 10: Install Platforma
 
+The `values-aws-s3.yaml` file enables sub-charts and StorageClass creation by default (for the CloudFormation path). Disable them here since you've set them up manually in previous steps:
+
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version $PLATFORMA_VERSION \
@@ -557,6 +559,11 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set storage.main.s3.region=$AWS_REGION \
   --set serviceAccount.create=false \
   --set serviceAccount.name=platforma \
+  --set storageClasses.gp3.create=false \
+  --set storageClasses.efs.create=false \
+  --set cluster-autoscaler.enabled=false \
+  --set aws-load-balancer-controller.enabled=false \
+  --set external-dns.enabled=false \
   --set ingress.enabled=true \
   --set ingress.className=alb \
   --set ingress.api.host=$DOMAIN_NAME \

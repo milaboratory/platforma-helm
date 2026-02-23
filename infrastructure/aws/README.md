@@ -33,7 +33,7 @@ The deployment has three phases:
 
 **Phase 1 — AWS Console:** Deploy the CloudFormation stack. It creates the EKS cluster, node groups, EFS filesystem, S3 bucket, and all IAM roles. Takes ~15-20 minutes.
 
-**Phase 2 — CLI:** Configure kubectl, tag node groups for autoscaler discovery, then install Kueue and Platforma via Helm. The Platforma chart includes Cluster Autoscaler, ALB Controller, and External DNS as bundled sub-charts — all enabled with flags in a single `helm install`.
+**Phase 2 — CLI:** Configure kubectl, then install Kueue and Platforma via Helm. The Platforma chart includes Cluster Autoscaler, ALB Controller, and External DNS as bundled sub-charts — all configured in a single `helm install`. The namespace and service accounts are created automatically.
 
 **Phase 3 — Desktop App:** Download the Platforma Desktop App, connect to your cluster at `platforma.example.com`, and start running analyses.
 
@@ -136,15 +136,15 @@ Once complete, go to the **Outputs** tab. You'll need these values in subsequent
 
 | Output | Used in |
 |--------|---------|
-| `ClusterName` | Step 2 (kubeconfig), Step 3 (ASG tags) |
-| `Region` | Step 2, Step 7 |
-| `EfsFileSystemId` | Step 7 (EFS StorageClass) |
-| `S3BucketName` | Step 7 (Platforma install) |
-| `AutoscalerRoleArn` | Step 7 |
-| `ALBControllerRoleArn` | Step 7 |
-| `ExternalDNSRoleArn` | Step 7 |
-| `PlatformaRoleArn` | Step 4 |
-| `CertificateArn` | Step 7 (ingress) |
+| `ClusterName` | Step 2 (kubeconfig) |
+| `Region` | Step 2, Step 5 |
+| `EfsFileSystemId` | Step 5 (EFS StorageClass) |
+| `S3BucketName` | Step 5 (Platforma install) |
+| `AutoscalerRoleArn` | Step 5 |
+| `ALBControllerRoleArn` | Step 5 |
+| `ExternalDNSRoleArn` | Step 5 |
+| `PlatformaRoleArn` | Step 5 |
+| `CertificateArn` | Step 5 (ingress) |
 
 ---
 
@@ -183,37 +183,7 @@ You should see 2 system nodes.
 
 ---
 
-## Step 3: Tag node groups for autoscaler discovery
-
-Cluster Autoscaler uses ASG tags to discover which node groups it manages. CloudFormation cannot set tag keys with dynamic values, so add them after the stack is created:
-
-```bash
-CLUSTER_NAME=<ClusterName from outputs>
-
-for NG in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --query 'nodegroups[]' --output text); do
-  ASG=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG \
-    --query 'nodegroup.resources.autoScalingGroups[0].name' --output text)
-  aws autoscaling create-or-update-tags --tags \
-    "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/$CLUSTER_NAME,Value=owned,PropagateAtLaunch=true"
-done
-```
-
----
-
-## Step 4: Create Platforma namespace and service account
-
-```bash
-PLATFORMA_ROLE_ARN=<PlatformaRoleArn from outputs>
-
-kubectl create namespace platforma
-kubectl create serviceaccount platforma -n platforma
-kubectl annotate serviceaccount platforma -n platforma \
-  eks.amazonaws.com/role-arn=$PLATFORMA_ROLE_ARN
-```
-
----
-
-## Step 5: Install Kueue with AppWrapper support
+## Step 3: Install Kueue with AppWrapper support
 
 Kueue manages job queuing and resource allocation. AppWrapper provides single-resource status monitoring with automatic retries.
 
@@ -249,9 +219,10 @@ kubectl get pods -n appwrapper-system
 
 ---
 
-## Step 6: Create license secret
+## Step 4: Create license secret
 
 ```bash
+kubectl create namespace platforma
 kubectl create secret generic platforma-license \
   -n platforma \
   --from-literal=MI_LICENSE="your-license-key"
@@ -259,9 +230,9 @@ kubectl create secret generic platforma-license \
 
 ---
 
-## Step 7: Install Platforma
+## Step 5: Install Platforma
 
-This installs Platforma along with the bundled sub-charts: Cluster Autoscaler, ALB Controller, External DNS, and the two StorageClasses (gp3 + EFS). Fill in all values from CloudFormation Outputs:
+One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). The namespace and service accounts are created automatically. Fill in all values from CloudFormation Outputs:
 
 ```bash
 CLUSTER_NAME=<ClusterName from outputs>
@@ -269,6 +240,7 @@ REGION=<Region from outputs>
 EFS_ID=<EfsFileSystemId from outputs>
 S3_BUCKET=<S3BucketName from outputs>
 CERTIFICATE_ARN=<CertificateArn from outputs>
+PLATFORMA_ROLE_ARN=<PlatformaRoleArn from outputs>
 AUTOSCALER_ROLE_ARN=<AutoscalerRoleArn from outputs>
 ALB_ROLE_ARN=<ALBControllerRoleArn from outputs>
 EXTERNALDNS_ROLE_ARN=<ExternalDNSRoleArn from outputs>
@@ -277,13 +249,12 @@ DOMAIN_FILTER=<root domain of your hosted zone, e.g. example.com>
 
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version 3.0.0 \
-  -n platforma \
+  -n platforma --create-namespace \
   -f values-aws-s3.yaml \
   \
   --set storage.main.s3.bucket=$S3_BUCKET \
   --set storage.main.s3.region=$REGION \
-  --set serviceAccount.create=false \
-  --set serviceAccount.name=platforma \
+  --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_ROLE_ARN" \
   \
   --set storageClasses.efs.fileSystemId=$EFS_ID \
   \
@@ -292,6 +263,7 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set "cluster-autoscaler.rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$AUTOSCALER_ROLE_ARN" \
   \
   --set aws-load-balancer-controller.clusterName=$CLUSTER_NAME \
+  --set aws-load-balancer-controller.region=$REGION \
   --set "aws-load-balancer-controller.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
   \
   --set external-dns.domainFilters[0]=$DOMAIN_FILTER \
@@ -332,7 +304,7 @@ nslookup $DOMAIN
 
 ---
 
-## Step 8: Connect from Desktop App
+## Step 6: Connect from Desktop App
 
 1. **Open** the Platforma Desktop App (download from [platforma.bio](https://platforma.bio) if needed)
 2. **Add** a new connection

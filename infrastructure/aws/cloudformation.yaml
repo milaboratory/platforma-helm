@@ -699,7 +699,7 @@ Resources:
                 "Action": "sts:AssumeRoleWithWebIdentity",
                 "Condition": {
                   "StringEquals": {
-                    "${OidcIssuer}:sub": "system:serviceaccount:kube-system:cluster-autoscaler",
+                    "${OidcIssuer}:sub": "system:serviceaccount:${PlatformaNamespace}:cluster-autoscaler",
                     "${OidcIssuer}:aud": "sts.amazonaws.com"
                   }
                 }
@@ -943,7 +943,7 @@ Resources:
                 "Action": "sts:AssumeRoleWithWebIdentity",
                 "Condition": {
                   "StringEquals": {
-                    "${OidcIssuer}:sub": "system:serviceaccount:kube-system:aws-load-balancer-controller",
+                    "${OidcIssuer}:sub": "system:serviceaccount:${PlatformaNamespace}:aws-load-balancer-controller",
                     "${OidcIssuer}:aud": "sts.amazonaws.com"
                   }
                 }
@@ -989,7 +989,7 @@ Resources:
                 "Action": "sts:AssumeRoleWithWebIdentity",
                 "Condition": {
                   "StringEquals": {
-                    "${OidcIssuer}:sub": "system:serviceaccount:kube-system:external-dns",
+                    "${OidcIssuer}:sub": "system:serviceaccount:${PlatformaNamespace}:external-dns",
                     "${OidcIssuer}:aud": "sts.amazonaws.com"
                   }
                 }
@@ -1003,6 +1003,24 @@ Resources:
   # ---------------------------------------------------------------------------
   # 4. Node groups
   # ---------------------------------------------------------------------------
+
+  # Launch template used by all managed nodegroups.
+  # TagSpecifications with ResourceType: auto-scaling-group propagates tags to
+  # the underlying ASG — the only way to set dynamic tag keys (containing the
+  # cluster name) in CloudFormation, since !Sub cannot be used in map key position.
+  NodeGroupLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        TagSpecifications:
+          - ResourceType: auto-scaling-group
+            Tags:
+              - Key: k8s.io/cluster-autoscaler/enabled
+                Value: 'true'
+              - Key: !Sub 'k8s.io/cluster-autoscaler/${ClusterName}'
+                Value: owned
+
   SystemNodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:
@@ -1015,6 +1033,9 @@ Resources:
         DesiredSize: !Ref SystemNodeCount
         MinSize: 1
         MaxSize: 4
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1025,7 +1046,6 @@ Resources:
         node.kubernetes.io/pool: system
       Tags:
         nodegroup-type: system
-        k8s.io/cluster-autoscaler/enabled: 'true'
 
   UiNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1039,6 +1059,9 @@ Resources:
         DesiredSize: !If [UiAlwaysOn, 1, 0]
         MinSize: !If [UiAlwaysOn, 1, 0]
         MaxSize: !Ref UiNodeMaxCount
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1053,7 +1076,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: ui
-        k8s.io/cluster-autoscaler/enabled: 'true'
 
   BatchMediumNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1067,6 +1089,9 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !Ref BatchMaxCountPerGroup
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1081,7 +1106,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch
-        k8s.io/cluster-autoscaler/enabled: 'true'
 
   BatchLargeNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1095,6 +1119,9 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !Ref BatchMaxCountPerGroup
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1109,7 +1136,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch
-        k8s.io/cluster-autoscaler/enabled: 'true'
 
   BatchXlargeNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1123,6 +1149,9 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !Ref BatchMaxCountPerGroup
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1137,7 +1166,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch
-        k8s.io/cluster-autoscaler/enabled: 'true'
 
   # ---------------------------------------------------------------------------
   # 5. EKS addons — CSI drivers (DependsOn: SystemNodeGroup for running pods)

@@ -38,6 +38,7 @@ cluster-autoscaler:
   rbac:
     serviceAccount:
       create: true
+      name: cluster-autoscaler  # must match IRSA trust policy in CloudFormation
       annotations: {}  # --set "cluster-autoscaler.rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<AutoscalerRoleArn>"
   extraArgs:
     scale-down-delay-after-add: 10m
@@ -48,8 +49,10 @@ cluster-autoscaler:
 aws-load-balancer-controller:
   enabled: true
   clusterName: ""     # --set aws-load-balancer-controller.clusterName=<ClusterName>
+  region: ""          # --set aws-load-balancer-controller.region=<Region>
   serviceAccount:
     create: true
+    name: aws-load-balancer-controller  # must match IRSA trust policy in CloudFormation
     annotations: {}   # --set "aws-load-balancer-controller.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<ALBControllerRoleArn>"
 
 external-dns:
@@ -60,7 +63,13 @@ external-dns:
   domainFilters: []   # --set external-dns.domainFilters[0]=<root domain, e.g. example.com>
   serviceAccount:
     create: true
+    name: external-dns  # must match IRSA trust policy in CloudFormation
     annotations: {}   # --set "external-dns.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<ExternalDNSRoleArn>"
+
+# Platforma server service account — created by the chart, annotated with IRSA role.
+serviceAccount:
+  create: true
+  annotations: {}   # --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<PlatformaRoleArn>"
 
 kueue:
   mode: dedicated

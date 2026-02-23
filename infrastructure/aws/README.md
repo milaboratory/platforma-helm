@@ -168,10 +168,10 @@ aws sso login --profile <your-profile>
 export AWS_PROFILE=<your-profile>
 ```
 
-Set `$REGION` here — it's reused in the install commands:
+Set `$REGION` from the CloudFormation Outputs before running the kubeconfig command:
 
 ```bash
-REGION=<Region>   # from CloudFormation Outputs
+REGION=<Region>   # from CloudFormation Outputs — also set in Step 5 variable block
 aws eks update-kubeconfig --name <ClusterName> --region $REGION
 ```
 
@@ -192,7 +192,7 @@ Kueue manages job queuing and resource allocation. AppWrapper provides single-re
 `kueue-values.yaml` is included in the repository and pre-configured for Platforma — no edits needed.
 
 ```bash
-cd infrastructure/aws   # steps 3 and 5 both read files from this directory
+cd platforma-helm/infrastructure/aws   # from wherever you ran git clone; steps 3 and 5 read files from here
 helm install kueue oci://registry.k8s.io/kueue/charts/kueue \
   --version 0.16.1 \
   -n kueue-system --create-namespace \
@@ -246,7 +246,7 @@ One `helm install` deploys Platforma and all infrastructure components: Cluster 
 Switch to the `infrastructure/aws/` directory if not already there:
 
 ```bash
-cd infrastructure/aws
+cd platforma-helm/infrastructure/aws   # from wherever you ran git clone
 ```
 
 Fill in values from CloudFormation Outputs (nine variables) plus two you supply yourself (`DOMAIN` and `DOMAIN_FILTER`).
@@ -257,7 +257,7 @@ Fill in values from CloudFormation Outputs (nine variables) plus two you supply 
 
 ```bash
 # From CloudFormation Outputs tab:
-CLUSTER_NAME=<ClusterName>
+CLUSTER_NAME=<ClusterName>   # must match the name used in the Step 2 kubeconfig command
 REGION=<Region>   # same value as set in Step 2
 EFS_ID=<EfsFileSystemId>
 S3_BUCKET=<S3BucketName>
@@ -298,7 +298,6 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.className=alb \
   --set ingress.api.host=$DOMAIN \
   --set ingress.api.tls.enabled=true \
-  --set ingress.api.tls.secretName="" \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/scheme"=internet-facing \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/target-type"=ip \
   --set-json 'ingress.api.annotations.alb\.ingress\.kubernetes\.io/listen-ports=[{"HTTPS":443}]' \
@@ -306,9 +305,7 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC
 ```
 
-> **Two flags explained:**
-> - `--set-json` for `listen-ports` — the value is a JSON array (`[{"HTTPS":443}]`), which `--set` cannot express. It is the only flag in this command that uses `--set-json`.
-> - `tls.secretName=""` is intentionally empty — TLS is terminated at the ALB using the ACM certificate; no Kubernetes TLS secret is created or needed.
+> **Note:** `--set-json` for `listen-ports` — the value is a JSON array (`[{"HTTPS":443}]`), which `--set` cannot express. It is the only flag in this command that uses `--set-json`. `tls.secretName` defaults to empty in `values-aws-s3.yaml` — TLS is terminated at the ALB via the ACM certificate; no Kubernetes TLS secret is needed.
 
 After `helm install` completes, ALB provisioning and DNS propagation take 1-3 minutes. The ingress `ADDRESS` field will be empty until the ALB is ready — this is normal.
 

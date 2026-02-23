@@ -1287,7 +1287,7 @@ Resources:
   # ---------------------------------------------------------------------------
   EfsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    DependsOn: EksCluster
+    DependsOn: EksCluster  # required to resolve EksCluster.ClusterSecurityGroupId
     Properties:
       GroupDescription: !Sub 'Allow NFS traffic to Platforma EFS - ${ClusterName}'
       VpcId: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
@@ -1454,14 +1454,6 @@ Outputs:
       IRSA role ARN for External DNS.
       Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
     Value: !GetAtt ExternalDNSRole.Arn
-
-  EbsCsiDriverRoleArn:
-    Description: IRSA role ARN for EBS CSI driver (auto-configured via addon)
-    Value: !GetAtt EbsCsiDriverRole.Arn
-
-  EfsCsiDriverRoleArn:
-    Description: IRSA role ARN for EFS CSI driver (auto-configured via addon)
-    Value: !GetAtt EfsCsiDriverRole.Arn
 
   PlatformaNamespace:
     Description: >

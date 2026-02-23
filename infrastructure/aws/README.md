@@ -234,7 +234,7 @@ The namespace must exist before `helm install` so the license secret is in place
 kubectl create namespace platforma
 kubectl create secret generic platforma-license \
   -n platforma \
-  --from-literal=MI_LICENSE="your-license-key"
+  --from-literal=MI_LICENSE='your-license-key'
 ```
 
 Replace `your-license-key` with your Platforma license key. The secret name (`platforma-license`) and key (`MI_LICENSE`) are required by the chart — do not change them. If you changed the `Platforma namespace` parameter in Step 1, replace `platforma` here with that value.
@@ -355,6 +355,7 @@ For quick testing before DNS propagates, use port-forwarding. The Desktop App su
 
 ```bash
 kubectl port-forward svc/platforma -n platforma 6345:6345
+# Keep this running in a separate terminal — closing it drops the connection
 # In Desktop App, connect to: localhost:6345
 # Port 6345 is Platforma's gRPC port
 # If the service name is different: kubectl get svc -n platforma
@@ -462,7 +463,7 @@ The most common cause is ACM certificate validation failure. The stack creates a
 ```bash
 # Check certificate status in the AWS Console → Certificate Manager → your domain
 # Or via CLI:
-aws acm list-certificates --query "CertificateSummaryList[?DomainName=='<your-domain>']"
+aws acm list-certificates --query "CertificateSummaryList[?DomainName=='<your-domain>']"   # replace <your-domain> with your actual domain
 aws acm describe-certificate --certificate-arn <arn> \
   --query "Certificate.DomainValidationOptions"
 ```
@@ -550,12 +551,22 @@ EFS_ID=<EfsFileSystemId from outputs>
 # 1. Uninstall Helm releases (removes ALBs, DNS records, K8s resources)
 # platforma uninstall also removes the sub-charts: CA, ALB controller, External DNS
 helm uninstall platforma -n platforma
+
+# Wait for the ALB to be deprovisioned before proceeding — the ALB Controller
+# deletes it asynchronously. If you proceed while it still exists, the VPC
+# deletion in step 3 will block or the ALB will become orphaned.
+# Run these until the ingress ADDRESS is empty and no LoadBalancer services remain:
+kubectl get ingress -n platforma
+kubectl get svc --all-namespaces -o wide | grep LoadBalancer
+# Also confirm in the AWS Console: EC2 → Load Balancers
+
 helm uninstall kueue -n kueue-system
 
 # Delete all AppWrapper CRs before removing the controller — the CRD finalizer
 # blocks controller deletion until no AppWrapper objects remain.
 kubectl delete appwrappers --all -A 2>/dev/null || true
-kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
+kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml 2>/dev/null || \
+  kubectl delete namespace appwrapper-system --ignore-not-found
 # CRDs are not removed by the above command; delete them explicitly if needed:
 kubectl get crd | grep appwrapper | awk '{print $1}' | xargs kubectl delete crd 2>/dev/null || true
 
@@ -576,6 +587,7 @@ aws s3 rm s3://$S3_BUCKET --recursive
 aws s3 rb s3://$S3_BUCKET
 aws efs delete-file-system --file-system-id $EFS_ID
 
-# 5. Delete orphaned CloudWatch log group
-aws logs delete-log-group --log-group-name /aws/eks/$CLUSTER_NAME/cluster
+# 5. Delete orphaned CloudWatch log groups
+aws logs delete-log-group --log-group-name /aws/eks/$CLUSTER_NAME/cluster 2>/dev/null || true
+aws logs delete-log-group --log-group-name /aws/lambda/${CLUSTER_NAME}-asg-tagger 2>/dev/null || true
 ```

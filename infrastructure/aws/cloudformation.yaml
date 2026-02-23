@@ -1328,7 +1328,7 @@ Outputs:
   EfsFileSystemId:
     Description: >
       EFS filesystem ID for Platforma workspace.
-      Use: --set storage.workspace.efs.fileSystemId=<value>
+      Use: --set storageClasses.efs.fileSystemId=<value>
     Value: !Ref EfsFileSystem
 
   S3BucketName:
@@ -1393,13 +1393,9 @@ Outputs:
     Description: >
       After stack creation, complete these steps (see README.md):
       1. Configure kubectl (Step 2)
-      2. Create gp3 and EFS StorageClasses (Step 3)
-      3. Install Cluster Autoscaler (Step 4)
-      4. Install ALB Controller (Step 5)
-      5. Install External DNS (Step 6)
-      6. Create platforma namespace + SA, annotate with PlatformaRoleArn (Step 7)
-      7. Install Kueue and AppWrapper (Step 8)
-      8. Create license secret (Step 9)
-      9. Install Platforma (Step 10)
-      10. Connect from Desktop App (Step 11)
+      2. Install Kueue and AppWrapper (Step 3)
+      3. Create license secret (Step 4)
+      4. helm install platforma — installs Platforma + Cluster Autoscaler +
+         ALB Controller + External DNS + StorageClasses in one command (Step 5)
+      5. Connect from Desktop App (Step 6)
     Value: 'See infrastructure/aws/README.md for detailed post-deploy instructions'

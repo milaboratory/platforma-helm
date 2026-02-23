@@ -39,6 +39,7 @@ The deployment has three phases:
 
 ## Prerequisites
 
+- **This repository** — `git clone https://github.com/milaboratory/platforma-helm.git`; Steps 3 and 5 read files from `infrastructure/aws/`
 - **AWS account** with permissions to create EKS, EFS, S3, IAM roles, ACM certificates (see [permissions.md](permissions.md))
 - **Route53 hosted zone** with a registered domain (e.g. `example.com`) — the Desktop App connects only over TLS, so a domain and certificate are mandatory
 - **Platforma license key**
@@ -126,7 +127,7 @@ If you don't have a domain yet, see [How to register a domain in AWS](domain-gui
 
 ### Create the stack
 
-Click **Create Stack**. The stack takes **~15-20 minutes**.
+Click **Create Stack**. The stack takes **~15-20 minutes**. Note the stack name you entered — you'll need it in the Cleanup section.
 
 Once complete, go to the **Outputs** tab. The outputs below are used in the install commands. The stack also creates infrastructure outputs (OIDC provider, VPC, node group role, CSI driver roles) — the install commands don't reference them directly.
 
@@ -234,13 +235,19 @@ kubectl create secret generic platforma-license \
   --from-literal=MI_LICENSE="your-license-key"
 ```
 
+Replace `your-license-key` with your Platforma license key. The secret name (`platforma-license`) and key (`MI_LICENSE`) are required by the chart — do not change them.
+
 ---
 
 ## Step 5: Install Platforma
 
 One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. Service accounts are created automatically. The namespace must already exist — create it in Step 4 before running this command.
 
-If you changed directories since Step 3, switch back: `cd infrastructure/aws`.
+Switch to the `infrastructure/aws/` directory if not already there:
+
+```bash
+cd infrastructure/aws
+```
 
 Fill in values from CloudFormation Outputs (nine variables) plus two you supply yourself (`DOMAIN` and `DOMAIN_FILTER`).
 
@@ -298,6 +305,10 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=$CERTIFICATE_ARN \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC
 ```
+
+> **Two flags explained:**
+> - `--set-json` for `listen-ports` — the value is a JSON array (`[{"HTTPS":443}]`), which `--set` cannot express. It is the only flag in this command that uses `--set-json`.
+> - `tls.secretName=""` is intentionally empty — TLS is terminated at the ALB using the ACM certificate; no Kubernetes TLS secret is created or needed.
 
 After `helm install` completes, ALB provisioning and DNS propagation take 1-3 minutes. The ingress `ADDRESS` field will be empty until the ALB is ready — this is normal.
 
@@ -516,6 +527,7 @@ kubectl logs -n appwrapper-system -l control-plane=controller-manager --tail=50
 
 ```bash
 STACK_NAME=<your CloudFormation stack name>   # the name you gave the stack in Step 1
+# If you don't remember it: aws cloudformation list-stacks --query "StackSummaries[?StackStatus!='DELETE_COMPLETE'].StackName" --output text
 CLUSTER_NAME=<ClusterName from outputs>
 S3_BUCKET=<S3BucketName from outputs>
 EFS_ID=<EfsFileSystemId from outputs>

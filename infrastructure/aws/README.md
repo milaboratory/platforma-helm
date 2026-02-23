@@ -79,8 +79,8 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | VPC ID | *(empty = create new)* | Leave empty to create a new VPC, or provide an existing VPC ID |
-| Private subnet IDs | *(empty)* | 3 private subnets (one per AZ) — required if using existing VPC |
-| Public subnet IDs | *(empty)* | 3 public subnets — required for ALB when using existing VPC |
+| Private subnet IDs | *(leave as-is)* | 3 private subnets (one per AZ) — required if using existing VPC. The field shows `,,` by default — **do not clear it**; this is a CloudFormation technical workaround required when creating a new VPC. |
+| Public subnet IDs | *(leave as-is)* | 3 public subnets — required for ALB when using existing VPC. Same `,,` workaround applies. |
 | VPC CIDR | `10.0.0.0/16` | CIDR for the new VPC (ignored with existing VPC) |
 
 ### Node groups
@@ -128,7 +128,7 @@ If you don't have a domain yet, see [How to register a domain in AWS](domain-gui
 
 Click **Create Stack**. The stack takes **~15-20 minutes**.
 
-Once complete, go to the **Outputs** tab. You'll need these values in subsequent steps.
+Once complete, go to the **Outputs** tab. The outputs below are used in the install commands. The stack also creates infrastructure outputs (OIDC provider, VPC, node group role, CSI driver roles) — the install commands don't reference them directly.
 
 ![CloudFormation outputs — role ARNs and cluster info](images/cf-outputs-1.png)
 ![CloudFormation outputs — EFS, DNS, OIDC, namespace](images/cf-outputs-2.png)
@@ -223,6 +223,8 @@ kubectl get pods -n appwrapper-system
 
 ## Step 4: Create license secret
 
+The namespace must be created before `helm install` so the license secret is in place when Platforma starts. `helm install` creates the namespace if it doesn't exist, but the secret must already be there.
+
 ```bash
 kubectl create namespace platforma
 kubectl create secret generic platforma-license \
@@ -234,7 +236,7 @@ kubectl create secret generic platforma-license \
 
 ## Step 5: Install Platforma
 
-One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). The namespace and service accounts are created automatically.
+One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. The namespace and service accounts are created automatically.
 
 Run from the `infrastructure/aws/` directory where `values-aws-s3.yaml` is located.
 
@@ -297,20 +299,20 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC
 ```
 
-Verify:
+After `helm install` completes, ALB provisioning and DNS propagation take 1-3 minutes. The ingress `ADDRESS` field will be empty until the ALB is ready — this is normal.
 
 ```bash
 kubectl get pods -n platforma
 kubectl get pvc -n platforma
-kubectl get ingress -n platforma
+kubectl get ingress -n platforma      # ADDRESS is empty while ALB provisions
 kubectl get clusterqueues
 kubectl get localqueues -n platforma
 ```
 
-Wait for ALB provisioning and DNS propagation (1-3 minutes):
+Once pods are running, check ALB and DNS:
 
 ```bash
-# Check ALB status
+# Check ALB status (ADDRESS appears after ~1-3 min)
 kubectl describe ingress -n platforma
 
 # Check DNS resolution

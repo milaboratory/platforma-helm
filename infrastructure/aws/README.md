@@ -43,7 +43,7 @@ The deployment has three phases:
 - **AWS account** with permissions to create EKS, EFS, S3, IAM roles, ACM certificates (see [permissions.md](permissions.md))
 - **Route53 hosted zone** with a registered domain (e.g. `example.com`) — the Desktop App connects only over TLS, so a domain and certificate are mandatory
 - **Platforma license key**
-- **CLI tools:** AWS CLI, kubectl v1.28+, Helm v3.12+
+- **CLI tools:** AWS CLI, kubectl v1.28+, Helm v3.12+ — CLI steps assume a Unix shell (bash or zsh); Windows users should use WSL or [AWS CloudShell](https://console.aws.amazon.com/cloudshell)
 - **Platforma Desktop App** — download from [platforma.bio](https://platforma.bio) before starting
 
 ## Files in this directory
@@ -55,6 +55,7 @@ The deployment has three phases:
 | `kueue-values.yaml` | Kueue Helm values with AppWrapper enabled |
 | `values-aws-s3.yaml` | Platforma Helm values for AWS (S3 primary storage, recommended) |
 | `advanced-installation.md` | Manual CLI setup guide (without CloudFormation) |
+| `eksctl-cluster.yaml` | eksctl cluster config for advanced/manual EKS provisioning (see advanced-installation.md) |
 | `domain-guide.md` | How to register a domain in AWS and set up Route53 |
 
 ---
@@ -73,7 +74,7 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 |-----------|---------|-------------|
 | Cluster name | `platforma-cluster` | EKS cluster name |
 | Kubernetes version | `1.31` | EKS version |
-| Platforma namespace | `platforma` | K8s namespace (created later, used in IRSA trust) |
+| Platforma namespace | `platforma` | K8s namespace (created later, used in IRSA trust). All CLI commands in this guide use the default `platforma` — if you change this, update every `kubectl` and `helm install` command accordingly. |
 
 ### Networking
 
@@ -192,7 +193,7 @@ Kueue manages job queuing and resource allocation. AppWrapper provides single-re
 `kueue-values.yaml` is included in the repository and pre-configured for Platforma — no edits needed.
 
 ```bash
-cd platforma-helm/infrastructure/aws   # from wherever you ran git clone; steps 3 and 5 read files from here
+cd platforma-helm/infrastructure/aws   # relative to where you ran git clone; use an absolute path if unsure, e.g. ~/platforma-helm/infrastructure/aws
 helm install kueue oci://registry.k8s.io/kueue/charts/kueue \
   --version 0.16.1 \
   -n kueue-system --create-namespace \
@@ -246,7 +247,7 @@ One `helm install` deploys Platforma and all infrastructure components: Cluster 
 Switch to the `infrastructure/aws/` directory if not already there:
 
 ```bash
-cd platforma-helm/infrastructure/aws   # from wherever you ran git clone
+cd platforma-helm/infrastructure/aws   # relative to where you ran git clone; use an absolute path if unsure, e.g. ~/platforma-helm/infrastructure/aws
 ```
 
 Fill in values from CloudFormation Outputs (nine variables) plus two you supply yourself (`DOMAIN` and `DOMAIN_FILTER`).
@@ -258,7 +259,7 @@ Fill in values from CloudFormation Outputs (nine variables) plus two you supply 
 ```bash
 # From CloudFormation Outputs tab:
 CLUSTER_NAME=<ClusterName>   # must match the name used in the Step 2 kubeconfig command
-REGION=<Region>   # same value as set in Step 2
+REGION=<Region>   # from CloudFormation Outputs
 EFS_ID=<EfsFileSystemId>
 S3_BUCKET=<S3BucketName>
 CERTIFICATE_ARN=<CertificateArn>
@@ -342,6 +343,7 @@ For quick testing before DNS propagates, use port-forwarding. The Desktop App su
 kubectl port-forward svc/platforma -n platforma 6345:6345
 # In Desktop App, connect to: localhost:6345
 # Port 6345 is Platforma's gRPC port
+# If the service name is different: kubectl get svc -n platforma
 ```
 
 ---
@@ -520,7 +522,7 @@ kubectl logs -n appwrapper-system -l control-plane=controller-manager --tail=50
 
 ## Cleanup
 
-> **You must uninstall all Helm releases before deleting the CloudFormation stack.** Kubernetes-created resources (ALB load balancers, DNS records, EFS mounts) block EKS cluster deletion. If you delete the stack first, these resources become orphaned and require manual cleanup.
+> **You must uninstall all Helm releases before deleting the CloudFormation stack.** Kubernetes-created resources (ALB load balancers, DNS records) block EKS cluster deletion. If you delete the stack first, these resources become orphaned and require manual cleanup. EFS mount targets are managed by CloudFormation and are removed automatically when the stack deletes the subnets — the EFS filesystem itself is retained (step 4 below).
 
 ```bash
 STACK_NAME=<your CloudFormation stack name>   # the name you gave the stack in Step 1

@@ -74,7 +74,7 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 |-----------|---------|-------------|
 | Cluster name | `platforma-cluster` | EKS cluster name |
 | Kubernetes version | `1.31` | EKS version |
-| Platforma namespace | `platforma` | K8s namespace (created later, used in IRSA trust). All CLI commands in this guide use the default `platforma` — if you change this, update every `kubectl` and `helm install` command accordingly. |
+| Platforma namespace | `platforma` | K8s namespace (created later, used in IRSA trust). All CLI commands in this guide use the default `platforma`. If you change this parameter, use the same value in every `kubectl -n` and `helm install -n` command — the IRSA trust policies for all four service accounts are bound to this namespace, so any mismatch silently breaks AWS API access. |
 
 ### Networking
 
@@ -172,8 +172,9 @@ export AWS_PROFILE=<your-profile>
 Set `$REGION` from the CloudFormation Outputs before running the kubeconfig command:
 
 ```bash
-REGION=<Region>   # from CloudFormation Outputs — also set in Step 5 variable block
-aws eks update-kubeconfig --name <ClusterName> --region $REGION
+CLUSTER_NAME=<ClusterName>   # from CloudFormation Outputs
+REGION=<Region>               # from CloudFormation Outputs — also set in Step 5 variable block
+aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
 ```
 
 Verify:
@@ -306,7 +307,7 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC
 ```
 
-> **Note:** `--set-json` for `listen-ports` — the value is a JSON array (`[{"HTTPS":443}]`), which `--set` cannot express. It is the only flag in this command that uses `--set-json`. `tls.secretName` defaults to empty in `values-aws-s3.yaml` — TLS is terminated at the ALB via the ACM certificate; no Kubernetes TLS secret is needed.
+> **Note:** `--set-json` for `listen-ports` — the value is a JSON array (`[{"HTTPS":443}]`), which `--set` cannot express. It is the only flag in this command that uses `--set-json`. `tls.enabled=true` tells the chart to emit an HTTPS-only Ingress rule that the ALB controller interprets as a TLS listener; the ACM certificate annotation supplies the actual certificate. `tls.secretName` defaults to empty in `values-aws-s3.yaml` — TLS is terminated at the ALB; no Kubernetes TLS secret is used.
 
 After `helm install` completes, ALB provisioning and DNS propagation take 1-3 minutes. The ingress `ADDRESS` field will be empty until the ALB is ready — this is normal.
 
@@ -540,6 +541,8 @@ helm uninstall kueue -n kueue-system
 # blocks controller deletion until no AppWrapper objects remain.
 kubectl delete appwrappers --all -A 2>/dev/null || true
 kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
+# CRDs are not removed by the above command; delete them explicitly if needed:
+kubectl get crd | grep appwrapper | awk '{print $1}' | xargs kubectl delete crd 2>/dev/null || true
 
 # 2. Verify no load balancers remain in the VPC (blocks VPC deletion)
 kubectl get svc --all-namespaces -o wide | grep LoadBalancer

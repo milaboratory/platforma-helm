@@ -245,6 +245,15 @@ Replace `your-license-key` with your Platforma license key. The secret name (`pl
 
 One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. Service accounts are created automatically. The namespace must already exist — create it in Step 4 before running this command.
 
+Before installing, confirm the EBS and EFS CSI drivers are running (installed by CloudFormation as EKS addons):
+
+```bash
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-efs-csi-driver
+```
+
+Both should show at least one Running pod. If they're still starting up, wait and retry — they may take a minute after the cluster becomes ready.
+
 Switch to the `infrastructure/aws/` directory if not already there:
 
 ```bash
@@ -313,6 +322,8 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
 
 After `helm install` completes, ALB provisioning and DNS propagation take 1-3 minutes. The ingress `ADDRESS` field will be empty until the ALB is ready — this is normal.
 
+> **Service account names:** The values file pins each service account name explicitly (`cluster-autoscaler`, `aws-load-balancer-controller`, `external-dns`, `platforma`) to match the IRSA trust policies baked into the CloudFormation roles. Verify after install: `kubectl get sa -n platforma` — if any name differs from what CloudFormation expects, IRSA authentication will silently fail.
+
 ```bash
 kubectl get pods -n platforma
 kubectl get pvc -n platforma
@@ -340,7 +351,7 @@ nslookup $DOMAIN
 3. **Enter** your endpoint: `$DOMAIN:443` (the domain you set in Step 5)
 4. The ACM certificate secures the connection via TLS
 
-For quick testing before DNS propagates, use port-forwarding. The Desktop App supports non-TLS connections to `localhost` — no certificate needed for this mode:
+For quick testing before DNS propagates, use port-forwarding. The Desktop App supports non-TLS connections to `localhost` — no certificate needed for this mode. Wait for the Platforma pod to reach `Running` state before forwarding (`kubectl get pods -n platforma`):
 
 ```bash
 kubectl port-forward svc/platforma -n platforma 6345:6345
@@ -526,6 +537,8 @@ kubectl logs -n appwrapper-system -l control-plane=controller-manager --tail=50
 ## Cleanup
 
 > **You must uninstall all Helm releases before deleting the CloudFormation stack.** Kubernetes-created resources (ALB load balancers, DNS records) block EKS cluster deletion. If you delete the stack first, these resources become orphaned and require manual cleanup. EFS mount targets are managed by CloudFormation and are removed automatically when the stack deletes the subnets — the EFS filesystem itself is retained (step 4 below).
+
+Set the variables below before running the cleanup commands — re-set them if you're in a new terminal session.
 
 ```bash
 STACK_NAME=<your CloudFormation stack name>   # the name you gave the stack in Step 1

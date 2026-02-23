@@ -607,6 +607,31 @@
       },
       "additionalProperties": false
     },
+    "storageClasses": {
+      "type": "object",
+      "properties": {
+        "gp3": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean" },
+            "name": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "efs": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean" },
+            "name": { "type": "string" },
+            "fileSystemId": { "type": "string" },
+            "uid": { "type": "string" },
+            "gid": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "jobs": {
       "type": "object",
       "properties": {

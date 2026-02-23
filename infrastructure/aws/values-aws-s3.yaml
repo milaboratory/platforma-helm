@@ -12,7 +12,7 @@ storage:
     pvc:
       enabled: true
       storageClass: efs-platforma  # must match storageClasses.efs.name below
-      size: 100Gi
+      size: 100Gi  # EFS is elastic — this value is required by K8s but does not cap actual storage
 
   main:
     type: s3

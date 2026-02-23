@@ -1392,6 +1392,6 @@ Outputs:
   PostDeploySteps:
     Description: See infrastructure/aws/README.md for full instructions
     Value: >-
-      Next steps: (2) kubectl update-kubeconfig, (3) helm install kueue,
+      Next steps (step 1 = this stack): (2) kubectl update-kubeconfig, (3) helm install kueue,
       (4) create license secret, (5) helm install platforma [CA + ALB + ExternalDNS + StorageClasses],
       (6) connect Desktop App. See infrastructure/aws/README.md.

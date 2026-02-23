@@ -31,6 +31,7 @@ Metadata:
           - SystemNodeCount
           - UiNodeInstanceType
           - UiNodeMaxCount
+          - UiNodeAlwaysOn
       - Label:
           default: 'Node groups — batch'
         Parameters:
@@ -72,6 +73,8 @@ Metadata:
         default: UI instance type
       UiNodeMaxCount:
         default: UI max node count
+      UiNodeAlwaysOn:
+        default: 'UI always-on node (keeps 1 running, ~$200/month)'
       BatchMediumInstanceType:
         default: 'Batch medium (8 vCPU / 32 GiB)'
       BatchLargeInstanceType:
@@ -181,6 +184,15 @@ Parameters:
     MaxValue: 50
     Description: UI node group maximum autoscaling count
 
+  UiNodeAlwaysOn:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Keep 1 UI node always running for instant task responsiveness.
+      When false, UI nodes scale from 0 — first task waits ~2-3 minutes for node startup.
+      When true, one t3.xlarge runs permanently, adding ~$200/month.
+
   BatchMediumInstanceType:
     Type: String
     Default: m5.2xlarge
@@ -259,6 +271,7 @@ Conditions:
   CreateNewVpc: !Equals [!Ref VpcId, '']
   AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
   HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
+  UiAlwaysOn: !Equals [!Ref UiNodeAlwaysOn, 'true']
 
 # =============================================================================
 # Resources
@@ -1023,8 +1036,8 @@ Resources:
       InstanceTypes:
         - !Ref UiNodeInstanceType
       ScalingConfig:
-        DesiredSize: 0
-        MinSize: 0
+        DesiredSize: !If [UiAlwaysOn, 1, 0]
+        MinSize: !If [UiAlwaysOn, 1, 0]
         MaxSize: !Ref UiNodeMaxCount
       Subnets: !If
         - CreateNewVpc

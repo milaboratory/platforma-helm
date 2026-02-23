@@ -12,18 +12,17 @@ graph TD
     dns["Route53 + ALB + ACM TLS"]
 
     desktop -->|"gRPC over TLS"| dns
+    desktop -.->|"data access"| s3
 
     subgraph EKS["EKS Cluster"]
         dns --> platforma["Platforma Server"]
         platforma --> kueue["Kueue + AppWrapper"]
         kueue --> ui["UI pool: t3.xlarge, 0-4 nodes"]
         kueue --> batch["Batch pool: m5.2xl / m5.4xl / m5.8xl, 0-16 each"]
-        ca["Cluster Autoscaler"] -.->|scales| ui
-        ca -.->|scales| batch
+        platforma --- ebs[("EBS gp3: database")]
     end
 
     platforma --- s3[("S3: primary storage")]
-    platforma --- ebs[("EBS gp3: database")]
     platforma --- efs[("EFS: shared workspace")]
     batch --- efs
 ```
@@ -32,38 +31,11 @@ graph TD
 
 The deployment has three phases:
 
-```mermaid
-graph LR
-    subgraph phase1["Phase 1: AWS Console"]
-        direction TB
-        cf["Deploy CloudFormation<br/>stack"]
-        wait["Wait 15-20 min"]
-        outputs["Note stack outputs:<br/>EFS ID, S3 bucket,<br/>IRSA role ARNs,<br/>Certificate ARN"]
-        cf --> wait --> outputs
-    end
+**Phase 1 — AWS Console:** Deploy the CloudFormation stack. It creates the EKS cluster, node groups, EFS filesystem, S3 bucket, and all IAM roles. Takes ~15-20 minutes.
 
-    subgraph phase2["Phase 2: CLI"]
-        direction TB
-        kubectl["Configure kubectl"]
-        sc["Create StorageClasses<br/>gp3 + EFS"]
-        helm["Install via Helm:<br/>Cluster Autoscaler<br/>ALB Controller<br/>External DNS<br/>Kueue + AppWrapper<br/>Platforma"]
-        kubectl --> sc --> helm
-    end
+**Phase 2 — CLI:** Configure kubectl, create StorageClasses, and install Kubernetes components via Helm: Cluster Autoscaler, ALB Controller, External DNS, Kueue, and Platforma.
 
-    subgraph phase3["Phase 3: Desktop App"]
-        direction TB
-        download["Download Platforma<br/>Desktop App"]
-        connect["Connect to<br/>platforma.example.com"]
-        run["Run analyses"]
-        download --> connect --> run
-    end
-
-    phase1 --> phase2 --> phase3
-```
-
-1. **AWS Console** — deploy the CloudFormation stack, which creates the EKS cluster, node groups, EFS, S3 bucket, and all IAM roles (~15-20 min)
-2. **CLI** — install Kubernetes components that CloudFormation cannot manage: StorageClasses, Cluster Autoscaler, ALB Controller, External DNS, Kueue, and Platforma itself
-3. **Desktop App** — download the Platforma Desktop App, connect to your cluster, and start running analyses
+**Phase 3 — Desktop App:** Download the Platforma Desktop App, connect to your cluster at `platforma.example.com`, and start running analyses.
 
 ## Prerequisites
 
@@ -82,6 +54,7 @@ graph LR
 | `kueue-values.yaml` | Kueue Helm values with AppWrapper enabled |
 | `values-aws-s3.yaml` | Platforma Helm values for AWS (S3 primary storage, recommended) |
 | `advanced-installation.md` | Manual CLI setup guide (without CloudFormation) |
+| `domain-guide.md` | How to register a domain in AWS and set up Route53 |
 
 ---
 
@@ -120,10 +93,13 @@ Default values work for most deployments. Adjust batch instance types and max co
 | System node count | `2` | Fixed count |
 | UI instance type | `t3.xlarge` | Interactive tasks |
 | UI max nodes | `4` | Autoscales from 0 |
+| UI always-on node | `false` | Keep 1 UI node running at all times (~$200/month, eliminates cold start) |
 | Batch medium | `m5.2xlarge` | 8 vCPU / 32 GiB |
 | Batch large | `m5.4xlarge` | 16 vCPU / 64 GiB |
 | Batch xlarge | `m5.8xlarge` | 32 vCPU / 128 GiB |
 | Batch max per group | `16` | Each batch tier scales 0 to this |
+
+**UI node cold start:** When all UI nodes are at zero, the first task waits ~2-3 minutes for a t3.xlarge to launch and join the cluster. Setting **UI always-on node** to `true` keeps one node running permanently — tasks start instantly, but adds ~$200/month to your AWS bill.
 
 ### Storage
 
@@ -140,7 +116,11 @@ Default values work for most deployments. Adjust batch instance types and max co
 | **Route53 hosted zone ID** | Your hosted zone ID (e.g. `Z0123456789ABCDEF`) |
 | **Domain name** | Endpoint for Platforma (e.g. `platforma.example.com`) |
 
-These are **required**. The stack creates an ACM certificate with automatic DNS validation via Route53. The Desktop App requires TLS — it connects only with a valid domain and certificate.
+These are **required**. The Desktop App connects only over TLS and requires a real domain — it cannot use IP addresses or self-signed certificates.
+
+**What this means:** You need a domain name you own (e.g. `platforma.example.com`) and a Route53 hosted zone for it. A hosted zone is Route53's way of managing DNS records for a domain. The stack requests an ACM certificate for your domain and validates it automatically by writing a DNS record to your hosted zone — no manual certificate steps.
+
+If you don't have a domain yet, see [How to register a domain in AWS](domain-guide.md).
 
 ![CloudFormation parameters — storage and DNS/TLS](images/cf-parameters.png)
 
@@ -169,6 +149,25 @@ Once complete, go to the **Outputs** tab. You'll need these values in subsequent
 ---
 
 ## Step 2: Configure kubectl
+
+First, authenticate your AWS CLI session. If you're not sure whether you're logged in, run:
+
+```bash
+aws sts get-caller-identity
+```
+
+If this fails, log in:
+
+```bash
+# Standard credentials — run `aws configure` once to set access key + secret key
+aws configure
+
+# SSO / IAM Identity Center
+aws sso login --profile <your-profile>
+export AWS_PROFILE=<your-profile>
+```
+
+Then update your kubeconfig:
 
 ```bash
 aws eks update-kubeconfig --name <ClusterName> --region <Region>

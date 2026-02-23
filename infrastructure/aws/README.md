@@ -170,8 +170,10 @@ export AWS_PROFILE=<your-profile>
 Then update your kubeconfig:
 
 ```bash
-aws eks update-kubeconfig --name <ClusterName> --region <Region>
+aws eks update-kubeconfig --name <ClusterName> --region $REGION
 ```
+
+Replace `<ClusterName>` with the `ClusterName` output from Step 1. `$REGION` is the same region variable you'll use in Step 5 — set it now if you want to reuse it in later commands.
 
 Verify:
 
@@ -179,7 +181,7 @@ Verify:
 kubectl get nodes
 ```
 
-You should see 2 system nodes.
+You should see 2 system nodes. If the stack just completed, nodes may still be initializing — wait ~1 minute and retry if they show `NotReady`.
 
 ---
 
@@ -238,7 +240,7 @@ kubectl create secret generic platforma-license \
 
 One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. Service accounts are created automatically. The namespace must already exist — create it in Step 4 before running this command.
 
-Run from the `infrastructure/aws/` directory where `values-aws-s3.yaml` is located.
+Run from the `infrastructure/aws/` directory. `values-aws-s3.yaml` is included in the repository at that path — no separate download needed.
 
 Fill in values from CloudFormation Outputs (nine variables) plus two you supply yourself:
 
@@ -337,6 +339,7 @@ For quick testing before DNS propagates, use port-forwarding. The Desktop App su
 ```bash
 kubectl port-forward svc/platforma -n platforma 6345:6345
 # In Desktop App, connect to: localhost:6345
+# Port 6345 is Platforma's gRPC port
 ```
 
 ---

@@ -707,6 +707,7 @@ Resources:
             }
           - OidcProviderArn: !Ref OidcProvider
             OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            PlatformaNamespace: !Ref PlatformaNamespace
       Policies:
         - PolicyName: cluster-autoscaler
           PolicyDocument:
@@ -951,6 +952,7 @@ Resources:
             }
           - OidcProviderArn: !Ref OidcProvider
             OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            PlatformaNamespace: !Ref PlatformaNamespace
       ManagedPolicyArns:
         - !Ref ALBControllerPolicy
 
@@ -997,6 +999,7 @@ Resources:
             }
           - OidcProviderArn: !Ref OidcProvider
             OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            PlatformaNamespace: !Ref PlatformaNamespace
       ManagedPolicyArns:
         - !Ref ExternalDNSPolicy
 

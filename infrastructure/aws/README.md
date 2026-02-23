@@ -237,7 +237,7 @@ kubectl create secret generic platforma-license \
   --from-literal=MI_LICENSE="your-license-key"
 ```
 
-Replace `your-license-key` with your Platforma license key. The secret name (`platforma-license`) and key (`MI_LICENSE`) are required by the chart — do not change them.
+Replace `your-license-key` with your Platforma license key. The secret name (`platforma-license`) and key (`MI_LICENSE`) are required by the chart — do not change them. If you changed the `Platforma namespace` parameter in Step 1, replace `platforma` here with that value.
 
 ---
 
@@ -256,6 +256,8 @@ Fill in values from CloudFormation Outputs (nine variables) plus two you supply 
 > **`DOMAIN_FILTER` must be set correctly.** It is the domain of your Route53 hosted zone — the zone External DNS writes DNS records into. For most users this is the registered domain root (e.g. `example.com`). If you created a dedicated hosted zone for a subdomain like `platforma.example.com`, use `platforma.example.com` instead. **Using the wrong value causes External DNS to silently skip record creation** — the cluster will appear healthy but the domain won't resolve.
 
 > `CLUSTER_NAME` doubles as the External DNS `txtOwnerId` — a unique string written into TXT records so External DNS tracks which records it owns. If multiple clusters share a hosted zone, each must have a distinct cluster name.
+
+Set all variables below before running `helm install`. Shell variables don't persist across sessions — if you've opened a new terminal since Step 2, re-set everything here.
 
 ```bash
 # From CloudFormation Outputs tab:
@@ -302,7 +304,7 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.api.tls.enabled=true \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/scheme"=internet-facing \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/target-type"=ip \
-  --set-json 'ingress.api.annotations.alb\.ingress\.kubernetes\.io/listen-ports=[{"HTTPS":443}]' \
+  --set-json 'ingress.api.annotations."alb\.ingress\.kubernetes\.io/listen-ports"=[{"HTTPS":443}]' \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=$CERTIFICATE_ARN \
   --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC
 ```

@@ -221,9 +221,9 @@ kubectl get pods -n appwrapper-system
 
 ---
 
-## Step 4: Create license secret
+## Step 4: Create namespace and license secret
 
-The namespace must be created before `helm install` so the license secret is in place when Platforma starts. `helm install` creates the namespace if it doesn't exist, but the secret must already be there.
+The namespace must exist before `helm install` so the license secret is in place when Platforma starts.
 
 ```bash
 kubectl create namespace platforma
@@ -236,7 +236,7 @@ kubectl create secret generic platforma-license \
 
 ## Step 5: Install Platforma
 
-One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. Service accounts are created automatically; the namespace must already exist (created in Step 4).
+One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. Service accounts are created automatically. The namespace must already exist — create it in Step 4 before running this command.
 
 Run from the `infrastructure/aws/` directory where `values-aws-s3.yaml` is located.
 
@@ -270,7 +270,7 @@ DOMAIN_FILTER=<your Route53 hosted zone domain, e.g. example.com>
 
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version 3.0.0 \
-  -n platforma --create-namespace \
+  -n platforma \
   -f values-aws-s3.yaml \
   \
   --set storage.main.s3.bucket=$S3_BUCKET \
@@ -449,6 +449,24 @@ aws acm describe-certificate --certificate-arn <arn> \
 If the certificate shows `PENDING_VALIDATION` after 5+ minutes, verify:
 1. The **Route53 hosted zone ID** parameter matches the actual zone that controls your domain's DNS
 2. Your domain's NS records are delegated to Route53 (check with `nslookup -type=NS <domain>`)
+
+### `kubectl get nodes` returns no nodes or NotReady
+
+Most likely cause: wrong region in the kubeconfig update command, or IAM permissions insufficient to describe the cluster.
+
+```bash
+# Verify you're pointing at the right cluster and region
+kubectl config current-context
+aws eks describe-cluster --name <ClusterName> --region <Region> --query "cluster.status"
+
+# Check node group health in the AWS Console → EKS → Clusters → <ClusterName> → Compute
+# Or via CLI:
+aws eks list-nodegroups --cluster-name <ClusterName> --region <Region>
+aws eks describe-nodegroup --cluster-name <ClusterName> --nodegroup-name <name> \
+  --region <Region> --query "nodegroup.health"
+```
+
+If the node group shows `CREATE_FAILED`, check the node group IAM role and the EC2 launch template in CloudFormation Resources.
 
 ### Pods stuck in Pending
 

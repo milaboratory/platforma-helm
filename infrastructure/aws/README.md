@@ -130,7 +130,7 @@ If you don't have a domain yet, see [How to register a domain in AWS](domain-gui
 
 Click **Create Stack**. The stack takes **~15-20 minutes**. Note the stack name you entered — you'll need it in the Cleanup section.
 
-Once complete, go to the **Outputs** tab. The outputs below are used in the install commands. The stack also creates infrastructure outputs (OIDC provider, VPC, node group role, CSI driver roles) — the install commands don't reference them directly.
+Once complete, go to the **Outputs** tab. The outputs below are used in the install commands. The stack also creates infrastructure outputs (OIDC provider, VPC, node group role, CSI driver roles) and a `PostDeploySteps` summary — none of these are needed for the CLI steps, they are informational only.
 
 ![CloudFormation outputs — role ARNs and cluster info](images/cf-outputs-1.png)
 ![CloudFormation outputs — EFS, DNS, OIDC, namespace](images/cf-outputs-2.png)
@@ -337,7 +337,7 @@ nslookup $DOMAIN
 
 1. **Open** the Platforma Desktop App (download from [platforma.bio](https://platforma.bio) if needed)
 2. **Add** a new connection
-3. **Enter** your endpoint: `platforma.example.com:443` (use your actual domain)
+3. **Enter** your endpoint: `$DOMAIN:443` (the domain you set in Step 5)
 4. The ACM certificate secures the connection via TLS
 
 For quick testing before DNS propagates, use port-forwarding. The Desktop App supports non-TLS connections to `localhost` — no certificate needed for this mode:

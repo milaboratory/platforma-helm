@@ -1364,8 +1364,8 @@ Resources:
             Value: !Ref PlatformaVersion
           - Name: DEPLOY_PLATFORMA
             Value: !Ref DeployPlatforma
-          - Name: DOMAIN_FILTER
-            Value: !Ref DomainName
+          - Name: HOSTED_ZONE_ID
+            Value: !Ref HostedZoneId
           - Name: KUBERNETES_VERSION
             Value: !Ref KubernetesVersion
           - Name: KUEUE_VERSION
@@ -1451,7 +1451,7 @@ Resources:
                     --set policy=upsert-only \
                     --set registry=txt \
                     --set txtOwnerId=$CLUSTER_NAME \
-                    --set "domainFilters[0]=$DOMAIN_FILTER" \
+                    --set "zoneIdFilters[0]=$HOSTED_ZONE_ID" \
                     --set serviceAccount.create=true \
                     --set serviceAccount.name=external-dns \
                     --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN"

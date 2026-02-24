@@ -1,0 +1,123 @@
+# Platforma values for AWS EKS with S3 primary storage
+# Designed for CloudFormation deployments where S3 bucket and IRSA are pre-created.
+# Usage: see infrastructure/aws/README.md
+
+storage:
+  database:
+    size: 50Gi
+    storageClass: gp3          # must match storageClasses.gp3.name below
+
+  workspace:
+    # EFS Access Point enforces UID/GID 1010 (Platforma's container user) — no chownOnInit needed.
+    pvc:
+      enabled: true
+      storageClass: efs-platforma  # must match storageClasses.efs.name below
+      size: 100Gi  # EFS is elastic — this value is required by K8s but does not cap actual storage
+
+  main:
+    type: s3
+    s3:
+      bucket: ""    # --set storage.main.s3.bucket=<S3BucketName>
+      region: ""    # --set storage.main.s3.region=<Region>
+
+# StorageClasses created by the chart (AWS EKS only).
+# Names here must match storage.database.storageClass and storage.workspace.pvc.storageClass above.
+storageClasses:
+  gp3:
+    create: true
+    name: gp3                  # referenced by storage.database.storageClass
+  efs:
+    create: true
+    name: efs-platforma        # referenced by storage.workspace.pvc.storageClass
+    fileSystemId: ""  # --set storageClasses.efs.fileSystemId=<EfsFileSystemId>
+    uid: "1010"
+    gid: "1010"
+
+cluster-autoscaler:
+  enabled: true
+  autoDiscovery:
+    clusterName: ""   # --set cluster-autoscaler.autoDiscovery.clusterName=<ClusterName>
+  awsRegion: ""       # --set cluster-autoscaler.awsRegion=<Region>
+  rbac:
+    serviceAccount:
+      create: true
+      name: cluster-autoscaler  # must match IRSA trust policy in CloudFormation
+      annotations: {}  # --set "cluster-autoscaler.rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<AutoscalerRoleArn>"
+  extraArgs:
+    scale-down-delay-after-add: 10m
+    scale-down-unneeded-time: 10m
+    scale-down-utilization-threshold: "0.5"
+    expander: least-waste
+
+aws-load-balancer-controller:
+  enabled: true
+  clusterName: ""     # --set aws-load-balancer-controller.clusterName=<ClusterName>
+  region: ""          # --set aws-load-balancer-controller.region=<Region>
+  serviceAccount:
+    create: true
+    name: aws-load-balancer-controller  # must match IRSA trust policy in CloudFormation
+    annotations: {}   # --set "aws-load-balancer-controller.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<ALBControllerRoleArn>"
+
+external-dns:
+  enabled: true
+  policy: upsert-only
+  registry: txt
+  txtOwnerId: ""      # --set external-dns.txtOwnerId=<ClusterName>
+  domainFilters: []   # --set external-dns.domainFilters[0]=<root domain, e.g. example.com>
+  serviceAccount:
+    create: true
+    name: external-dns  # must match IRSA trust policy in CloudFormation
+    annotations: {}   # --set "external-dns.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<ExternalDNSRoleArn>"
+
+# Platforma server service account — created by the chart, annotated with IRSA role.
+serviceAccount:
+  create: true
+  annotations: {}   # --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<PlatformaRoleArn>"
+
+# Ingress — all values provided via --set in helm install (see README.md Step 5).
+# values-aws-s3.yaml carries no ingress defaults; the full config is in the install command.
+ingress:
+  enabled: false       # --set ingress.enabled=true
+  className: ""        # --set ingress.className=alb
+  api:
+    host: ""           # --set ingress.api.host=<DomainName>
+    tls:
+      enabled: false   # --set ingress.api.tls.enabled=true
+      secretName: ""   # empty = ALB manages TLS via ACM certificate; no K8s TLS secret needed
+    annotations: {}    # set via --set flags: scheme, target-type, listen-ports, certificate-arn, backend-protocol-version
+
+kueue:
+  mode: dedicated
+  dedicated:
+    pools:
+      ui:
+        # resources = Kueue ClusterQueue quota: max simultaneous CPU/memory admitted across all UI workloads.
+        # Default (4 CPU / 16Gi) matches one t3.xlarge. Increase to match UiNodeMaxCount × instance size
+        # if you want multiple concurrent UI jobs (e.g. 16 CPU / 64Gi for 4 × t3.xlarge).
+        resources:
+          cpu: 4
+          memory: 16Gi
+        nodeSelector:
+          node.kubernetes.io/pool: ui
+        tolerations:
+          - key: dedicated
+            value: ui
+            effect: NoSchedule
+
+      batch:
+        # resources = Kueue ClusterQueue quota: max simultaneous CPU/memory admitted across all batch workloads.
+        # Default (60 CPU / 240Gi) is a conservative starting point (~7 × m5.2xlarge concurrent).
+        # Increase to match your expected concurrent workload, up to BatchMaxCountPerGroup × instance size.
+        resources:
+          cpu: 60
+          memory: 240Gi
+        nodeSelector:
+          node.kubernetes.io/pool: batch
+        tolerations:
+          - key: dedicated
+            value: batch
+            effect: NoSchedule
+
+# Schedule Platforma server on system nodes
+nodeSelector:
+  node.kubernetes.io/pool: system

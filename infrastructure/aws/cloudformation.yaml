@@ -1307,6 +1307,23 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-helm-deployer:*'
+              # Needed to tag node group ASGs for cluster-autoscaler autodiscovery
+              - Effect: Allow
+                Action:
+                  - eks:ListNodegroups
+                  - eks:DescribeNodegroup
+                Resource:
+                  - !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}'
+                  - !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:nodegroup/${ClusterName}/*/*'
+              - Effect: Allow
+                Action:
+                  - autoscaling:CreateOrUpdateTags
+                Resource: '*'
+              # Needed during teardown to wait for ALBs to be deleted (resourcegroupstaggingapi)
+              - Effect: Allow
+                Action:
+                  - tag:GetResources
+                Resource: '*'
 
   HelmDeployerAccessEntry:
     Type: AWS::EKS::AccessEntry
@@ -1394,6 +1411,41 @@ Resources:
                 - aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
             build:
               commands:
+                # Teardown mode — triggered by CloudFormation Delete.
+                # Uninstalls Helm releases in reverse order, waits for ALBs to
+                # be fully deleted, then exits so post_build sends SUCCESS to CF.
+                - |
+                  if [ "${TEARDOWN:-false}" = "true" ]; then
+                    echo "=== TEARDOWN MODE: uninstalling Helm releases ==="
+                    # 1. Platforma first — it owns the Ingress resources that back the ALBs.
+                    helm uninstall platforma -n $NAMESPACE --ignore-not-found --wait --timeout 5m || true
+                    # 2. Wait for ALBs to be fully deleted.
+                    #    The ALB Controller processes Ingress finalizers and calls AWS to remove ALBs.
+                    #    Only after ALBs are gone is it safe to remove the controller and delete the VPC.
+                    echo "Waiting for ALBs tagged kubernetes.io/cluster/$CLUSTER_NAME to be deleted..."
+                    for i in $(seq 1 60); do
+                      COUNT=$(aws resourcegroupstaggingapi get-resources \
+                        --tag-filters "Key=kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" \
+                        --resource-type-filters "elasticloadbalancing:loadbalancer" \
+                        --query 'length(ResourceTagMappingList)' --output text --region $REGION 2>/dev/null || echo "0")
+                      [ "$COUNT" = "0" ] && echo "  All ALBs deleted." && break
+                      echo "  $COUNT ALB(s) still present, waiting... ($((i * 5))s elapsed)"
+                      sleep 5
+                    done
+                    if [ "${COUNT:-0}" != "0" ]; then
+                      echo "ERROR: $COUNT ALB(s) still present after 5 minutes. VPC deletion will fail. Manual cleanup required."
+                      exit 1
+                    fi
+                    # 3. Controllers — safe to remove now that ALBs are gone.
+                    helm uninstall aws-load-balancer-controller -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                    helm uninstall external-dns -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                    helm uninstall cluster-autoscaler -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                    helm uninstall kueue -n kueue-system --ignore-not-found --wait --timeout 3m || true
+                    kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml \
+                      --ignore-not-found || true
+                    echo "Teardown complete."
+                    exit 0
+                  fi
                 # 1. Kueue
                 - |
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
@@ -1421,6 +1473,23 @@ Resources:
                 - kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
                 - kubectl delete mutatingwebhookconfiguration appwrapper-mutating-webhook-configuration --ignore-not-found
                 # 3. Cluster Autoscaler
+                # 3a. Tag node group ASGs for autodiscovery. CF cannot use !Sub in map keys,
+                #     so k8s.io/cluster-autoscaler/$CLUSTER_NAME must be applied here via CLI.
+                - |
+                  for NG in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --region $REGION \
+                    --query nodegroups --output text); do
+                    ASG=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG \
+                      --region $REGION --query 'nodegroup.resources.autoScalingGroups[0].name' --output text)
+                    if [ -z "$ASG" ] || [ "$ASG" = "None" ]; then
+                      echo "ERROR: could not get ASG name for nodegroup $NG"
+                      exit 1
+                    fi
+                    aws autoscaling create-or-update-tags \
+                      --tags \
+                      "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/enabled,Value=true,PropagateAtLaunch=false" \
+                      "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/$CLUSTER_NAME,Value=owned,PropagateAtLaunch=false"
+                    echo "Tagged ASG $ASG (nodegroup $NG)"
+                  done
                 - helm repo add autoscaler https://kubernetes.github.io/autoscaler
                 - helm repo update
                 - |
@@ -1610,9 +1679,9 @@ Resources:
         ZipFile: |
           import boto3, json, os, urllib.request
           def handler(event, context):
+            extra = []
             if event['RequestType'] == 'Delete':
-              send(event, 'SUCCESS', {})
-              return
+              extra = [{'name': 'TEARDOWN', 'value': 'true', 'type': 'PLAINTEXT'}]
             try:
               cb = boto3.client('codebuild')
               resp = cb.start_build(
@@ -1622,7 +1691,7 @@ Resources:
                   {'name': 'CFN_STACK_ID',     'value': event['StackId'],     'type': 'PLAINTEXT'},
                   {'name': 'CFN_REQUEST_ID',   'value': event['RequestId'],   'type': 'PLAINTEXT'},
                   {'name': 'CFN_LOGICAL_ID',   'value': event['LogicalResourceId'], 'type': 'PLAINTEXT'},
-                ]
+                ] + extra
               )
               build_id = resp['build']['id']
               print(f'Started CodeBuild build: {build_id}')
@@ -1731,8 +1800,6 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
-      VersioningConfiguration:
-        Status: Enabled
 
   S3BucketPolicy:
     Type: AWS::S3::BucketPolicy

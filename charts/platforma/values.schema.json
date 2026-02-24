@@ -186,6 +186,7 @@
             "fs": {
               "type": "object",
               "properties": {
+                "enabled": { "type": "boolean" },
                 "size": { "type": "string" },
                 "storageClass": { "type": "string" },
                 "existingClaim": { "type": "string" }
@@ -551,10 +552,20 @@
     "logging": {
       "type": "object",
       "properties": {
+        "destination": { "type": "string" },
+        "rotation": {
+          "type": "object",
+          "properties": {
+            "size": { "type": "string" },
+            "count": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
         "persistence": {
           "type": "object",
           "properties": {
             "enabled": { "type": "boolean" },
+            "accessMode": { "type": "string" },
             "size": { "type": "string" },
             "storageClass": { "type": "string" },
             "existingClaim": { "type": "string" },

@@ -22,21 +22,35 @@ data:
     fi
 
     # --- Output redirection ---
-    # Redirect stdout to file if PL_JOB_STDOUT_PATH is set.
-    # kubectl logs captures container stdout/stderr natively, so no tee needed.
-    if [ -n "${PL_JOB_STDOUT_PATH:-}" ]; then
-      exec 1>>"${PL_JOB_STDOUT_PATH}"
-    fi
+    # Use tee so output goes to both file AND container stdout/stderr
+    # (visible via kubectl logs).
 
-    # Redirect stderr if PL_JOB_STDERR_PATH is set.
-    if [ -n "${PL_JOB_STDERR_PATH:-}" ]; then
-      if [ "${PL_JOB_STDOUT_PATH:-}" = "${PL_JOB_STDERR_PATH:-}" ]; then
-        # Same file as stdout — merge stderr into stdout
-        exec 2>&1
+    if [ -n "${PL_JOB_STDOUT_PATH:-}" ] && [ -n "${PL_JOB_STDERR_PATH:-}" ]; then
+      if [ "${PL_JOB_STDOUT_PATH}" = "${PL_JOB_STDERR_PATH}" ]; then
+        # stdout+stderr to same file, both still visible in kubectl logs
+        exec sh -c "$PL_JOB_CMD_AND_ARGS" 2>&1 | tee -a "${PL_JOB_STDOUT_PATH}"
       else
-        exec 2>>"${PL_JOB_STDERR_PATH}"
+        # separate files: use a named pipe for stderr tee
+        STDERR_FIFO=$(mktemp -u /tmp/stderr_fifo.XXXXXX)
+        mkfifo "$STDERR_FIFO"
+        tee -a "${PL_JOB_STDERR_PATH}" >&2 < "$STDERR_FIFO" &
+        sh -c "$PL_JOB_CMD_AND_ARGS" 2>"$STDERR_FIFO" | tee -a "${PL_JOB_STDOUT_PATH}"
+        EXIT_CODE=$?
+        wait
+        rm -f "$STDERR_FIFO"
+        exit $EXIT_CODE
       fi
+    elif [ -n "${PL_JOB_STDOUT_PATH:-}" ]; then
+      exec sh -c "$PL_JOB_CMD_AND_ARGS" | tee -a "${PL_JOB_STDOUT_PATH}"
+    elif [ -n "${PL_JOB_STDERR_PATH:-}" ]; then
+      STDERR_FIFO=$(mktemp -u /tmp/stderr_fifo.XXXXXX)
+      mkfifo "$STDERR_FIFO"
+      tee -a "${PL_JOB_STDERR_PATH}" >&2 < "$STDERR_FIFO" &
+      sh -c "$PL_JOB_CMD_AND_ARGS" 2>"$STDERR_FIFO"
+      EXIT_CODE=$?
+      wait
+      rm -f "$STDERR_FIFO"
+      exit $EXIT_CODE
+    else
+      exec sh -c "$PL_JOB_CMD_AND_ARGS"
     fi
-
-    # Execute the command
-    exec sh -c "$PL_JOB_CMD_AND_ARGS"

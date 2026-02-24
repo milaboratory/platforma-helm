@@ -43,7 +43,7 @@ data:
         workload.codeflare.dev.appwrapper/warmupGracePeriodDuration: "2m"
         workload.codeflare.dev.appwrapper/failureGracePeriodDuration: "30s"
         workload.codeflare.dev.appwrapper/retryPausePeriodDuration: "45s"
-        workload.codeflare.dev.appwrapper/retryLimit: "2"
+        workload.codeflare.dev.appwrapper/retryLimit: "0"
     spec:
       components:
         - template:

@@ -1,0 +1,1483 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Platforma infrastructure on AWS EKS. Creates EKS cluster with 5 node groups
+  (system, ui, 3 batch tiers), EFS for shared workspace, S3 bucket,
+  and all IAM roles including IRSA for Platforma and Cluster Autoscaler.
+  Does NOT install Kueue, AppWrapper, or Platforma — see post-deploy steps in Outputs.
+
+# =============================================================================
+# Metadata — controls parameter display order in AWS Console
+# =============================================================================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Cluster
+        Parameters:
+          - ClusterName
+          - KubernetesVersion
+          - PlatformaNamespace
+      - Label:
+          default: Networking
+        Parameters:
+          - VpcId
+          - PrivateSubnetIds
+          - PublicSubnetIds
+          - VpcCidr
+      - Label:
+          default: 'Node groups — system and UI'
+        Parameters:
+          - SystemNodeInstanceType
+          - SystemNodeCount
+          - UiNodeInstanceType
+          - UiNodeMaxCount
+          - UiNodeAlwaysOn
+      - Label:
+          default: 'Node groups — batch'
+        Parameters:
+          - BatchMediumInstanceType
+          - BatchLargeInstanceType
+          - BatchXlargeInstanceType
+          - BatchMaxCountPerGroup
+      - Label:
+          default: Storage
+        Parameters:
+          - EfsPerformanceMode
+          - EfsThroughputMode
+          - S3BucketName
+      - Label:
+          default: 'DNS / TLS (required for connectivity)'
+        Parameters:
+          - HostedZoneId
+          - DomainName
+    ParameterLabels:
+      ClusterName:
+        default: Cluster name
+      KubernetesVersion:
+        default: Kubernetes version
+      PlatformaNamespace:
+        default: Platforma namespace
+      VpcId:
+        default: VPC ID (leave empty to create new)
+      PrivateSubnetIds:
+        default: Private subnet IDs (3, one per AZ)
+      PublicSubnetIds:
+        default: Public subnet IDs (3, one per AZ)
+      VpcCidr:
+        default: VPC CIDR (new VPC only)
+      SystemNodeInstanceType:
+        default: System instance type
+      SystemNodeCount:
+        default: System node count
+      UiNodeInstanceType:
+        default: UI instance type
+      UiNodeMaxCount:
+        default: UI max node count
+      UiNodeAlwaysOn:
+        default: 'UI always-on node (keeps 1 running, ~$200/month)'
+      BatchMediumInstanceType:
+        default: 'Batch medium (8 vCPU / 32 GiB)'
+      BatchLargeInstanceType:
+        default: 'Batch large (16 vCPU / 64 GiB)'
+      BatchXlargeInstanceType:
+        default: 'Batch xlarge (32 vCPU / 128 GiB)'
+      BatchMaxCountPerGroup:
+        default: Batch max nodes per group
+      EfsPerformanceMode:
+        default: EFS performance mode
+      EfsThroughputMode:
+        default: EFS throughput mode
+      S3BucketName:
+        default: S3 bucket name (auto-generate if empty)
+      HostedZoneId:
+        default: Route53 hosted zone ID
+      DomainName:
+        default: Domain name for TLS certificate
+
+# =============================================================================
+# Parameters
+# =============================================================================
+Parameters:
+
+  # --- Cluster ---
+  ClusterName:
+    Type: String
+    Default: platforma-cluster
+    Description: EKS cluster name
+
+  KubernetesVersion:
+    Type: String
+    Default: '1.31'
+    AllowedValues: ['1.29', '1.30', '1.31', '1.32', '1.33', '1.34']
+    Description: EKS Kubernetes version
+
+  PlatformaNamespace:
+    Type: String
+    Default: platforma
+    Description: >
+      Kubernetes namespace for Platforma. Used in IRSA trust policies.
+      The namespace is NOT created by this template — create it before Helm install.
+
+  # --- Networking ---
+  # CloudFormation cannot query subnets from a VPC — you must provide them.
+  # Exactly 3 subnets (one per AZ) are required because:
+  #   - EFS creates one mount target per subnet for HA access
+  #   - EKS distributes nodes across AZs for availability
+  #   - Each subnet must be in a different Availability Zone
+  VpcId:
+    Type: String
+    Default: ''
+    Description: >
+      Existing VPC ID. Leave empty to create a new VPC.
+      If provided, you must also provide PrivateSubnetIds.
+
+  PrivateSubnetIds:
+    Type: CommaDelimitedList
+    # Default must be ',,' (two commas) so the list always has 3 elements.
+    # CloudFormation validates !Select expressions in all conditional branches,
+    # even those not taken — fewer than 3 elements causes an out-of-bounds error.
+    Default: ',,'
+    Description: >
+      Comma-separated list of exactly 3 existing private subnet IDs (one per AZ).
+      Required if VpcId is provided. Leave empty when creating a new VPC.
+      Note: the default ',,' is a CloudFormation workaround, not a typo.
+
+  PublicSubnetIds:
+    Type: CommaDelimitedList
+    # Default must be ',,' (two commas) so the list always has 3 elements.
+    # CloudFormation validates !Select expressions in all conditional branches,
+    # even those not taken — fewer than 3 elements causes an out-of-bounds error.
+    Default: ',,'
+    Description: >
+      Comma-separated list of exactly 3 existing public subnet IDs (one per AZ).
+      Required for ALB/NLB when using existing VPC. Leave empty when creating
+      new VPC. Note: the default ',,' is a CloudFormation workaround, not a typo.
+
+  VpcCidr:
+    Type: String
+    Default: '10.0.0.0/16'
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    Description: CIDR block for new VPC (ignored if VpcId is provided)
+
+  # --- Node groups ---
+  SystemNodeInstanceType:
+    Type: String
+    Default: t3.large
+    Description: 'System node group instance type (Platforma server, Kueue, controllers)'
+
+  SystemNodeCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 4
+    Description: System node group desired count (max 4)
+
+  UiNodeInstanceType:
+    Type: String
+    Default: t3.xlarge
+    Description: UI node group instance type (interactive tasks)
+
+  UiNodeMaxCount:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 50
+    Description: UI node group maximum autoscaling count
+
+  UiNodeAlwaysOn:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Keep 1 UI node always running for instant task responsiveness.
+      When false, UI nodes scale from 0 — first task waits ~2-3 minutes for node startup.
+      When true, one t3.xlarge runs permanently, adding ~$200/month.
+
+  BatchMediumInstanceType:
+    Type: String
+    Default: m5.2xlarge
+    Description: 'Batch medium node group (8 vCPU / 32 GiB) — small compute jobs'
+
+  BatchLargeInstanceType:
+    Type: String
+    Default: m5.4xlarge
+    Description: 'Batch large node group (16 vCPU / 64 GiB) — medium compute jobs'
+
+  BatchXlargeInstanceType:
+    Type: String
+    Default: m5.8xlarge
+    Description: 'Batch xlarge node group (32 vCPU / 128 GiB) — large compute jobs'
+
+  BatchMaxCountPerGroup:
+    Type: Number
+    Default: 16
+    MinValue: 1
+    MaxValue: 100
+    Description: Maximum nodes per batch node group
+
+  # --- Storage ---
+  EfsPerformanceMode:
+    Type: String
+    Default: generalPurpose
+    AllowedValues: [generalPurpose, maxIO]
+    Description: EFS performance mode
+
+  EfsThroughputMode:
+    Type: String
+    Default: bursting
+    AllowedValues: [bursting, elastic]
+    Description: EFS throughput mode
+
+  S3BucketName:
+    Type: String
+    Default: ''
+    Description: >
+      S3 bucket name for primary storage. Leave empty to auto-generate
+      as platforma-storage-<AccountId>-<Region>.
+
+  # --- IAM / IRSA roles ---
+  # Always created (required for Platforma):
+  #   - EKS cluster role (AmazonEKSClusterPolicy)
+  #   - Node group role (worker node + CNI + ECR policies)
+  #   - EBS CSI driver IRSA role (for gp3 StorageClass)
+  #   - EFS CSI driver IRSA role (for shared workspace)
+  #   - Platforma IRSA role (S3 access for primary storage)
+  #   - Cluster Autoscaler IRSA role (for node group scaling)
+  #   - ALB Controller IRSA role + policy (for Ingress via Application Load Balancer)
+  #   - External DNS IRSA role + policy (for automatic Route53 DNS record management)
+
+  # --- DNS / TLS (required) ---
+  HostedZoneId:
+    Type: String
+    AllowedPattern: '^Z[A-Z0-9]+$'
+    ConstraintDescription: 'Must be a valid Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
+    Description: >
+      Route53 hosted zone ID. Required — used for ACM certificate DNS validation
+      and External DNS record management. The Desktop App connects via TLS,
+      so a valid domain with a certificate is mandatory.
+
+  DomainName:
+    Type: String
+    AllowedPattern: '^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$'
+    ConstraintDescription: 'Must be a valid domain name (e.g. platforma.example.com)'
+    Description: >
+      Domain name for the Platforma endpoint (e.g. platforma.example.com).
+      An ACM certificate will be created and validated via Route53.
+
+# =============================================================================
+# Conditions
+# =============================================================================
+Conditions:
+  CreateNewVpc: !Equals [!Ref VpcId, '']
+  AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
+  HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
+  UiAlwaysOn: !Equals [!Ref UiNodeAlwaysOn, 'true']
+
+# =============================================================================
+# Resources
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # 1. Networking (conditional — only when creating new VPC)
+  # ---------------------------------------------------------------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Condition: CreateNewVpc
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateNewVpc
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-igw'
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateNewVpc
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public subnets (for NAT gateway, load balancers)
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 6, 13]]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-public-1'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 6, 13]]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-public-2'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 6, 13]]
+      AvailabilityZone: !Select [2, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-public-3'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+
+  # Private subnets (for EKS node groups, EFS mount targets)
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 6, 13]]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-private-1'
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [4, !Cidr [!Ref VpcCidr, 6, 13]]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-private-2'
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNewVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [5, !Cidr [!Ref VpcCidr, 6, 13]]
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-private-3'
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+
+  # Routing — public subnets
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateNewVpc
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-public-rt'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateNewVpc
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet3RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
+    Properties:
+      SubnetId: !Ref PublicSubnet3
+      RouteTableId: !Ref PublicRouteTable
+
+  # NAT gateway (single — cost optimization, acceptable for dev/staging)
+  NatEip:
+    Type: AWS::EC2::EIP
+    Condition: CreateNewVpc
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-nat-eip'
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: CreateNewVpc
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-nat'
+
+  # Routing — private subnets
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateNewVpc
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-private-rt'
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateNewVpc
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet3RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNewVpc
+    Properties:
+      SubnetId: !Ref PrivateSubnet3
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ---------------------------------------------------------------------------
+  # 2. EKS Cluster
+  # ---------------------------------------------------------------------------
+  EksClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-cluster-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+
+  EksClusterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/eks/${ClusterName}/cluster'
+      RetentionInDays: 30
+
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    DependsOn: EksClusterLogGroup
+    Properties:
+      Name: !Ref ClusterName
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt EksClusterRole.Arn
+      ResourcesVpcConfig:
+        SubnetIds: !If
+          - CreateNewVpc
+          - - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+            - !Ref PrivateSubnet3
+            - !Ref PublicSubnet1
+            - !Ref PublicSubnet2
+            - !Ref PublicSubnet3
+          - !If
+            - HasPublicSubnets
+            - - !Select [0, !Ref PrivateSubnetIds]
+              - !Select [1, !Ref PrivateSubnetIds]
+              - !Select [2, !Ref PrivateSubnetIds]
+              - !Select [0, !Ref PublicSubnetIds]
+              - !Select [1, !Ref PublicSubnetIds]
+              - !Select [2, !Ref PublicSubnetIds]
+            - !Ref PrivateSubnetIds
+        EndpointPublicAccess: true
+        EndpointPrivateAccess: true
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+            - Type: authenticator
+
+  # OIDC provider for IRSA
+  # Note: AWS no longer validates the thumbprint for EKS OIDC providers.
+  # The parameter is required by the API but the value is not checked when
+  # the issuer URL is an EKS endpoint.
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    DependsOn: EksCluster
+    Properties:
+      Url: !GetAtt EksCluster.OpenIdConnectIssuerUrl
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - '9e99a48a9960b14926bb7f3b02e22da2b0ab7280'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-oidc'
+
+  # ---------------------------------------------------------------------------
+  # 3. IAM roles
+  # ---------------------------------------------------------------------------
+  NodeGroupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-node-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  # IRSA trust policies use Fn::Sub with JSON because CloudFormation cannot
+  # use intrinsic functions as YAML mapping keys. The OIDC condition key must
+  # be the issuer URL without the https:// prefix.
+  EbsCsiDriverRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-ebs-csi-irsa'
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Federated": "${OidcProviderArn}"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OidcIssuer}:sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa",
+                    "${OidcIssuer}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }]
+            }
+          - OidcProviderArn: !Ref OidcProvider
+            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+
+  EfsCsiDriverRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-efs-csi-irsa'
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Federated": "${OidcProviderArn}"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OidcIssuer}:sub": "system:serviceaccount:kube-system:efs-csi-controller-sa",
+                    "${OidcIssuer}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }]
+            }
+          - OidcProviderArn: !Ref OidcProvider
+            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy
+
+  PlatformaIrsaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-platforma-irsa'
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Federated": "${OidcProviderArn}"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OidcIssuer}:sub": "system:serviceaccount:${PlatformaNamespace}:platforma",
+                    "${OidcIssuer}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }]
+            }
+          - OidcProviderArn: !Ref OidcProvider
+            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            PlatformaNamespace: !Ref PlatformaNamespace
+      Policies:
+        - PolicyName: platforma-s3-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListBucket
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                Resource: !GetAtt S3Bucket.Arn
+              - Sid: ReadWriteObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:GetObjectAttributes
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Resource: !Sub '${S3Bucket.Arn}/*'
+
+  AutoscalerIrsaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-autoscaler-irsa'
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Federated": "${OidcProviderArn}"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OidcIssuer}:sub": "system:serviceaccount:${PlatformaNamespace}:cluster-autoscaler",
+                    "${OidcIssuer}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }]
+            }
+          - OidcProviderArn: !Ref OidcProvider
+            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            PlatformaNamespace: !Ref PlatformaNamespace
+      Policies:
+        - PolicyName: cluster-autoscaler
+          PolicyDocument:
+            Fn::Sub: |
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Sid": "DescribeResources",
+                    "Effect": "Allow",
+                    "Action": [
+                      "autoscaling:DescribeAutoScalingGroups",
+                      "autoscaling:DescribeAutoScalingInstances",
+                      "autoscaling:DescribeLaunchConfigurations",
+                      "autoscaling:DescribeScalingActivities",
+                      "autoscaling:DescribeTags",
+                      "ec2:DescribeImages",
+                      "ec2:DescribeInstanceTypes",
+                      "ec2:DescribeLaunchTemplateVersions",
+                      "ec2:GetInstanceTypesFromInstanceRequirements",
+                      "eks:DescribeNodegroup"
+                    ],
+                    "Resource": "*"
+                  },
+                  {
+                    "Sid": "ScaleNodeGroups",
+                    "Effect": "Allow",
+                    "Action": [
+                      "autoscaling:SetDesiredCapacity",
+                      "autoscaling:TerminateInstanceInAutoScalingGroup"
+                    ],
+                    "Resource": "*",
+                    "Condition": {
+                      "StringEquals": {
+                        "aws:ResourceTag/k8s.io/cluster-autoscaler/${ClusterName}": "owned"
+                      }
+                    }
+                  }
+                ]
+              }
+
+  ALBControllerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${ClusterName}-alb-controller-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+            Resource: '*'
+            Condition:
+              StringEquals:
+                iam:AWSServiceName: elasticloadbalancing.amazonaws.com
+          - Effect: Allow
+            Action:
+              - ec2:DescribeAccountAttributes
+              - ec2:DescribeAddresses
+              - ec2:DescribeAvailabilityZones
+              - ec2:DescribeInternetGateways
+              - ec2:DescribeVpcs
+              - ec2:DescribeVpcPeeringConnections
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeInstances
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeTags
+              - ec2:GetCoipPoolUsage
+              - ec2:DescribeCoipPools
+              - ec2:GetSecurityGroupsForVpc
+              - elasticloadbalancing:DescribeLoadBalancers
+              - elasticloadbalancing:DescribeLoadBalancerAttributes
+              - elasticloadbalancing:DescribeListeners
+              - elasticloadbalancing:DescribeListenerCertificates
+              - elasticloadbalancing:DescribeSSLPolicies
+              - elasticloadbalancing:DescribeRules
+              - elasticloadbalancing:DescribeTargetGroups
+              - elasticloadbalancing:DescribeTargetGroupAttributes
+              - elasticloadbalancing:DescribeTargetHealth
+              - elasticloadbalancing:DescribeTags
+              - elasticloadbalancing:DescribeTrustStores
+              - elasticloadbalancing:DescribeListenerAttributes
+              - elasticloadbalancing:DescribeCapacityReservation
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - cognito-idp:DescribeUserPoolClient
+              - acm:ListCertificates
+              - acm:DescribeCertificate
+              - iam:ListServerCertificates
+              - iam:GetServerCertificate
+              - waf-regional:GetWebACL
+              - waf-regional:GetWebACLForResource
+              - waf-regional:AssociateWebACL
+              - waf-regional:DisassociateWebACL
+              - wafv2:GetWebACL
+              - wafv2:GetWebACLForResource
+              - wafv2:AssociateWebACL
+              - wafv2:DisassociateWebACL
+              - shield:GetSubscriptionState
+              - shield:DescribeProtection
+              - shield:CreateProtection
+              - shield:DeleteProtection
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - ec2:AuthorizeSecurityGroupIngress
+              - ec2:RevokeSecurityGroupIngress
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - ec2:CreateSecurityGroup
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - ec2:CreateTags
+            Resource: 'arn:aws:ec2:*:*:security-group/*'
+            Condition:
+              StringEquals:
+                ec2:CreateAction: CreateSecurityGroup
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+          - Effect: Allow
+            Action:
+              - ec2:CreateTags
+              - ec2:DeleteTags
+            Resource: 'arn:aws:ec2:*:*:security-group/*'
+            Condition:
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'true'
+                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+          - Effect: Allow
+            Action:
+              - ec2:AuthorizeSecurityGroupIngress
+              - ec2:RevokeSecurityGroupIngress
+              - ec2:DeleteSecurityGroup
+            Resource: '*'
+            Condition:
+              'Null':
+                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:CreateLoadBalancer
+              - elasticloadbalancing:CreateTargetGroup
+            Resource: '*'
+            Condition:
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:CreateListener
+              - elasticloadbalancing:DeleteListener
+              - elasticloadbalancing:CreateRule
+              - elasticloadbalancing:DeleteRule
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:AddTags
+              - elasticloadbalancing:RemoveTags
+            Resource:
+              - 'arn:aws:elasticloadbalancing:*:*:targetgroup/*/*'
+              - 'arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*'
+              - 'arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*'
+            Condition:
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'true'
+                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:AddTags
+              - elasticloadbalancing:RemoveTags
+            Resource:
+              - 'arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*'
+              - 'arn:aws:elasticloadbalancing:*:*:listener/app/*/*/*'
+              - 'arn:aws:elasticloadbalancing:*:*:listener-rule/net/*/*/*'
+              - 'arn:aws:elasticloadbalancing:*:*:listener-rule/app/*/*/*'
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:ModifyLoadBalancerAttributes
+              - elasticloadbalancing:SetIpAddressType
+              - elasticloadbalancing:SetSecurityGroups
+              - elasticloadbalancing:SetSubnets
+              - elasticloadbalancing:DeleteLoadBalancer
+              - elasticloadbalancing:ModifyTargetGroup
+              - elasticloadbalancing:ModifyTargetGroupAttributes
+              - elasticloadbalancing:DeleteTargetGroup
+              - elasticloadbalancing:ModifyListenerAttributes
+              - elasticloadbalancing:ModifyCapacityReservation
+            Resource: '*'
+            Condition:
+              'Null':
+                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:AddTags
+            Resource:
+              - 'arn:aws:elasticloadbalancing:*:*:targetgroup/*/*'
+              - 'arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*'
+              - 'arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*'
+            Condition:
+              StringEquals:
+                elasticloadbalancing:CreateAction:
+                  - CreateTargetGroup
+                  - CreateLoadBalancer
+              'Null':
+                aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:RegisterTargets
+              - elasticloadbalancing:DeregisterTargets
+            Resource: 'arn:aws:elasticloadbalancing:*:*:targetgroup/*/*'
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:SetWebAcl
+              - elasticloadbalancing:ModifyListener
+              - elasticloadbalancing:AddListenerCertificates
+              - elasticloadbalancing:RemoveListenerCertificates
+              - elasticloadbalancing:ModifyRule
+            Resource: '*'
+
+  ALBControllerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-alb-controller-irsa'
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Federated": "${OidcProviderArn}"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OidcIssuer}:sub": "system:serviceaccount:${PlatformaNamespace}:aws-load-balancer-controller",
+                    "${OidcIssuer}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }]
+            }
+          - OidcProviderArn: !Ref OidcProvider
+            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            PlatformaNamespace: !Ref PlatformaNamespace
+      ManagedPolicyArns:
+        - !Ref ALBControllerPolicy
+
+  ExternalDNSPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${ClusterName}-external-dns-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ChangeRecords
+            Effect: Allow
+            Action:
+              - route53:ChangeResourceRecordSets
+            Resource: !Sub 'arn:aws:route53:::hostedzone/${HostedZoneId}'
+          - Sid: ListZones
+            Effect: Allow
+            Action:
+              - route53:ListHostedZones
+              - route53:ListResourceRecordSets
+              - route53:ListTagsForResource
+            Resource: '*'
+
+  ExternalDNSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-external-dns-irsa'
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Federated": "${OidcProviderArn}"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OidcIssuer}:sub": "system:serviceaccount:${PlatformaNamespace}:external-dns",
+                    "${OidcIssuer}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }]
+            }
+          - OidcProviderArn: !Ref OidcProvider
+            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            PlatformaNamespace: !Ref PlatformaNamespace
+      ManagedPolicyArns:
+        - !Ref ExternalDNSPolicy
+
+  # ---------------------------------------------------------------------------
+  # ASG tagging Lambda — sets Cluster Autoscaler autodiscovery tags on each
+  # nodegroup's underlying ASG. EC2 launch template TagSpecifications do not
+  # support auto-scaling-group as a resource type, and EKS nodegroup Tags do not
+  # propagate to the ASG. A Lambda custom resource is the only pure-CloudFormation
+  # way to set dynamic tag keys (containing the cluster name) on the ASG.
+  # ---------------------------------------------------------------------------
+  ASGTaggingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-asg-tagger'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TagASG
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeNodegroup
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:CreateOrUpdateTags
+                Resource: '*'
+
+  ASGTaggingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ClusterName}-asg-tagger'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ASGTaggingRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3, json, urllib.request
+          def send(event, ctx, status, data=None):
+            body = json.dumps({
+              'Status': status,
+              'Reason': f'See {ctx.log_stream_name}',
+              'PhysicalResourceId': event.get('PhysicalResourceId', ctx.log_stream_name),
+              'StackId': event['StackId'], 'RequestId': event['RequestId'],
+              'LogicalResourceId': event['LogicalResourceId'], 'Data': data or {}
+            })
+            req = urllib.request.Request(
+              event['ResponseURL'], data=body.encode(), method='PUT',
+              headers={'Content-Type': ''}
+            )
+            urllib.request.urlopen(req)
+          def handler(event, context):
+            try:
+              if event['RequestType'] == 'Delete':
+                send(event, context, 'SUCCESS')
+                return
+              props = event['ResourceProperties']
+              ng = boto3.client('eks').describe_nodegroup(
+                clusterName=props['ClusterName'], nodegroupName=props['NodegroupName']
+              )['nodegroup']
+              asc = boto3.client('autoscaling')
+              for asg in ng['resources']['autoScalingGroups']:
+                asc.create_or_update_tags(Tags=[
+                  {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
+                   'Key': 'Name',
+                   'Value': props['ClusterName'] + '/' + props['NodegroupName'],
+                   'PropagateAtLaunch': True},
+                  {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
+                   'Key': 'k8s.io/cluster-autoscaler/enabled', 'Value': 'true',
+                   'PropagateAtLaunch': True},
+                  {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
+                   'Key': 'k8s.io/cluster-autoscaler/' + props['ClusterName'],
+                   'Value': 'owned', 'PropagateAtLaunch': True},
+                ])
+              send(event, context, 'SUCCESS')
+            except Exception as e:
+              send(event, context, 'FAILED', {'Error': str(e)})
+
+  # ---------------------------------------------------------------------------
+  # 4. Node groups
+  # ---------------------------------------------------------------------------
+
+  SystemNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: system
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - !Ref SystemNodeInstanceType
+      ScalingConfig:
+        DesiredSize: !Ref SystemNodeCount
+        MinSize: 1
+        MaxSize: 4
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      Labels:
+        node.kubernetes.io/pool: system
+      Tags:
+        nodegroup-type: system
+
+  UiNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: ui
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - !Ref UiNodeInstanceType
+      ScalingConfig:
+        DesiredSize: !If [UiAlwaysOn, 1, 0]
+        MinSize: !If [UiAlwaysOn, 1, 0]
+        MaxSize: !Ref UiNodeMaxCount
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      Labels:
+        node.kubernetes.io/pool: ui
+      Taints:
+        - Key: dedicated
+          Value: ui
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: ui
+
+  BatchMediumNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: batch-medium
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - !Ref BatchMediumInstanceType
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !Ref BatchMaxCountPerGroup
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      Labels:
+        node.kubernetes.io/pool: batch
+      Taints:
+        - Key: dedicated
+          Value: batch
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: batch
+
+  BatchLargeNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: batch-large
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - !Ref BatchLargeInstanceType
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !Ref BatchMaxCountPerGroup
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      Labels:
+        node.kubernetes.io/pool: batch
+      Taints:
+        - Key: dedicated
+          Value: batch
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: batch
+
+  BatchXlargeNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: batch-xlarge
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - !Ref BatchXlargeInstanceType
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !Ref BatchMaxCountPerGroup
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      Labels:
+        node.kubernetes.io/pool: batch
+      Taints:
+        - Key: dedicated
+          Value: batch
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: batch
+
+  TagSystemNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: SystemNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: system
+
+  TagUiNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: UiNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: ui
+
+  TagBatchMediumNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: BatchMediumNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: batch-medium
+
+  TagBatchLargeNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: BatchLargeNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: batch-large
+
+  TagBatchXlargeNodeGroup:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: BatchXlargeNodeGroup
+    Properties:
+      ServiceToken: !GetAtt ASGTaggingFunction.Arn
+      ClusterName: !Ref ClusterName
+      NodegroupName: batch-xlarge
+
+  # ---------------------------------------------------------------------------
+  # 5. EKS addons — CSI drivers (DependsOn: SystemNodeGroup for running pods)
+  # ---------------------------------------------------------------------------
+  EbsCsiAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: SystemNodeGroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: aws-ebs-csi-driver
+      ServiceAccountRoleArn: !GetAtt EbsCsiDriverRole.Arn
+      ResolveConflicts: OVERWRITE
+
+  EfsCsiAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: SystemNodeGroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: aws-efs-csi-driver
+      ServiceAccountRoleArn: !GetAtt EfsCsiDriverRole.Arn
+      ResolveConflicts: OVERWRITE
+
+  # ---------------------------------------------------------------------------
+  # 6. Storage — EFS (shared workspace)
+  # ---------------------------------------------------------------------------
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: EksCluster  # required to resolve EksCluster.ClusterSecurityGroupId
+    Properties:
+      GroupDescription: !Sub 'Allow NFS traffic to Platforma EFS - ${ClusterName}'
+      VpcId: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !GetAtt EksCluster.ClusterSecurityGroupId
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-efs-sg'
+
+  EfsFileSystem:
+    Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
+    Properties:
+      PerformanceMode: !Ref EfsPerformanceMode
+      ThroughputMode: !Ref EfsThroughputMode
+      Encrypted: true
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-workspace'
+
+  # Mount targets — one per AZ for HA access from all nodes
+  EfsMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      SubnetId: !If [CreateNewVpc, !Ref PrivateSubnet1, !Select [0, !Ref PrivateSubnetIds]]
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  EfsMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      SubnetId: !If [CreateNewVpc, !Ref PrivateSubnet2, !Select [1, !Ref PrivateSubnetIds]]
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  EfsMountTarget3:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      SubnetId: !If [CreateNewVpc, !Ref PrivateSubnet3, !Select [2, !Ref PrivateSubnetIds]]
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  # ---------------------------------------------------------------------------
+  # 7. Storage — S3 bucket (primary storage)
+  # ---------------------------------------------------------------------------
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !If
+        - AutoGenerateS3Name
+        - !Sub 'platforma-storage-${AWS::AccountId}-${AWS::Region}'
+        - !Ref S3BucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt S3Bucket.Arn
+              - !Sub '${S3Bucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          # Access control relies on IAM: only the Platforma IRSA role has
+          # s3:* permissions on this bucket via its inline policy. Removing
+          # the previous deny-all-except-role pattern because it locked out
+          # account administrators from cleanup after stack deletion
+          # (the IRSA role is deleted with the stack, leaving no one with access).
+
+  # ---------------------------------------------------------------------------
+  # 8. ACM Certificate (DNS-validated via Route53)
+  # ---------------------------------------------------------------------------
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-certificate'
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+  ClusterName:
+    Description: >
+      EKS cluster name. Run: aws eks update-kubeconfig --name <ClusterName> --region <Region>
+    Value: !Ref EksCluster
+
+  ClusterEndpoint:
+    Description: EKS API server endpoint
+    Value: !GetAtt EksCluster.Endpoint
+
+  Region:
+    Description: >
+      AWS region. Use: --set storage.main.s3.region=<value>
+    Value: !Ref AWS::Region
+
+  OidcProviderArn:
+    Description: OIDC provider ARN for IRSA
+    Value: !Ref OidcProvider
+
+  EfsFileSystemId:
+    Description: >
+      EFS filesystem ID for Platforma workspace.
+      Use: --set storageClasses.efs.fileSystemId=<value>
+    Value: !Ref EfsFileSystem
+
+  S3BucketName:
+    Description: >
+      S3 bucket for primary storage.
+      Use: --set storage.main.s3.bucket=<value>
+    Value: !Ref S3Bucket
+
+  PlatformaRoleArn:
+    Description: >
+      IRSA role ARN for Platforma service account.
+      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
+    Value: !GetAtt PlatformaIrsaRole.Arn
+
+  AutoscalerRoleArn:
+    Description: >
+      IRSA role ARN for Cluster Autoscaler service account.
+      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
+    Value: !GetAtt AutoscalerIrsaRole.Arn
+
+  ALBControllerRoleArn:
+    Description: >
+      IRSA role ARN for AWS Load Balancer Controller.
+      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
+    Value: !GetAtt ALBControllerRole.Arn
+
+  ExternalDNSRoleArn:
+    Description: >
+      IRSA role ARN for External DNS.
+      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
+    Value: !GetAtt ExternalDNSRole.Arn
+
+  PlatformaNamespace:
+    Description: >
+      Kubernetes namespace for Platforma (reference only — created via kubectl in Step 4,
+      not by this stack). Used in IRSA trust policies for all service accounts.
+    Value: !Ref PlatformaNamespace
+
+  CertificateArn:
+    Description: >
+      ACM certificate ARN for TLS termination on ALB.
+      Use in ALB Ingress annotation: alb.ingress.kubernetes.io/certificate-arn=<value>
+    Value: !Ref Certificate
+
+  VpcId:
+    Description: VPC ID (created or provided)
+    Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
+
+  NodeGroupRoleArn:
+    Description: IAM role ARN shared by all node groups
+    Value: !GetAtt NodeGroupRole.Arn
+
+  PostDeploySteps:
+    Description: See infrastructure/aws/README.md for full instructions
+    Value: >-
+      Next steps (step 1 = this stack): (2) kubectl update-kubeconfig, (3) helm install kueue,
+      (4) create namespace and license secret, (5) helm install platforma [CA + ALB + ExternalDNS + StorageClasses],
+      (6) connect Desktop App. See infrastructure/aws/README.md.

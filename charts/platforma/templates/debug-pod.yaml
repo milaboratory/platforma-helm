@@ -1,7 +1,7 @@
 # =============================================================================
 # Debug Pod — for inspecting logs and volumes of a crash-looping Platforma pod
 # =============================================================================
-{{- if .Values.debug.enabled }}
+{{- if false }}
 apiVersion: v1
 kind: Pod
 metadata:
@@ -27,31 +27,25 @@ spec:
       securityContext:
         {{- toYaml .Values.deployment.securityContext | nindent 8 }}
       volumeMounts:
-        - name: database
-          mountPath: {{ include "platforma.path.database" . }}
-          readOnly: true
         - name: workspace
           mountPath: /data/workspace
           {{- with (include "platforma.workspaceSubPath" $) }}
           subPath: {{ . }}
           {{- end }}
           readOnly: true
-        {{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
+        {{- if and (hasPrefix "dir://" (default "" .Values.logging.destination)) .Values.logging.persistence.enabled }}
         - name: logs
           mountPath: {{ trimPrefix "dir://" .Values.logging.destination }}
           readOnly: true
         {{- end }}
   volumes:
-    - name: database
-      persistentVolumeClaim:
-        claimName: {{ include "platforma.databasePvcName" . }}
     - name: workspace
       persistentVolumeClaim:
         claimName: {{ include "platforma.workspacePvcName" . }}
-    {{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
+    {{- if and (hasPrefix "dir://" (default "" .Values.logging.destination)) .Values.logging.persistence.enabled }}
     - name: logs
       persistentVolumeClaim:
-        claimName: {{ .Values.storage.logs.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
+        claimName: {{ .Values.logging.persistence.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
     {{- end }}
   {{- with .Values.nodeSelector }}
   nodeSelector:

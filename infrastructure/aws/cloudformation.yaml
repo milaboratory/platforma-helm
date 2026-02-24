@@ -134,7 +134,7 @@ Parameters:
 
   KubernetesVersion:
     Type: String
-    Default: '1.31'
+    Default: '1.34'
     AllowedValues: ['1.29', '1.30', '1.31', '1.32', '1.33', '1.34']
     Description: EKS Kubernetes version
 
@@ -320,12 +320,12 @@ Parameters:
 
   ClusterAutoscalerChartVersion:
     Type: String
-    Default: '9.44.0'
+    Default: '9.53.0'
     Description: >
-      Cluster Autoscaler Helm chart version. Chart 9.x.y maps to app version 1.x.y —
-      the chart minor version must match your Kubernetes minor version.
-      For EKS 1.31 use 9.44.0; for EKS 1.32 upgrade accordingly.
-      The image tag (v<KubernetesVersion>.0) is derived automatically from KubernetesVersion.
+      Cluster Autoscaler Helm chart version. The image tag (v<KubernetesVersion>.0)
+      is derived automatically from KubernetesVersion — you only need to update
+      this chart version when upgrading Kubernetes. Chart-to-K8s mapping:
+      9.44.0 → EKS 1.31, 9.46.6 → EKS 1.32, 9.51.0 → EKS 1.33, 9.53.0 → EKS 1.34.
 
   ExternalDnsVersion:
     Type: String

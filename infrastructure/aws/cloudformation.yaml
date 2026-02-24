@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Platforma infrastructure on AWS EKS. Creates EKS cluster with 5 node groups
-  (system, ui, 3 batch tiers), EFS for shared workspace, S3 bucket,
-  and all IAM roles including IRSA for Platforma and Cluster Autoscaler.
-  Does NOT install Kueue, AppWrapper, or Platforma — see post-deploy steps in Outputs.
+  Platforma infrastructure on AWS EKS. Creates EKS cluster, node groups, EFS, S3,
+  IAM roles, and deploys Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
+  and External DNS via CodeBuild. Optionally deploys Platforma (set DeployPlatforma=true).
+  For infrastructure-only testing, leave DeployPlatforma=false and run tests/ scripts manually.
 
 # =============================================================================
 # Metadata — controls parameter display order in AWS Console
@@ -40,10 +40,15 @@ Metadata:
           - BatchXlargeInstanceType
           - BatchMaxCountPerGroup
       - Label:
+          default: Platforma
+        Parameters:
+          - DeployPlatforma
+          - LicenseKey
+          - PlatformaVersion
+      - Label:
           default: Storage
         Parameters:
           - EfsPerformanceMode
-          - EfsThroughputMode
           - S3BucketName
       - Label:
           default: 'DNS / TLS (required for connectivity)'
@@ -83,10 +88,14 @@ Metadata:
         default: 'Batch xlarge (32 vCPU / 128 GiB)'
       BatchMaxCountPerGroup:
         default: Batch max nodes per group
+      DeployPlatforma:
+        default: 'Deploy Platforma (false = infrastructure + controllers only)'
+      LicenseKey:
+        default: Platforma license key (required when DeployPlatforma=true)
+      PlatformaVersion:
+        default: Platforma chart version
       EfsPerformanceMode:
         default: EFS performance mode
-      EfsThroughputMode:
-        default: EFS throughput mode
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       HostedZoneId:
@@ -117,6 +126,26 @@ Parameters:
     Description: >
       Kubernetes namespace for Platforma. Used in IRSA trust policies.
       The namespace is NOT created by this template — create it before Helm install.
+
+  DeployPlatforma:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Deploy Platforma via Helm after infrastructure provisioning.
+      Set to false to deploy only Kueue, AppWrapper, Cluster Autoscaler,
+      ALB Controller, and External DNS — useful for testing the stack first.
+
+  LicenseKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Platforma license key (MI_LICENSE value from your license file). Required when DeployPlatforma=true.
+
+  PlatformaVersion:
+    Type: String
+    Default: '3.0.0'
+    Description: Platforma Helm chart version (oci://ghcr.io/milaboratory/platforma-helm/platforma)
 
   # --- Networking ---
   # CloudFormation cannot query subnets from a VPC — you must provide them.
@@ -221,12 +250,6 @@ Parameters:
     Default: generalPurpose
     AllowedValues: [generalPurpose, maxIO]
     Description: EFS performance mode
-
-  EfsThroughputMode:
-    Type: String
-    Default: bursting
-    AllowedValues: [bursting, elastic]
-    Description: EFS throughput mode
 
   S3BucketName:
     Type: String
@@ -540,6 +563,8 @@ Resources:
             - !Ref PrivateSubnetIds
         EndpointPublicAccess: true
         EndpointPrivateAccess: true
+      AccessConfig:
+        AuthenticationMode: API_AND_CONFIG_MAP
       Logging:
         ClusterLogging:
           EnabledTypes:
@@ -742,7 +767,7 @@ Resources:
                     "Resource": "*",
                     "Condition": {
                       "StringEquals": {
-                        "aws:ResourceTag/k8s.io/cluster-autoscaler/${ClusterName}": "owned"
+                        "aws:ResourceTag/platforma": "${ClusterName}"
                       }
                     }
                   }
@@ -1004,91 +1029,22 @@ Resources:
         - !Ref ExternalDNSPolicy
 
   # ---------------------------------------------------------------------------
-  # ASG tagging Lambda — sets Cluster Autoscaler autodiscovery tags on each
-  # nodegroup's underlying ASG. EC2 launch template TagSpecifications do not
-  # support auto-scaling-group as a resource type, and EKS nodegroup Tags do not
-  # propagate to the ASG. A Lambda custom resource is the only pure-CloudFormation
-  # way to set dynamic tag keys (containing the cluster name) on the ASG.
-  # ---------------------------------------------------------------------------
-  ASGTaggingRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub '${ClusterName}-asg-tagger'
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: TagASG
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - eks:DescribeNodegroup
-                  - autoscaling:DescribeAutoScalingGroups
-                  - autoscaling:CreateOrUpdateTags
-                Resource: '*'
-
-  ASGTaggingFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Sub '${ClusterName}-asg-tagger'
-      Runtime: python3.12
-      Handler: index.handler
-      Role: !GetAtt ASGTaggingRole.Arn
-      Timeout: 60
-      Code:
-        ZipFile: |
-          import boto3, json, urllib.request
-          def send(event, ctx, status, data=None):
-            body = json.dumps({
-              'Status': status,
-              'Reason': f'See {ctx.log_stream_name}',
-              'PhysicalResourceId': event.get('PhysicalResourceId', ctx.log_stream_name),
-              'StackId': event['StackId'], 'RequestId': event['RequestId'],
-              'LogicalResourceId': event['LogicalResourceId'], 'Data': data or {}
-            })
-            req = urllib.request.Request(
-              event['ResponseURL'], data=body.encode(), method='PUT',
-              headers={'Content-Type': ''}
-            )
-            urllib.request.urlopen(req)
-          def handler(event, context):
-            try:
-              if event['RequestType'] == 'Delete':
-                send(event, context, 'SUCCESS')
-                return
-              props = event['ResourceProperties']
-              ng = boto3.client('eks').describe_nodegroup(
-                clusterName=props['ClusterName'], nodegroupName=props['NodegroupName']
-              )['nodegroup']
-              asc = boto3.client('autoscaling')
-              for asg in ng['resources']['autoScalingGroups']:
-                asc.create_or_update_tags(Tags=[
-                  {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
-                   'Key': 'Name',
-                   'Value': props['ClusterName'] + '/' + props['NodegroupName'],
-                   'PropagateAtLaunch': True},
-                  {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
-                   'Key': 'k8s.io/cluster-autoscaler/enabled', 'Value': 'true',
-                   'PropagateAtLaunch': True},
-                  {'ResourceId': asg['name'], 'ResourceType': 'auto-scaling-group',
-                   'Key': 'k8s.io/cluster-autoscaler/' + props['ClusterName'],
-                   'Value': 'owned', 'PropagateAtLaunch': True},
-                ])
-              send(event, context, 'SUCCESS')
-            except Exception as e:
-              send(event, context, 'FAILED', {'Error': str(e)})
-
-  # ---------------------------------------------------------------------------
   # 4. Node groups
   # ---------------------------------------------------------------------------
+
+  # Launch template — propagates cluster-autoscaler discovery tags to EC2 instances.
+  NodeGroupLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: k8s.io/cluster-autoscaler/enabled
+                Value: 'true'
+              - Key: !Sub 'k8s.io/cluster-autoscaler/${ClusterName}'
+                Value: owned
 
   SystemNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1108,10 +1064,15 @@ Resources:
           - !Ref PrivateSubnet2
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: system
       Tags:
         nodegroup-type: system
+        k8s.io/cluster-autoscaler/enabled: 'true'
+        platforma: !Sub "${ClusterName}"
 
   UiNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1131,6 +1092,9 @@ Resources:
           - !Ref PrivateSubnet2
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: ui
       Taints:
@@ -1139,6 +1103,8 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: ui
+        k8s.io/cluster-autoscaler/enabled: 'true'
+        platforma: !Sub "${ClusterName}"
 
   BatchMediumNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1158,6 +1124,9 @@ Resources:
           - !Ref PrivateSubnet2
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1166,6 +1135,8 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch
+        k8s.io/cluster-autoscaler/enabled: 'true'
+        platforma: !Sub "${ClusterName}"
 
   BatchLargeNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1185,6 +1156,9 @@ Resources:
           - !Ref PrivateSubnet2
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1193,6 +1167,8 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch
+        k8s.io/cluster-autoscaler/enabled: 'true'
+        platforma: !Sub "${ClusterName}"
 
   BatchXlargeNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1212,6 +1188,9 @@ Resources:
           - !Ref PrivateSubnet2
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1220,46 +1199,8 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch
-
-  TagSystemNodeGroup:
-    Type: AWS::CloudFormation::CustomResource
-    DependsOn: SystemNodeGroup
-    Properties:
-      ServiceToken: !GetAtt ASGTaggingFunction.Arn
-      ClusterName: !Ref ClusterName
-      NodegroupName: system
-
-  TagUiNodeGroup:
-    Type: AWS::CloudFormation::CustomResource
-    DependsOn: UiNodeGroup
-    Properties:
-      ServiceToken: !GetAtt ASGTaggingFunction.Arn
-      ClusterName: !Ref ClusterName
-      NodegroupName: ui
-
-  TagBatchMediumNodeGroup:
-    Type: AWS::CloudFormation::CustomResource
-    DependsOn: BatchMediumNodeGroup
-    Properties:
-      ServiceToken: !GetAtt ASGTaggingFunction.Arn
-      ClusterName: !Ref ClusterName
-      NodegroupName: batch-medium
-
-  TagBatchLargeNodeGroup:
-    Type: AWS::CloudFormation::CustomResource
-    DependsOn: BatchLargeNodeGroup
-    Properties:
-      ServiceToken: !GetAtt ASGTaggingFunction.Arn
-      ClusterName: !Ref ClusterName
-      NodegroupName: batch-large
-
-  TagBatchXlargeNodeGroup:
-    Type: AWS::CloudFormation::CustomResource
-    DependsOn: BatchXlargeNodeGroup
-    Properties:
-      ServiceToken: !GetAtt ASGTaggingFunction.Arn
-      ClusterName: !Ref ClusterName
-      NodegroupName: batch-xlarge
+        k8s.io/cluster-autoscaler/enabled: 'true'
+        platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
   # 5. EKS addons — CSI drivers (DependsOn: SystemNodeGroup for running pods)
@@ -1281,6 +1222,363 @@ Resources:
       AddonName: aws-efs-csi-driver
       ServiceAccountRoleArn: !GetAtt EfsCsiDriverRole.Arn
       ResolveConflicts: OVERWRITE
+
+  # ---------------------------------------------------------------------------
+  # 5b. Helm deployer — CodeBuild custom resource
+  #     Deploys: Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
+  #              External DNS, and Platforma via a single CodeBuild build.
+  #     The Lambda starts the build and exits immediately; the CodeBuild
+  #     post_build phase sends the CloudFormation response via curl.
+  # ---------------------------------------------------------------------------
+
+  HelmDeployerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-helm-deployer'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: HelmDeployerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                Resource: !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-helm-deployer:*'
+
+  HelmDeployerAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    DependsOn: EksCluster
+    Properties:
+      ClusterName: !Ref EksCluster
+      PrincipalArn: !GetAtt HelmDeployerRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
+
+  HelmDeployerProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ClusterName}-helm-deployer'
+      ServiceRole: !GetAtt HelmDeployerRole.Arn
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: CLUSTER_NAME
+            Value: !Ref ClusterName
+          - Name: REGION
+            Value: !Ref AWS::Region
+          - Name: NAMESPACE
+            Value: !Ref PlatformaNamespace
+          - Name: LICENSE_KEY
+            Value: !Ref LicenseKey
+            Type: PLAINTEXT
+          - Name: DOMAIN_NAME
+            Value: !Ref DomainName
+          - Name: CERTIFICATE_ARN
+            Value: !Ref Certificate
+          - Name: AUTOSCALER_ROLE_ARN
+            Value: !GetAtt AutoscalerIrsaRole.Arn
+          - Name: ALB_ROLE_ARN
+            Value: !GetAtt ALBControllerRole.Arn
+          - Name: EXTERNALDNS_ROLE_ARN
+            Value: !GetAtt ExternalDNSRole.Arn
+          - Name: PLATFORMA_ROLE_ARN
+            Value: !GetAtt PlatformaIrsaRole.Arn
+          - Name: EFS_FILE_SYSTEM_ID
+            Value: !Ref EfsFileSystem
+          - Name: S3_BUCKET
+            Value: !Ref S3Bucket
+          - Name: PLATFORMA_VERSION
+            Value: !Ref PlatformaVersion
+          - Name: DEPLOY_PLATFORMA
+            Value: !Ref DeployPlatforma
+          - Name: DOMAIN_FILTER
+            Value: !Ref DomainName
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                # Install kubectl
+                - curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                - chmod +x kubectl && mv kubectl /usr/local/bin/
+                # Install Helm
+                - curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+                # Configure kubeconfig
+                - aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
+            build:
+              commands:
+                # 1. Kueue
+                - |
+                  helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
+                    --version 0.16.1 \
+                    -n kueue-system --create-namespace \
+                    --set controllerManager.manager.resources.limits.cpu=500m \
+                    --set controllerManager.manager.resources.limits.memory=512Mi \
+                    --set controllerManager.manager.resources.requests.cpu=100m \
+                    --set controllerManager.manager.resources.requests.memory=256Mi \
+                    --set featureGates.AppWrapper=true \
+                    --set 'integrations.frameworks[0]=batch/job' \
+                    --set 'integrations.frameworks[1]=jobset.x-k8s.io/jobset' \
+                    --set 'integrations.frameworks[2]=workload.codeflare.dev/appwrapper' \
+                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].key=kubernetes.io/metadata.name' \
+                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].operator=NotIn' \
+                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[0]=kube-system' \
+                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[1]=kueue-system' \
+                    --set metrics.enableClusterQueueResources=true \
+                    --wait --timeout 5m
+                # 2. AppWrapper controller
+                - kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
+                - kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
+                # 3. Cluster Autoscaler
+                - helm repo add autoscaler https://kubernetes.github.io/autoscaler
+                - helm repo update
+                - |
+                  helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
+                    -n $NAMESPACE --create-namespace \
+                    --set autoDiscovery.clusterName=$CLUSTER_NAME \
+                    --set awsRegion=$REGION \
+                    --set rbac.serviceAccount.create=true \
+                    --set rbac.serviceAccount.name=cluster-autoscaler \
+                    --set "rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$AUTOSCALER_ROLE_ARN" \
+                    --set 'autoDiscovery.tags[0]=k8s.io/cluster-autoscaler/enabled' \
+                    --set "autoDiscovery.tags[1]=platforma=$CLUSTER_NAME" \
+                    --set extraArgs.scale-down-delay-after-add=10m \
+                    --set extraArgs.scale-down-unneeded-time=10m \
+                    --set extraArgs.scale-down-utilization-threshold=0.5 \
+                    --set extraArgs.expander=least-waste \
+                    --wait --timeout 5m
+                # 4. AWS Load Balancer Controller
+                - helm repo add eks https://aws.github.io/eks-charts
+                - helm repo update
+                - |
+                  helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+                    -n $NAMESPACE --create-namespace \
+                    --set clusterName=$CLUSTER_NAME \
+                    --set region=$REGION \
+                    --set serviceAccount.create=true \
+                    --set serviceAccount.name=aws-load-balancer-controller \
+                    --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
+                    --wait --timeout 5m
+                # 5. External DNS
+                - helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
+                - helm repo update
+                - |
+                  helm upgrade --install external-dns external-dns/external-dns \
+                    -n $NAMESPACE --create-namespace \
+                    --set policy=upsert-only \
+                    --set registry=txt \
+                    --set txtOwnerId=$CLUSTER_NAME \
+                    --set "domainFilters[0]=$DOMAIN_FILTER" \
+                    --set serviceAccount.create=true \
+                    --set serviceAccount.name=external-dns \
+                    --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \
+                    --wait --timeout 5m
+                # 6. Platforma (optional — skipped when DEPLOY_PLATFORMA=false)
+                - |
+                  if [ "$DEPLOY_PLATFORMA" = "true" ]; then
+                    kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+                    kubectl create secret generic platforma-license \
+                      -n $NAMESPACE \
+                      --from-literal=MI_LICENSE="$LICENSE_KEY" \
+                      --dry-run=client -o yaml | kubectl apply -f -
+                    cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
+                  storage:
+                    database:
+                      size: 50Gi
+                      storageClass: gp3
+                    workspace:
+                      pvc:
+                        enabled: true
+                        storageClass: efs-platforma
+                        size: 100Gi
+                    main:
+                      type: s3
+                      s3:
+                        bucket: $S3_BUCKET
+                        region: $REGION
+                  storageClasses:
+                    gp3:
+                      create: true
+                      name: gp3
+                    efs:
+                      create: true
+                      name: efs-platforma
+                      fileSystemId: $EFS_FILE_SYSTEM_ID
+                      uid: "1010"
+                      gid: "1010"
+                  serviceAccount:
+                    create: true
+                    annotations:
+                      eks.amazonaws.com/role-arn: $PLATFORMA_ROLE_ARN
+                  ingress:
+                    enabled: true
+                    className: alb
+                    api:
+                      host: $DOMAIN_NAME
+                      tls:
+                        enabled: true
+                      annotations:
+                        alb.ingress.kubernetes.io/scheme: internet-facing
+                        alb.ingress.kubernetes.io/target-type: ip
+                        alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+                        alb.ingress.kubernetes.io/certificate-arn: $CERTIFICATE_ARN
+                        alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+                  kueue:
+                    mode: dedicated
+                    dedicated:
+                      pools:
+                        ui:
+                          resources:
+                            cpu: 4
+                            memory: 16Gi
+                          nodeSelector:
+                            node.kubernetes.io/pool: ui
+                          tolerations:
+                            - key: dedicated
+                              value: ui
+                              effect: NoSchedule
+                        batch:
+                          resources:
+                            cpu: 60
+                            memory: 240Gi
+                          nodeSelector:
+                            node.kubernetes.io/pool: batch
+                          tolerations:
+                            - key: dedicated
+                              value: batch
+                              effect: NoSchedule
+                  nodeSelector:
+                    node.kubernetes.io/pool: system
+                  PLATFORMA_VALUES
+                    helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
+                      --version $PLATFORMA_VERSION \
+                      -n $NAMESPACE \
+                      -f /tmp/platforma-values.yaml \
+                      --wait --timeout 10m
+                  fi
+            post_build:
+              commands:
+                - |
+                  if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then
+                    STATUS="SUCCESS"
+                    REASON="Helm deployment completed successfully"
+                  else
+                    STATUS="FAILED"
+                    REASON="Helm deployment failed. Check CodeBuild logs: $CODEBUILD_BUILD_ID"
+                  fi
+                - |
+                  curl -s -X PUT -H "Content-Type: " \
+                    -d "{\"Status\":\"$STATUS\",\"Reason\":\"$REASON\",\"PhysicalResourceId\":\"$CODEBUILD_BUILD_ID\",\"StackId\":\"$CFN_STACK_ID\",\"RequestId\":\"$CFN_REQUEST_ID\",\"LogicalResourceId\":\"$CFN_LOGICAL_ID\",\"Data\":{}}" \
+                    "$CFN_RESPONSE_URL"
+
+  TriggerHelmDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-helm-trigger'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StartCodeBuild
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                Resource: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ClusterName}-helm-deployer'
+
+  TriggerHelmDeployFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: HelmDeployerProject
+    Properties:
+      FunctionName: !Sub '${ClusterName}-helm-trigger'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt TriggerHelmDeployRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          CODEBUILD_PROJECT: !Sub '${ClusterName}-helm-deployer'
+      Code:
+        ZipFile: |
+          import boto3, json, os, urllib.request
+          def handler(event, context):
+            if event['RequestType'] == 'Delete':
+              send(event, 'SUCCESS', {})
+              return
+            try:
+              cb = boto3.client('codebuild')
+              resp = cb.start_build(
+                projectName=os.environ['CODEBUILD_PROJECT'],
+                environmentVariablesOverride=[
+                  {'name': 'CFN_RESPONSE_URL', 'value': event['ResponseURL'], 'type': 'PLAINTEXT'},
+                  {'name': 'CFN_STACK_ID',     'value': event['StackId'],     'type': 'PLAINTEXT'},
+                  {'name': 'CFN_REQUEST_ID',   'value': event['RequestId'],   'type': 'PLAINTEXT'},
+                  {'name': 'CFN_LOGICAL_ID',   'value': event['LogicalResourceId'], 'type': 'PLAINTEXT'},
+                ]
+              )
+              build_id = resp['build']['id']
+              print(f'Started CodeBuild build: {build_id}')
+              # Do NOT send CFN response here — CodeBuild post_build will send it.
+            except Exception as e:
+              print(f'Failed to start CodeBuild: {e}')
+              send(event, 'FAILED', {'Error': str(e)})
+          def send(event, status, data):
+            body = json.dumps({
+              'Status': status,
+              'Reason': f'See CloudWatch Logs',
+              'PhysicalResourceId': event.get('PhysicalResourceId', 'helm-deployer'),
+              'StackId': event['StackId'],
+              'RequestId': event['RequestId'],
+              'LogicalResourceId': event['LogicalResourceId'],
+              'Data': data
+            })
+            req = urllib.request.Request(
+              event['ResponseURL'], data=body.encode(), method='PUT',
+              headers={'Content-Type': ''}
+            )
+            urllib.request.urlopen(req)
+
+  TriggerHelmDeploy:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - HelmDeployerAccessEntry
+      - EbsCsiAddon
+      - EfsCsiAddon
+      - S3Bucket
+      - Certificate
+    Properties:
+      ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
 
   # ---------------------------------------------------------------------------
   # 6. Storage — EFS (shared workspace)
@@ -1305,7 +1603,7 @@ Resources:
     DeletionPolicy: Retain
     Properties:
       PerformanceMode: !Ref EfsPerformanceMode
-      ThroughputMode: !Ref EfsThroughputMode
+      ThroughputMode: elastic
       Encrypted: true
       FileSystemTags:
         - Key: Name
@@ -1475,9 +1773,15 @@ Outputs:
     Description: IAM role ARN shared by all node groups
     Value: !GetAtt NodeGroupRole.Arn
 
+  HelmDeployerBuildProject:
+    Description: >
+      CodeBuild project that deploys Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
+      External DNS, and Platforma. Check its logs if the stack creation fails after ~20 minutes.
+    Value: !Sub 'https://console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ClusterName}-helm-deployer/history'
+
   PostDeploySteps:
     Description: See infrastructure/aws/README.md for full instructions
     Value: >-
-      Next steps (step 1 = this stack): (2) kubectl update-kubeconfig, (3) helm install kueue,
-      (4) create namespace and license secret, (5) helm install platforma [CA + ALB + ExternalDNS + StorageClasses],
-      (6) connect Desktop App. See infrastructure/aws/README.md.
+      Stack deploys everything automatically. Once complete: connect Desktop App to your domain on port 443.
+      If deployment fails, check the CodeBuild project logs (see HelmDeployerBuildProject output).
+      See infrastructure/aws/README.md for details.

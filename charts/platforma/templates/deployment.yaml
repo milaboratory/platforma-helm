@@ -112,18 +112,14 @@ spec:
             - "--queue-runner={{ $queue }}:{{ $runner }}"
             {{- end }}
             # Logging
-            {{- if hasPrefix "dir://" .Values.logging.destination }}
-            - "--log-dst={{ .Values.logging.destination }}"
-            {{- if .Values.logging.rotation }}
-            {{- if .Values.logging.rotation.size }}
-            - "--log-rotation-size={{ .Values.logging.rotation.size }}"
+            {{- if .Values.logging.persistence.enabled }}
+            - "--log-dst=dir:///var/log/platforma"
+            {{- if .Values.logging.persistence.rotation.size }}
+            - "--log-rotation-size={{ .Values.logging.persistence.rotation.size }}"
             {{- end }}
-            {{- if .Values.logging.rotation.count }}
-            - "--log-rotation-backups={{ .Values.logging.rotation.count }}"
+            {{- if .Values.logging.persistence.rotation.count }}
+            - "--log-rotation-backups={{ .Values.logging.persistence.rotation.count }}"
             {{- end }}
-            {{- end }}
-            {{- else }}
-            - "--log-dst={{ .Values.logging.destination }}"
             {{- end }}
             {{- if .Values.license.file }}
             # License file
@@ -299,9 +295,9 @@ spec:
               mountPath: {{ include "platforma.path.license" . }}
               readOnly: true
             {{- end }}
-            {{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
+            {{- if .Values.logging.persistence.enabled }}
             - name: logs
-              mountPath: {{ trimPrefix "dir://" .Values.logging.destination }}
+              mountPath: /var/log/platforma
             {{- end }}
             {{- if and .Values.auth.enabled .Values.auth.htpasswd.enabled .Values.auth.htpasswd.secretName }}
             - name: htpasswd
@@ -354,10 +350,10 @@ spec:
               - key: {{ .Values.license.secretKey }}
                 path: {{ .Values.license.secretKey }}
         {{- end }}
-        {{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
+        {{- if .Values.logging.persistence.enabled }}
         - name: logs
           persistentVolumeClaim:
-            claimName: {{ .Values.storage.logs.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
+            claimName: {{ .Values.logging.persistence.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
         {{- end }}
         {{- if and .Values.auth.enabled .Values.auth.htpasswd.enabled .Values.auth.htpasswd.secretName }}
         - name: htpasswd

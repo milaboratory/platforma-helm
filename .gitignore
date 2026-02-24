@@ -2,3 +2,6 @@
 
 # personal values files
 values-* 
+
+# dependencies
+charts/platforma/charts/

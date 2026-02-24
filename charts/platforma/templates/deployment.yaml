@@ -184,6 +184,7 @@ spec:
             - "--debug-enabled"
             - "--log-level=debug"
             - "--keep-workdirs=1h"
+            - "--debug-port={{ .Values.debug.port }}"
             {{- end }}
             # Extra arguments
             {{- range .Values.extraArgs }}

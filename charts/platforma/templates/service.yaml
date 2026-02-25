@@ -16,11 +16,11 @@ spec:
   type: {{ .Values.service.type }}
   ports:
     - name: grpc
-      port: {{ .Values.service.grpcPort }}
+      port: 6345
       targetPort: grpc
       protocol: TCP
     - name: http
-      port: {{ .Values.service.httpPort }}
+      port: 6347
       targetPort: http
       protocol: TCP
   selector:
@@ -54,7 +54,6 @@ spec:
 {{- end }}
 ---
 {{- if .Values.debug.enabled }}
-{{- $debugPort := .Values.debug.port | default "9091" }}
 # =============================================================================
 # Debug Service
 # =============================================================================
@@ -70,7 +69,7 @@ spec:
   type: ClusterIP
   ports:
     - name: debug
-      port: {{ $debugPort }}
+      port: {{ .Values.debug.port }}
       targetPort: debug
       protocol: TCP
   selector:

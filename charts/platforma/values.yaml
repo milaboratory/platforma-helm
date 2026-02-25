@@ -27,18 +27,38 @@ image:
 
 imagePullSecrets: []
 
+# =============================================================================
+# CLOUD PROVIDER
+# =============================================================================
+# Setting cloud provider auto-creates cloud-specific resources:
+#   aws:   gp3 StorageClass (EBS), efs-platforma StorageClass (if efsFileSystemId set)
+#   gcp:   (no auto-created resources — GKE ships with required StorageClasses)
+#   azure: (no auto-created resources — AKS ships with required StorageClasses)
+#   "":    no cloud-specific resources
+# =============================================================================
+
+# -- Cloud provider (aws | gcp | azure | "")
+cloud: ""
+
+# -- AWS-specific configuration
+aws:
+  # -- EFS file system ID for dynamic workspace provisioning via StorageClass
+  # When set (and cloud: aws), creates an EFS StorageClass with uid/gid 1010
+  # Example: fs-0123456789abcdef
+  efsFileSystemId: ""
+
+# =============================================================================
+# LICENSE
+# =============================================================================
+
 # -- License configuration (required)
-# The chart reads the secret key (default: MI_LICENSE) and injects it as
-# PL_LICENSE env var. Platforma reads both PL_LICENSE and MI_LICENSE env vars.
-# File-based licensing is also supported via --license-file flag.
+# The chart reads the secret key (default: MI_LICENSE) and mounts it both as
+# an env var (PL_LICENSE) and as a file (--license-file).
 license:
   # -- Existing secret containing the license
   secretName: "platforma-license"
   # -- Key within the secret containing the license
   secretKey: "MI_LICENSE"
-  # -- Mount license as file (in addition to env var)
-  # When true, uses --license-file flag pointing to /etc/platforma/license/
-  file: false
 
 # =============================================================================
 # AUTHENTICATION
@@ -125,10 +145,10 @@ storage:
     existingClaim: ""
 
   # -- Shared workspace for jobs (RWX required)
-  # Configure exactly ONE of: existingClaim, efs, fsxLustre, filestore, azureFiles, nfs, pvc
+  # Configure exactly ONE of: existingClaim, efs, fsxLustre, filestore, nfs, pvc
   # Note: Block storage is NOT supported - workspace must be shared (RWX)
   #
-  # PERMISSIONS: Platforma runs as non-root (UID/GID from deployment.securityContext).
+  # PERMISSIONS: Platforma runs as non-root (UID/GID 1010:1010).
   # See README.md "Workspace storage" section for per-storage permission setup.
   # Summary:
   #   EFS:        Use "pvc" option with StorageClass that sets uid/gid (recommended)
@@ -140,7 +160,7 @@ storage:
 
     # -- AWS EFS via static PV (chart creates PV+PVC)
     # For EFS, prefer "pvc" option with a StorageClass that creates Access Points
-    # with uid/gid matching deployment.securityContext (see README for example)
+    # with uid/gid 1010 (see cloud: aws + aws.efsFileSystemId for auto-setup)
     efs:
       enabled: false
       fileSystemId: ""
@@ -154,7 +174,6 @@ storage:
       fileSystemId: ""
       dnsName: ""
       mountName: ""
-      path: "/"
 
     # -- GCP Filestore (chart creates PV+PVC)
     filestore:
@@ -163,15 +182,6 @@ storage:
       location: ""
       shareName: ""
       ip: ""
-      path: "/"
-
-    # -- Azure Files (chart creates PV+PVC)
-    azureFiles:
-      enabled: false
-      resourceGroup: ""
-      storageAccount: ""
-      shareName: ""
-      secretName: ""
       path: "/"
 
     # -- Generic NFS server (chart creates PV+PVC)
@@ -188,7 +198,7 @@ storage:
 
     # -- Run chown on workspace mount before server starts
     # Required for FSx Lustre. Not needed for EFS with uid/gid StorageClass.
-    # The init container runs as root and changes ownership to deployment.securityContext uid/gid.
+    # The init container runs as root and changes ownership to UID/GID 1010.
     chownOnInit: false
 
   # -- Main storage (exposed to Desktop App)
@@ -234,7 +244,7 @@ dataSources: []
   #     existingClaim: "shared-data-pvc"
 
 # =============================================================================
-# JOB EXECUTION
+# JOB EXECUTION (Kueue)
 # =============================================================================
 # Platforma has 4 fixed queues with hardcoded priorities:
 #   - ui-tasks: Priority 1000 (highest, for interactive tasks)
@@ -242,19 +252,14 @@ dataSources: []
 #   - medium:   Priority 100  (normal batch)
 #   - light:    Priority 10   (low priority batch)
 #
-# Each queue is mapped to a runner backend via queueRunners.
-# Supported runners: k8s, local
+# Two modes:
+#   dedicated: Chart creates ClusterQueues, LocalQueues, ResourceFlavors,
+#              and WorkloadPriorityClasses. Use when Platforma owns the cluster
+#              or has a dedicated namespace.
+#   shared:    Chart references existing Kueue queues. Use when a cluster admin
+#              manages Kueue resources centrally for multiple tenants.
 # =============================================================================
 
-# -- Queue to runner backend mapping
-# Each key is a queue name, value is the runner type.
-queueRunners:
-  ui-tasks: k8s
-  light: k8s
-  medium: k8s
-  heavy: k8s
-
-# -- Kueue backend configuration
 kueue:
   # -- Mode: dedicated (chart creates all resources) or shared (uses existing queues)
   mode: dedicated  # dedicated | shared
@@ -265,8 +270,10 @@ kueue:
     memory: 256Gi
 
   # -- Dedicated mode configuration
+  # Creates two node pools: UI (interactive) and Batch (compute).
+  # UI pool resources are guaranteed (borrowingLimit: 0).
+  # Batch pool can borrow idle UI capacity.
   dedicated:
-    # -- Node pools configuration
     pools:
       ui:
         # -- Cluster queue resource quota
@@ -301,72 +308,90 @@ kueue:
       ui: ""       # Existing LocalQueue name for UI tasks
       batch: ""    # Existing LocalQueue name for batch tasks
 
-# -- Internal: Slurm backend (not yet released)
-slurm:
-  enabled: false
-
 # =============================================================================
 # NETWORKING
 # =============================================================================
 
 service:
   type: ClusterIP
-  # -- gRPC port
-  grpcPort: 6345
-  # -- HTTP port (S3-compatible API for result downloads)
-  httpPort: 6347
   annotations: {}
 
 # -- Ingress configuration
-# Platforma exposes two ports:
-#   - gRPC (6345): API endpoint — Desktop App connects here
-#   - HTTP (6347): S3-compatible data API (when using embedded storage)
-#
-# Each ingress block has api (gRPC) and data (HTTP) sub-sections.
+# Platforma exposes gRPC on port 6345 — Desktop App connects here.
+# For ALB with gRPC, use annotations:
+#   alb.ingress.kubernetes.io/backend-protocol-version: GRPC
 ingress:
   enabled: false
   className: ""
-
-  # -- gRPC API endpoint (Desktop App connects here)
-  api:
-    host: ""
-    tls:
-      enabled: false
-      secretName: ""
-    annotations: {}
-      # nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-
-  # -- HTTP/S3 data endpoint (when using embedded storage)
-  data:
-    host: ""
-    tls:
-      enabled: false
-      secretName: ""
-    annotations: {}
-      # nginx.ingress.kubernetes.io/proxy-body-size: "0"
+  # -- Hostname for the gRPC API endpoint
+  host: ""
+  tls:
+    enabled: false
+    secretName: ""
+  annotations: {}
 
 # -- Additional ingress (e.g., internal network, second region)
-# Same structure as ingress. Creates a second pair of api+data ingress resources.
+# Same structure as ingress. Creates a second ingress resource.
 additionalIngress:
   enabled: false
   className: ""
-
-  api:
-    host: ""
-    tls:
-      enabled: false
-      secretName: ""
-    annotations: {}
-
-  data:
-    host: ""
-    tls:
-      enabled: false
-      secretName: ""
-    annotations: {}
+  host: ""
+  tls:
+    enabled: false
+    secretName: ""
+  annotations: {}
 
 # =============================================================================
-# KUBERNETES CONFIGURATION
+# SERVER POD
+# =============================================================================
+# All configuration for the Platforma server pod: resources, probes, scheduling.
+# Security context is hardcoded (UID/GID 1010 — set by the container image).
+# =============================================================================
+
+server:
+  # -- Server pod resources
+  resources:
+    requests:
+      cpu: 2000m
+      memory: 4Gi
+    limits:
+      cpu: 4000m
+      memory: 8Gi
+
+  # -- Startup probe (for long bootstrap on large datasets)
+  # Allows up to failureThreshold * periodSeconds for initial startup.
+  startupProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30  # Up to 5 min startup
+
+  # -- Liveness probe
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+  # -- Readiness probe
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+
+  # -- Pod scheduling
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+
+  # -- Extra labels/annotations for the server pod
+  podLabels: {}
+  podAnnotations: {}
+
+# =============================================================================
+# SERVICE ACCOUNTS
 # =============================================================================
 
 # -- Service account for Platforma server
@@ -381,47 +406,29 @@ jobServiceAccount:
   name: ""
   annotations: {}
 
-# -- Deployment configuration
-deployment:
-  podSecurityContext:
-    fsGroup: 1010
-    runAsNonRoot: true
+# =============================================================================
+# DEBUG
+# =============================================================================
 
-  securityContext:
-    runAsUser: 1010
-    runAsGroup: 1010
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop: ["ALL"]
+# -- Debug mode configuration
+# Enables pprof endpoints (cpu, heap, trace) and database inspection.
+# Exposed on a separate port (9091) via a ClusterIP service.
+debug:
+  enabled: false
+  port: 9091
 
-  strategy:
-    type: Recreate
+# =============================================================================
+# EXTRA CLI ARGUMENTS
+# =============================================================================
 
-  podLabels: {}
-  podAnnotations: {}
-
-# -- Server pod resources
-resources:
-  requests:
-    cpu: 2000m
-    memory: 4Gi
-  limits:
-    cpu: 4000m
-    memory: 8Gi
-
-# -- Health probes
-probes:
-  liveness:
-    enabled: true
-    initialDelaySeconds: 30
-    periodSeconds: 10
-    timeoutSeconds: 5
-
-  readiness:
-    enabled: true
-    initialDelaySeconds: 10
-    periodSeconds: 5
-    timeoutSeconds: 3
+# -- Additional command-line arguments for Platforma server
+# These are passed directly to the platforma binary.
+extraArgs: []
+  # Examples:
+  # - "--runner-cpu=4"
+  # - "--runner-ram=16G"
+  # - "--log-level=debug"
+  # - "--network-mode=proxy"
 
 # -- Additional environment variables
 env:
@@ -435,44 +442,20 @@ env:
   # -- Environment variables from config maps
   configMapVariables: []
 
-# -- Server pod scheduling
-nodeSelector: {}
-affinity: {}
-tolerations: []
-
-# =============================================================================
-# DEBUG
-# =============================================================================
-
-# -- Debug mode configuration
-debug:
-  enabled: false
-  port: "9091"
-
-# =============================================================================
-# EXTRA CLI ARGUMENTS
-# =============================================================================
-
-# -- Additional command-line arguments for Platforma server
-# These are passed directly to the platforma binary.
-# Use this for advanced configuration or alternative backends.
-extraArgs: []
-  # Examples:
-  # - "--runner-cpu=4"
-  # - "--runner-ram=16G"
-  # - "--log-level=debug"
-  # - "--network-mode=proxy"
-  # - "--self-check"
-
 # =============================================================================
 # OBSERVABILITY
+# =============================================================================
+# Platforma backend exposes:
+#   /metrics on port 9090 — Prometheus metrics (gRPC proxy, transactions, resources)
+#   gRPC Health on port 6345 — grpc.health.v1.Health (Check, Watch, List)
+#   /health on port 6345 — HTTP health check (returns 200 OK)
+#   /debug/pprof/* on port 9091 — Go profiling (only when debug.enabled: true)
 # =============================================================================
 
 logging:
   # -- Enable persistent log storage
   # When false (default), logs stream to container stderr — collected by the cluster log driver.
   # When true, logs write to a PVC at /var/log/platforma with rotation.
-  # Required for log inspection via the debug sidecar during crash loops.
   persistence:
     enabled: false
     size: 10Gi
@@ -483,92 +466,23 @@ logging:
       count: 15           # Number of rotated log files to keep
 
 monitoring:
-  # -- Enable metrics endpoint
+  # -- Enable metrics endpoint (Prometheus /metrics on port 9090)
   enabled: true
-  # -- Metrics port
+  # -- Metrics port (hardcoded in backend as --monitoring-listen)
   port: 9090
 
   service:
     type: ClusterIP
     annotations: {}
+      # prometheus.io/scrape: "true"
+      # prometheus.io/port: "9090"
 
-  # -- PodMonitoring for GKE/GMP
+  # -- PodMonitoring for GKE/GMP (Google Managed Prometheus)
+  # For AWS/generic clusters, add prometheus.io/scrape annotation above
+  # or configure a ServiceMonitor separately.
   podMonitoring:
     enabled: false
     interval: 30s
-
-# =============================================================================
-# BUNDLED CONTROLLERS (optional, AWS EKS)
-# =============================================================================
-# Sub-charts for AWS-specific controllers. All disabled by default.
-# Enable in AWS deployments to avoid separate Helm installs for each controller.
-# Provide IRSA role ARNs from CloudFormation Outputs via serviceAccount.annotations.
-# =============================================================================
-
-# -- Cluster Autoscaler
-# Scales EC2 node groups when pods are pending. Required for UI and batch pools
-# that start at 0 nodes.
-cluster-autoscaler:
-  enabled: false
-  autoDiscovery:
-    clusterName: ""   # Set to EKS cluster name (ClusterName from CF outputs)
-  awsRegion: ""       # Set to AWS region (Region from CF outputs)
-  rbac:
-    serviceAccount:
-      create: true
-      annotations: {}  # eks.amazonaws.com/role-arn: <AutoscalerRoleArn>
-  extraArgs:
-    scale-down-delay-after-add: 10m
-    scale-down-unneeded-time: 10m
-    scale-down-utilization-threshold: "0.5"
-    expander: least-waste
-
-# -- AWS Load Balancer Controller
-# Creates Application Load Balancers from Kubernetes Ingress resources.
-aws-load-balancer-controller:
-  enabled: false
-  clusterName: ""     # Set to EKS cluster name
-  serviceAccount:
-    create: true
-    annotations: {}   # eks.amazonaws.com/role-arn: <ALBControllerRoleArn>
-
-# -- External DNS
-# Manages Route53 DNS records from Kubernetes Ingress annotations.
-external-dns:
-  enabled: false
-  policy: upsert-only
-  registry: txt
-  txtOwnerId: ""      # Set to EKS cluster name
-  domainFilters: []   # Set to root domain (e.g. [example.com])
-  serviceAccount:
-    create: true
-    annotations: {}   # eks.amazonaws.com/role-arn: <ExternalDNSRoleArn>
-
-# =============================================================================
-# STORAGE CLASSES (AWS EKS)
-# =============================================================================
-# Optional StorageClasses to create alongside the release. AWS EKS only —
-# GKE and AKS ship with the required StorageClasses pre-configured.
-# These are cluster-scoped resources — created once per cluster, not per release.
-# =============================================================================
-
-# -- StorageClasses to create with this release
-storageClasses:
-  # -- AWS gp3 EBS StorageClass
-  # Required on EKS for database storage when no gp3 StorageClass exists.
-  gp3:
-    create: false
-    name: gp3
-
-  # -- AWS EFS StorageClass (dynamic provisioning via EFS Access Points)
-  # Required on EKS for workspace storage when using storage.workspace.pvc with EFS.
-  # Sets uid/gid on Access Points to match Platforma's container user.
-  efs:
-    create: false
-    name: efs-platforma
-    fileSystemId: ""  # Required when create: true (e.g., fs-0123456789abcdef)
-    uid: "1010"       # Must match deployment.securityContext.runAsUser
-    gid: "1010"       # Must match deployment.securityContext.runAsGroup
 
 # =============================================================================
 # JOB CONFIGURATION
@@ -580,14 +494,3 @@ jobs:
   # The operator pre-creates this secret with all needed credentials.
   # Currently contains MI_LICENSE; extensible for future secrets.
   secretName: "platforma-license"
-
-  # -- Security context for job containers
-  securityContext:
-    runAsUser: 1010
-    runAsGroup: 1010
-
-  # -- Additional volume mounts for job pods
-  extraVolumeMounts: []
-
-  # -- Additional volumes for job pods
-  extraVolumes: []

@@ -7,7 +7,6 @@
 # delimiters). Helm bakes release-specific values at install time, Platforma
 # fills per-job parameters (<< >>) at runtime when creating jobs.
 # =============================================================================
-{{- if not .Values.slurm.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -119,8 +118,8 @@ data:
                         - name: HOME
                           value: "/tmp"
                       securityContext:
-                        runAsUser: {{ .Values.jobs.securityContext.runAsUser }}
-                        runAsGroup: {{ .Values.jobs.securityContext.runAsGroup }}
+                        runAsUser: 1010
+                        runAsGroup: 1010
                       <<- if .Resources >>
                       resources:
                         requests:
@@ -159,4 +158,3 @@ data:
                         defaultMode: 0755
                     - name: temp-volume
                       emptyDir: {}
-{{- end }}

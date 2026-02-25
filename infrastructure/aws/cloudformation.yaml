@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Platforma infrastructure on AWS EKS. Creates EKS cluster, node groups, EFS, S3,
-  IAM roles, and deploys Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
+  Platforma infrastructure on AWS EKS (~20 min to deploy). Creates EKS cluster, node groups,
+  EFS, S3, IAM roles, and deploys Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
   and External DNS via CodeBuild. Optionally deploys Platforma (set DeployPlatforma=true).
   For infrastructure-only testing, leave DeployPlatforma=false and run tests/ scripts manually.
 
@@ -25,6 +25,17 @@ Metadata:
           - PublicSubnetIds
           - VpcCidr
       - Label:
+          default: 'DNS / TLS (required)'
+        Parameters:
+          - DomainName
+          - HostedZoneId
+      - Label:
+          default: Platforma
+        Parameters:
+          - DeployPlatforma
+          - LicenseKey
+          - PlatformaVersion
+      - Label:
           default: 'Node groups — system and UI'
         Parameters:
           - SystemNodeInstanceType
@@ -42,23 +53,12 @@ Metadata:
           - BatchXlargeInstanceType
           - BatchMaxCountPerGroup
       - Label:
-          default: Platforma
-        Parameters:
-          - DeployPlatforma
-          - LicenseKey
-          - PlatformaVersion
-      - Label:
           default: Storage
         Parameters:
           - EfsPerformanceMode
           - S3BucketName
       - Label:
-          default: 'DNS / TLS (required for connectivity)'
-        Parameters:
-          - HostedZoneId
-          - DomainName
-      - Label:
-          default: Controller versions
+          default: 'Controller versions (advanced)'
         Parameters:
           - KueueVersion
           - AppWrapperVersion
@@ -109,13 +109,13 @@ Metadata:
       PlatformaVersion:
         default: Platforma chart version
       EfsPerformanceMode:
-        default: EFS performance mode
+        default: 'EFS performance mode (generalPurpose or maxIO)'
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
-      HostedZoneId:
-        default: Route53 hosted zone ID
       DomainName:
-        default: Domain name for TLS certificate
+        default: 'Domain name (e.g. platforma.example.com)'
+      HostedZoneId:
+        default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
       KueueVersion:
         default: Kueue chart version
       AppWrapperVersion:
@@ -285,7 +285,9 @@ Parameters:
     Type: String
     Default: generalPurpose
     AllowedValues: [generalPurpose, maxIO]
-    Description: EFS performance mode
+    Description: >
+      generalPurpose: lower latency, sufficient for most workloads.
+      maxIO: higher throughput, better for highly parallel large-dataset processing.
 
   S3BucketName:
     Type: String
@@ -1897,6 +1899,12 @@ Resources:
 # Outputs
 # =============================================================================
 Outputs:
+  ConnectionEndpoint:
+    Description: >
+      Platforma Desktop App connection endpoint.
+      Open the Desktop App and connect to this address.
+    Value: !Sub '${DomainName}:443'
+
   ClusterName:
     Description: >
       EKS cluster name. Run: aws eks update-kubeconfig --name <ClusterName> --region <Region>

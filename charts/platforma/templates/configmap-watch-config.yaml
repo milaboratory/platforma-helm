@@ -5,9 +5,7 @@
 # Uses expr expressions to evaluate resource status from unstructured objects.
 # Label selectors use << .Parameter >> Go template delimiters.
 #
-# Two paths:
-#   - Slurm (slurm.enabled): Watch Pods (VK updates pod phase directly)
-#   - Kueue (default): Watch AppWrappers (Kueue manages lifecycle)
+# Watches AppWrappers — Kueue manages lifecycle via AppWrapper CRD.
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
@@ -18,18 +16,6 @@ metadata:
     {{- include "platforma.labels" . | nindent 4 }}
 data:
   watch-config.yaml: |
-    {{- if .Values.slurm.enabled }}
-    gvr:
-      group: ""
-      version: "v1"
-      resource: "pods"
-    labelSelector:
-      platforma.bio/job-id: "<< .JobID >>"
-    statusExpressions:
-      isRunning:   "resource?.status?.phase == 'Running'"
-      isFailed:    "resource?.status?.phase == 'Failed'"
-      isCompleted: "resource?.status?.phase == 'Succeeded'"
-    {{- else }}
     gvr:
       group: "workload.codeflare.dev"
       version: "v1beta2"
@@ -40,4 +26,3 @@ data:
       isRunning:   "resource?.status?.phase == 'Running'"
       isFailed:    "resource?.status?.phase == 'Failed'"
       isCompleted: "resource?.status?.phase == 'Succeeded'"
-    {{- end }}

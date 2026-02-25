@@ -2,7 +2,7 @@
 # Workspace PVC (RWX - shared between server and jobs)
 # =============================================================================
 # Note: Workspace MUST be shared storage (RWX). Block storage is NOT supported.
-# Configure exactly ONE of: existingClaim, efs, fsxLustre, filestore, azureFiles, nfs
+# Configure exactly ONE of: existingClaim, efs, fsxLustre, filestore, nfs, pvc
 # =============================================================================
 
 {{- if .Values.storage.workspace.efs.enabled }}
@@ -11,7 +11,7 @@
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: {{ include "platforma.workspacePvcName" . }}-pv
+  name: {{ include "platforma.workspacePvName" . }}
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: workspace
@@ -35,11 +35,13 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: workspace
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteMany
   storageClassName: ""
-  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
+  volumeName: {{ include "platforma.workspacePvName" . }}
   resources:
     requests:
       storage: 1Pi
@@ -51,7 +53,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: {{ include "platforma.workspacePvcName" . }}-pv
+  name: {{ include "platforma.workspacePvName" . }}
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: workspace
@@ -75,11 +77,13 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: workspace
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteMany
   storageClassName: ""
-  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
+  volumeName: {{ include "platforma.workspacePvName" . }}
   resources:
     requests:
       storage: 1Ti
@@ -91,7 +95,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: {{ include "platforma.workspacePvcName" . }}-pv
+  name: {{ include "platforma.workspacePvName" . }}
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: workspace
@@ -118,60 +122,16 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: workspace
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteMany
   storageClassName: ""
-  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
+  volumeName: {{ include "platforma.workspacePvName" . }}
   resources:
     requests:
       storage: 1200Gi
-{{- end }}
-
-{{- if .Values.storage.workspace.azureFiles.enabled }}
-# -- Azure Files PV + PVC
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: {{ include "platforma.workspacePvcName" . }}-pv
-  labels:
-    {{- include "platforma.labels" . | nindent 4 }}
-    app.kubernetes.io/component: workspace
-spec:
-  capacity:
-    storage: 100Gi
-  volumeMode: Filesystem
-  accessModes:
-    - ReadWriteMany
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
-  azureFile:
-    secretName: {{ .Values.storage.workspace.azureFiles.secretName }}
-    shareName: {{ .Values.storage.workspace.azureFiles.shareName }}
-    readOnly: false
-  mountOptions:
-    - dir_mode=0777
-    - file_mode=0777
-    - uid={{ .Values.jobs.securityContext.runAsUser | default 1010 }}
-    - gid={{ .Values.jobs.securityContext.runAsGroup | default 1010 }}
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ include "platforma.workspacePvcName" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "platforma.labels" . | nindent 4 }}
-    app.kubernetes.io/component: workspace
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: ""
-  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
-  resources:
-    requests:
-      storage: 100Gi
 {{- end }}
 
 {{- if .Values.storage.workspace.nfs.enabled }}
@@ -180,7 +140,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: {{ include "platforma.workspacePvcName" . }}-pv
+  name: {{ include "platforma.workspacePvName" . }}
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: workspace
@@ -204,11 +164,13 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: workspace
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteMany
   storageClassName: ""
-  volumeName: {{ include "platforma.workspacePvcName" . }}-pv
+  volumeName: {{ include "platforma.workspacePvName" . }}
   resources:
     requests:
       storage: 1Ti
@@ -225,6 +187,8 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: workspace
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteMany

@@ -90,6 +90,13 @@ Workspace PVC name
 {{- end }}
 
 {{/*
+Workspace PV name (includes namespace for multi-tenant safety)
+*/}}
+{{- define "platforma.workspacePvName" -}}
+{{- printf "%s-%s-workspace-pv" .Release.Namespace (include "platforma.fullname" .) }}
+{{- end }}
+
+{{/*
 Database PVC name
 */}}
 {{- define "platforma.databasePvcName" -}}
@@ -97,17 +104,6 @@ Database PVC name
 {{- .Values.storage.database.existingClaim }}
 {{- else }}
 {{- printf "%s-database" (include "platforma.fullname" .) }}
-{{- end }}
-{{- end }}
-
-{{/*
-Main storage PVC name (for fs type)
-*/}}
-{{- define "platforma.mainStoragePvcName" -}}
-{{- if .Values.storage.main.fs.existingClaim }}
-{{- .Values.storage.main.fs.existingClaim }}
-{{- else }}
-{{- printf "%s-main-storage" (include "platforma.fullname" .) }}
 {{- end }}
 {{- end }}
 
@@ -152,7 +148,6 @@ Mount paths — single source of truth for all templates
 */}}
 {{- define "platforma.path.database" -}}/data/database{{- end }}
 {{- define "platforma.path.workspace" -}}/data/workspace{{- end }}
-{{- define "platforma.path.mainStorage" -}}/data/main{{- end }}
 {{- define "platforma.path.templates" -}}/etc/platforma/templates{{- end }}
 {{- define "platforma.path.scripts" -}}/etc/platforma/scripts{{- end }}
 {{- define "platforma.path.license" -}}/etc/platforma/license{{- end }}
@@ -176,9 +171,6 @@ Returns "true" if exactly one workspace option is enabled
 {{- if .Values.storage.workspace.filestore.enabled }}
   {{- $count = add $count 1 }}
 {{- end }}
-{{- if .Values.storage.workspace.azureFiles.enabled }}
-  {{- $count = add $count 1 }}
-{{- end }}
 {{- if .Values.storage.workspace.nfs.enabled }}
   {{- $count = add $count 1 }}
 {{- end }}
@@ -186,17 +178,4 @@ Returns "true" if exactly one workspace option is enabled
   {{- $count = add $count 1 }}
 {{- end }}
 {{- eq (int $count) 1 }}
-{{- end }}
-
-{{/*
-Workspace subPath for storage types that don't support path in PV spec.
-FSx Lustre and Azure Files require subPath in Pod mounts.
-Returns empty string if no subPath is needed.
-*/}}
-{{- define "platforma.workspaceSubPath" -}}
-{{- if and .Values.storage.workspace.fsxLustre.enabled (ne (.Values.storage.workspace.fsxLustre.path | default "/") "/") }}
-{{- trimPrefix "/" .Values.storage.workspace.fsxLustre.path }}
-{{- else if and .Values.storage.workspace.azureFiles.enabled (ne (.Values.storage.workspace.azureFiles.path | default "/") "/") }}
-{{- trimPrefix "/" .Values.storage.workspace.azureFiles.path }}
-{{- end }}
 {{- end }}

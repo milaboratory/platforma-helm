@@ -1411,21 +1411,25 @@ Resources:
                 - aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
             build:
               commands:
-                # Teardown mode — triggered by CloudFormation Delete.
-                # Uninstalls Helm releases in reverse order, waits for ALBs to
-                # be fully deleted, then exits so post_build sends SUCCESS to CF.
+                # All install and teardown logic is in ONE shell script so that
+                # `exit 0` in the teardown path truly stops execution (each
+                # CodeBuild command item is a separate subshell — exit 0 there
+                # would otherwise only end that item, letting subsequent items run).
                 - |
+                  # --- TEARDOWN MODE (triggered by CloudFormation Delete) ---
+                  # Uninstalls Helm releases in reverse order, waits for ALBs to
+                  # be fully deleted, then exits so post_build sends SUCCESS to CF.
                   if [ "${TEARDOWN:-false}" = "true" ]; then
                     echo "=== TEARDOWN MODE: uninstalling Helm releases ==="
                     # 1. Platforma first — it owns the Ingress resources that back the ALBs.
                     helm uninstall platforma -n $NAMESPACE --ignore-not-found --wait --timeout 5m || true
                     # 2. Wait for ALBs to be fully deleted.
-                    #    The ALB Controller processes Ingress finalizers and calls AWS to remove ALBs.
+                    #    ALB Controller v2 tags with elbv2.k8s.aws/cluster (not kubernetes.io/cluster/...).
                     #    Only after ALBs are gone is it safe to remove the controller and delete the VPC.
-                    echo "Waiting for ALBs tagged kubernetes.io/cluster/$CLUSTER_NAME to be deleted..."
+                    echo "Waiting for ALBs tagged elbv2.k8s.aws/cluster=$CLUSTER_NAME to be deleted..."
                     for i in $(seq 1 60); do
                       COUNT=$(aws resourcegroupstaggingapi get-resources \
-                        --tag-filters "Key=kubernetes.io/cluster/$CLUSTER_NAME,Values=owned" \
+                        --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
                         --resource-type-filters "elasticloadbalancing:loadbalancer" \
                         --query 'length(ResourceTagMappingList)' --output text --region $REGION 2>/dev/null || echo "0")
                       [ "$COUNT" = "0" ] && echo "  All ALBs deleted." && break
@@ -1446,8 +1450,10 @@ Resources:
                     echo "Teardown complete."
                     exit 0
                   fi
-                # 1. Kueue
-                - |
+
+                  # --- INSTALL PATH ---
+
+                  # 1. Kueue
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
                     --version $KUEUE_VERSION \
                     -n kueue-system --create-namespace \
@@ -1465,17 +1471,18 @@ Resources:
                     --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[1]=kueue-system' \
                     --set metrics.enableClusterQueueResources=true \
                     --wait --timeout 5m
-                # 2. AppWrapper controller
-                - kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml
-                - kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
-                # 2b. Delete AppWrapper webhooks — they inject IAM ARN as a label, which is
-                #     invalid in Kubernetes (colons not allowed). Kueue handles admission instead.
-                - kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
-                - kubectl delete mutatingwebhookconfiguration appwrapper-mutating-webhook-configuration --ignore-not-found
-                # 3. Cluster Autoscaler
-                # 3a. Tag node group ASGs for autodiscovery. CF cannot use !Sub in map keys,
-                #     so k8s.io/cluster-autoscaler/$CLUSTER_NAME must be applied here via CLI.
-                - |
+
+                  # 2. AppWrapper controller
+                  kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml
+                  kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
+                  # 2b. Delete AppWrapper webhooks — they inject IAM ARN as a label, which is
+                  #     invalid in Kubernetes (colons not allowed). Kueue handles admission instead.
+                  kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
+                  kubectl delete mutatingwebhookconfiguration appwrapper-mutating-webhook-configuration --ignore-not-found
+
+                  # 3. Cluster Autoscaler
+                  # 3a. Tag node group ASGs for autodiscovery. CF cannot use !Sub in map keys,
+                  #     so k8s.io/cluster-autoscaler/$CLUSTER_NAME must be applied here via CLI.
                   for NG in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --region $REGION \
                     --query nodegroups --output text); do
                     ASG=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG \
@@ -1490,9 +1497,9 @@ Resources:
                       "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/$CLUSTER_NAME,Value=owned,PropagateAtLaunch=false"
                     echo "Tagged ASG $ASG (nodegroup $NG)"
                   done
-                - helm repo add autoscaler https://kubernetes.github.io/autoscaler
-                - helm repo update
-                - |
+
+                  helm repo add autoscaler https://kubernetes.github.io/autoscaler
+                  helm repo update
                   helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
                     --version $CLUSTER_AUTOSCALER_CHART_VERSION \
                     --set image.tag=v$KUBERNETES_VERSION.0 \
@@ -1509,11 +1516,11 @@ Resources:
                     --set extraArgs.scale-down-utilization-threshold=0.5 \
                     --set extraArgs.expander=least-waste \
                     --wait --timeout 5m
-                # 4. External DNS (installed before ALB Controller so its Service is created
-                #    before the ALB mutating webhook is registered)
-                - helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
-                - helm repo update
-                - |
+
+                  # 4. External DNS (installed before ALB Controller so its Service is created
+                  #    before the ALB mutating webhook is registered)
+                  helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
+                  helm repo update
                   helm upgrade --install external-dns external-dns/external-dns \
                     --version $EXTERNAL_DNS_VERSION \
                     -n $NAMESPACE --create-namespace \
@@ -1524,10 +1531,10 @@ Resources:
                     --set serviceAccount.create=true \
                     --set serviceAccount.name=external-dns \
                     --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN"
-                # 5. AWS Load Balancer Controller
-                - helm repo add eks https://aws.github.io/eks-charts
-                - helm repo update
-                - |
+
+                  # 5. AWS Load Balancer Controller
+                  helm repo add eks https://aws.github.io/eks-charts
+                  helm repo update
                   helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
                     --version $ALB_CONTROLLER_VERSION \
                     -n $NAMESPACE --create-namespace \
@@ -1538,12 +1545,12 @@ Resources:
                     --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
                     --set vpcId=$VPC_ID \
                     --set replicaCount=1
-                # 5b. Log ALB Controller pod status for diagnostics (non-fatal — pods may still be starting)
-                - sleep 30
-                - kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=aws-load-balancer-controller -o wide || true
-                - kubectl describe pods -n $NAMESPACE -l app.kubernetes.io/name=aws-load-balancer-controller 2>&1 | tail -40 || true
-                # 6. Platforma (optional — skipped when DEPLOY_PLATFORMA=false)
-                - |
+                  # 5b. Log ALB Controller pod status for diagnostics (non-fatal — pods may still be starting)
+                  sleep 30
+                  kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=aws-load-balancer-controller -o wide || true
+                  kubectl describe pods -n $NAMESPACE -l app.kubernetes.io/name=aws-load-balancer-controller 2>&1 | tail -40 || true
+
+                  # 6. Platforma (optional — skipped when DEPLOY_PLATFORMA=false)
                   if [ "$DEPLOY_PLATFORMA" = "true" ]; then
                     kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
                     kubectl create secret generic platforma-license \

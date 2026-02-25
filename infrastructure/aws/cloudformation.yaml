@@ -384,6 +384,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-vpc'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -392,6 +394,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-igw'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   VpcGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -414,6 +418,8 @@ Resources:
           Value: !Sub '${ClusterName}-public-1'
         - Key: kubernetes.io/role/elb
           Value: '1'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
@@ -428,6 +434,8 @@ Resources:
           Value: !Sub '${ClusterName}-public-2'
         - Key: kubernetes.io/role/elb
           Value: '1'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   PublicSubnet3:
     Type: AWS::EC2::Subnet
@@ -442,6 +450,8 @@ Resources:
           Value: !Sub '${ClusterName}-public-3'
         - Key: kubernetes.io/role/elb
           Value: '1'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   # Private subnets (for EKS node groups, EFS mount targets)
   PrivateSubnet1:
@@ -456,6 +466,8 @@ Resources:
           Value: !Sub '${ClusterName}-private-1'
         - Key: kubernetes.io/role/internal-elb
           Value: '1'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
@@ -469,6 +481,8 @@ Resources:
           Value: !Sub '${ClusterName}-private-2'
         - Key: kubernetes.io/role/internal-elb
           Value: '1'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   PrivateSubnet3:
     Type: AWS::EC2::Subnet
@@ -482,6 +496,8 @@ Resources:
           Value: !Sub '${ClusterName}-private-3'
         - Key: kubernetes.io/role/internal-elb
           Value: '1'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   # Routing — public subnets
   PublicRouteTable:
@@ -492,6 +508,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-public-rt'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -532,6 +550,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-nat-eip'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   NatGateway:
     Type: AWS::EC2::NatGateway
@@ -543,6 +563,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-nat'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   # Routing — private subnets
   PrivateRouteTable:
@@ -553,6 +575,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-private-rt'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   PrivateRoute:
     Type: AWS::EC2::Route
@@ -599,12 +623,18 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   EksClusterLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/eks/${ClusterName}/cluster'
       RetentionInDays: 30
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   EksCluster:
     Type: AWS::EKS::Cluster
@@ -641,6 +671,9 @@ Resources:
             - Type: api
             - Type: audit
             - Type: authenticator
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   # OIDC provider for IRSA
   # Note: AWS no longer validates the thumbprint for EKS OIDC providers.
@@ -658,6 +691,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-oidc'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   # ---------------------------------------------------------------------------
   # 3. IAM roles
@@ -677,6 +712,9 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   # IRSA trust policies use Fn::Sub with JSON because CloudFormation cannot
   # use intrinsic functions as YAML mapping keys. The OIDC condition key must
@@ -706,6 +744,9 @@ Resources:
             OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   EfsCsiDriverRole:
     Type: AWS::IAM::Role
@@ -732,6 +773,9 @@ Resources:
             OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   PlatformaIrsaRole:
     Type: AWS::IAM::Role
@@ -778,6 +822,58 @@ Resources:
                   - s3:AbortMultipartUpload
                   - s3:ListMultipartUploadParts
                 Resource: !Sub '${S3Bucket.Arn}/*'
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  PlatformaJobsIrsaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-platforma-jobs-irsa'
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Federated": "${OidcProviderArn}"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OidcIssuer}:sub": "system:serviceaccount:${PlatformaNamespace}:platforma-jobs",
+                    "${OidcIssuer}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }]
+            }
+          - OidcProviderArn: !Ref OidcProvider
+            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            PlatformaNamespace: !Ref PlatformaNamespace
+      Policies:
+        - PolicyName: platforma-jobs-s3-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListBucket
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                Resource: !GetAtt S3Bucket.Arn
+              - Sid: ReadWriteObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:GetObjectAttributes
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Resource: !Sub '${S3Bucket.Arn}/*'
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   AutoscalerIrsaRole:
     Type: AWS::IAM::Role
@@ -843,6 +939,9 @@ Resources:
                   }
                 ]
               }
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   ALBControllerPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -1050,6 +1149,9 @@ Resources:
             PlatformaNamespace: !Ref PlatformaNamespace
       ManagedPolicyArns:
         - !Ref ALBControllerPolicy
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   ExternalDNSPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -1097,12 +1199,16 @@ Resources:
             PlatformaNamespace: !Ref PlatformaNamespace
       ManagedPolicyArns:
         - !Ref ExternalDNSPolicy
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   # ---------------------------------------------------------------------------
   # 4. Node groups
   # ---------------------------------------------------------------------------
 
-  # Launch template — propagates cluster-autoscaler discovery tags to EC2 instances.
+  # Launch template — propagates tags to EC2 instances and EBS volumes for
+  # autoscaler discovery and cost tracking.
   NodeGroupLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -1115,6 +1221,12 @@ Resources:
                 Value: 'true'
               - Key: !Sub 'k8s.io/cluster-autoscaler/${ClusterName}'
                 Value: owned
+              - Key: platforma
+                Value: !Ref ClusterName
+          - ResourceType: volume
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
 
   SystemNodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -1311,6 +1423,9 @@ Resources:
       AddonName: aws-ebs-csi-driver
       ServiceAccountRoleArn: !GetAtt EbsCsiDriverRole.Arn
       ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   EfsCsiAddon:
     Type: AWS::EKS::Addon
@@ -1320,6 +1435,9 @@ Resources:
       AddonName: aws-efs-csi-driver
       ServiceAccountRoleArn: !GetAtt EfsCsiDriverRole.Arn
       ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   # ---------------------------------------------------------------------------
   # 5b. Helm deployer — CodeBuild custom resource
@@ -1372,6 +1490,9 @@ Resources:
                 Action:
                   - tag:GetResources
                 Resource: '*'
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   HelmDeployerAccessEntry:
     Type: AWS::EKS::AccessEntry
@@ -1421,6 +1542,8 @@ Resources:
             Value: !GetAtt ExternalDNSRole.Arn
           - Name: PLATFORMA_ROLE_ARN
             Value: !GetAtt PlatformaIrsaRole.Arn
+          - Name: PLATFORMA_JOBS_ROLE_ARN
+            Value: !GetAtt PlatformaJobsIrsaRole.Arn
           - Name: EFS_FILE_SYSTEM_ID
             Value: !Ref EfsFileSystem
           - Name: S3_BUCKET
@@ -1443,6 +1566,9 @@ Resources:
             Value: !Ref ExternalDnsVersion
           - Name: ALB_CONTROLLER_VERSION
             Value: !Ref AlbControllerVersion
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
       Source:
         Type: NO_SOURCE
         BuildSpec: |
@@ -1634,6 +1760,10 @@ Resources:
                     create: true
                     annotations:
                       eks.amazonaws.com/role-arn: $PLATFORMA_ROLE_ARN
+                  jobServiceAccount:
+                    create: true
+                    annotations:
+                      eks.amazonaws.com/role-arn: $PLATFORMA_JOBS_ROLE_ARN
                   ingress:
                     enabled: true
                     className: alb
@@ -1716,6 +1846,9 @@ Resources:
                 Action:
                   - codebuild:StartBuild
                 Resource: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ClusterName}-helm-deployer'
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   TriggerHelmDeployFunction:
     Type: AWS::Lambda::Function
@@ -1726,6 +1859,9 @@ Resources:
       Handler: index.handler
       Role: !GetAtt TriggerHelmDeployRole.Arn
       Timeout: 30
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
       Environment:
         Variables:
           CODEBUILD_PROJECT: !Sub '${ClusterName}-helm-deployer'
@@ -1797,6 +1933,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-efs-sg'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   EfsFileSystem:
     Type: AWS::EFS::FileSystem
@@ -1809,6 +1947,8 @@ Resources:
       FileSystemTags:
         - Key: Name
           Value: !Sub '${ClusterName}-workspace'
+        - Key: platforma
+          Value: !Ref ClusterName
 
   # Mount targets — one per AZ for HA access from all nodes
   EfsMountTarget1:
@@ -1856,6 +1996,9 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
 
   S3BucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -1894,6 +2037,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-certificate'
+        - Key: platforma
+          Value: !Ref ClusterName
 
 # =============================================================================
 # Outputs
@@ -1937,9 +2082,15 @@ Outputs:
 
   PlatformaRoleArn:
     Description: >
-      IRSA role ARN for Platforma service account.
+      IRSA role ARN for Platforma server service account.
       Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
     Value: !GetAtt PlatformaIrsaRole.Arn
+
+  PlatformaJobsRoleArn:
+    Description: >
+      IRSA role ARN for Platforma jobs service account.
+      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
+    Value: !GetAtt PlatformaJobsIrsaRole.Arn
 
   AutoscalerRoleArn:
     Description: >

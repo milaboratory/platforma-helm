@@ -68,7 +68,7 @@ sed "s/platforma-cluster/${CLUSTER_NAME}/g; s/eu-central-1/${AWS_REGION}/g" \
 ```
 
 This creates:
-- EKS 1.31 cluster with OIDC enabled
+- EKS 1.34 cluster with OIDC enabled
 - **System** node group: 2x t3.large (Platforma server, Kueue, controllers)
 - **UI** node group: 0-4x t3.xlarge (interactive tasks, tainted `dedicated=ui`)
 - **Batch-medium** node group: 0-16x m5.2xlarge (8 vCPU, tainted `dedicated=batch`)
@@ -135,7 +135,7 @@ aws ec2 authorize-security-group-ingress \
 # Create EFS filesystem
 EFS_ID=$(aws efs create-file-system \
   --performance-mode generalPurpose \
-  --throughput-mode bursting \
+  --throughput-mode elastic \
   --encrypted \
   --tags Key=Name,Value=${CLUSTER_NAME}-workspace \
   --query 'FileSystemId' --output text)
@@ -215,7 +215,7 @@ cat > /tmp/cluster-autoscaler-policy.json <<EOF
       "Resource": ["*"],
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/k8s.io/cluster-autoscaler/${CLUSTER_NAME}": "owned"
+          "autoscaling:ResourceTag/k8s.io/cluster-autoscaler/${CLUSTER_NAME}": "owned"
         }
       }
     }
@@ -381,9 +381,9 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns
 
 ---
 
-## Step 6: Create S3 bucket and Platforma IRSA
+## Step 6: Create S3 bucket and IRSA roles
 
-Platforma uses S3 for primary storage. Create a least-privilege IAM policy scoped to the bucket, then bind it to the Platforma Kubernetes service account via IRSA.
+Platforma uses S3 for primary storage. Two service accounts need S3 access: `platforma` (server) and `platforma-jobs` (compute jobs). The Helm chart creates the K8s service accounts — you only need to create the IAM roles and pass their ARNs via `--set` in Step 10.
 
 ```bash
 # Create S3 bucket
@@ -404,7 +404,7 @@ aws s3api put-bucket-encryption \
   --server-side-encryption-configuration \
     '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 
-# Create IAM policy
+# Create IAM policy (shared by both service accounts)
 cat > /tmp/platforma-s3-policy.json <<EOF
 {
   "Version": "2012-10-17",
@@ -433,21 +433,70 @@ aws iam create-policy \
   --policy-name ${CLUSTER_NAME}-platforma-s3-access \
   --policy-document file:///tmp/platforma-s3-policy.json
 
-# Create namespace and IRSA
+# Create namespace
 kubectl create namespace $PLATFORMA_NAMESPACE 2>/dev/null || true
 
-eksctl create iamserviceaccount \
-  --cluster=$CLUSTER_NAME \
-  --namespace=$PLATFORMA_NAMESPACE \
-  --name=platforma \
-  --attach-policy-arn=arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-platforma-s3-access \
-  --approve
-```
+# Get OIDC issuer for trust policies
+OIDC_ISSUER=$(aws eks describe-cluster --name $CLUSTER_NAME \
+  --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||')
+OIDC_PROVIDER_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_ISSUER}"
 
-Verify IRSA binding:
+# Create IRSA role for Platforma server (SA name: platforma — created by the Helm chart)
+cat > /tmp/platforma-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Federated": "${OIDC_PROVIDER_ARN}"},
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "${OIDC_ISSUER}:sub": "system:serviceaccount:${PLATFORMA_NAMESPACE}:platforma",
+        "${OIDC_ISSUER}:aud": "sts.amazonaws.com"
+      }
+    }
+  }]
+}
+EOF
 
-```bash
-kubectl describe sa platforma -n $PLATFORMA_NAMESPACE | grep eks.amazonaws.com/role-arn
+PLATFORMA_ROLE_ARN=$(aws iam create-role \
+  --role-name ${CLUSTER_NAME}-platforma-irsa \
+  --assume-role-policy-document file:///tmp/platforma-trust.json \
+  --query 'Role.Arn' --output text)
+
+aws iam attach-role-policy \
+  --role-name ${CLUSTER_NAME}-platforma-irsa \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-platforma-s3-access
+
+# Create IRSA role for Platforma jobs (SA name: platforma-jobs — created by the Helm chart)
+cat > /tmp/platforma-jobs-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Federated": "${OIDC_PROVIDER_ARN}"},
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "${OIDC_ISSUER}:sub": "system:serviceaccount:${PLATFORMA_NAMESPACE}:platforma-jobs",
+        "${OIDC_ISSUER}:aud": "sts.amazonaws.com"
+      }
+    }
+  }]
+}
+EOF
+
+PLATFORMA_JOBS_ROLE_ARN=$(aws iam create-role \
+  --role-name ${CLUSTER_NAME}-platforma-jobs-irsa \
+  --assume-role-policy-document file:///tmp/platforma-jobs-trust.json \
+  --query 'Role.Arn' --output text)
+
+aws iam attach-role-policy \
+  --role-name ${CLUSTER_NAME}-platforma-jobs-irsa \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-platforma-s3-access
+
+echo "Platforma role ARN:      $PLATFORMA_ROLE_ARN"
+echo "Platforma jobs role ARN: $PLATFORMA_JOBS_ROLE_ARN"
 ```
 
 ---
@@ -521,7 +570,7 @@ kubectl wait --for=condition=Available deployment/kueue-controller-manager \
 AppWrapper is a separate component from Kueue with its own controller and CRD.
 
 ```bash
-kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
+kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.2.0/install.yaml
 
 kubectl wait --for=condition=Available deployment/appwrapper-controller-manager \
   -n appwrapper-system --timeout=120s
@@ -549,7 +598,7 @@ kubectl create secret generic platforma-license \
 
 ## Step 10: Install Platforma
 
-The `values-aws-s3.yaml` file enables sub-charts and StorageClass creation by default (for the CloudFormation path). Disable them here since you've set them up manually in previous steps:
+The `values-aws-s3.yaml` file enables sub-charts and StorageClass creation by default (for the CloudFormation path). Disable them here since you've set them up manually in previous steps. The chart creates the `platforma` and `platforma-jobs` service accounts — pass the IRSA role ARNs from Step 6:
 
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
@@ -558,8 +607,8 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   -f values-aws-s3.yaml \
   --set storage.main.s3.bucket=$S3_BUCKET \
   --set storage.main.s3.region=$AWS_REGION \
-  --set serviceAccount.create=false \
-  --set serviceAccount.name=platforma \
+  --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_ROLE_ARN" \
+  --set "jobServiceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_JOBS_ROLE_ARN" \
   --set storageClasses.gp3.create=false \
   --set storageClasses.efs.create=false \
   --set cluster-autoscaler.enabled=false \
@@ -669,7 +718,7 @@ helm uninstall external-dns -n kube-system
 helm uninstall aws-load-balancer-controller -n kube-system
 helm uninstall kueue -n kueue-system
 helm uninstall cluster-autoscaler -n kube-system
-kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
+kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.2.0/install.yaml
 
 # Delete EFS (uses $EFS_ID and $SG_ID from Step 2)
 for MT_ID in $(aws efs describe-mount-targets --file-system-id $EFS_ID \
@@ -686,11 +735,23 @@ aws ec2 delete-security-group --group-id $SG_ID
 # Delete ACM certificate
 # aws acm delete-certificate --certificate-arn $CERT_ARN
 
-# Delete IAM resources
+# Delete IAM resources — eksctl-managed service accounts (controllers)
 eksctl delete iamserviceaccount --cluster=$CLUSTER_NAME --namespace=kube-system --name=cluster-autoscaler
 eksctl delete iamserviceaccount --cluster=$CLUSTER_NAME --namespace=kube-system --name=aws-load-balancer-controller
 eksctl delete iamserviceaccount --cluster=$CLUSTER_NAME --namespace=kube-system --name=external-dns
-eksctl delete iamserviceaccount --cluster=$CLUSTER_NAME --namespace=$PLATFORMA_NAMESPACE --name=platforma
+
+# Delete IAM resources — manually-created IRSA roles (Platforma)
+aws iam detach-role-policy \
+  --role-name ${CLUSTER_NAME}-platforma-irsa \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-platforma-s3-access
+aws iam delete-role --role-name ${CLUSTER_NAME}-platforma-irsa
+
+aws iam detach-role-policy \
+  --role-name ${CLUSTER_NAME}-platforma-jobs-irsa \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-platforma-s3-access
+aws iam delete-role --role-name ${CLUSTER_NAME}-platforma-jobs-irsa
+
+# Delete IAM policies
 aws iam delete-policy --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-autoscaler-policy
 aws iam delete-policy --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-alb-controller-policy
 aws iam delete-policy --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-external-dns-policy

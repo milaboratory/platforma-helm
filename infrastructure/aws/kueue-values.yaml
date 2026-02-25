@@ -21,7 +21,7 @@ controllerManager:
 
 # -- AppWrapper support
 # Requires separate AppWrapper controller installation:
-#   kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
+#   kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.2.0/install.yaml
 featureGates:
   AppWrapper: true
 

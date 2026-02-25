@@ -73,7 +73,7 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | Cluster name | `platforma-cluster` | EKS cluster name |
-| Kubernetes version | `1.31` | EKS version |
+| Kubernetes version | `1.34` | EKS version |
 | Platforma namespace | `platforma` | K8s namespace (created later, used in IRSA trust). All CLI commands in this guide use the default `platforma`. If you change this parameter, use the same value in every `kubectl -n` and `helm install -n` command — the IRSA trust policies for all four service accounts are bound to this namespace, so any mismatch silently breaks AWS API access. |
 
 ### Networking
@@ -93,6 +93,8 @@ Default values work for most deployments. Adjust batch instance types and max co
 |-----------|---------|-------------|
 | System instance type | `t3.large` | Platforma server, Kueue, controllers |
 | System node count | `2` | Fixed count |
+| System-large instance type | `t3.xlarge` | Platforma server on large datasets (4 vCPU / 16 GiB) |
+| System-large max nodes | `4` | Autoscales from 0; set to 0 to disable |
 | UI instance type | `t3.xlarge` | Interactive tasks |
 | UI max nodes | `4` | Autoscales from 0 |
 | UI always-on node | `false` | Keep 1 UI node running at all times (~$200/month, eliminates cold start) |
@@ -108,8 +110,9 @@ Default values work for most deployments. Adjust batch instance types and max co
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | EFS performance mode | `generalPurpose` | `maxIO` for very high throughput |
-| EFS throughput mode | `bursting` | `elastic` for consistent high throughput |
 | S3 bucket name | *(auto-generated)* | Auto-generates as `platforma-storage-<account>-<region>` |
+
+EFS throughput mode is hardcoded to `elastic` (pay-per-use, no burst credits to exhaust). This is not configurable.
 
 ### DNS / TLS (required)
 
@@ -146,6 +149,7 @@ Once complete, go to the **Outputs** tab. The outputs below are used in the inst
 | `ALBControllerRoleArn` | Step 5 |
 | `ExternalDNSRoleArn` | Step 5 |
 | `PlatformaRoleArn` | Step 5 |
+| `PlatformaJobsRoleArn` | Step 5 |
 | `CertificateArn` | Step 5 (ingress) |
 
 ---
@@ -211,7 +215,7 @@ kubectl wait --for=condition=Available deployment/kueue-controller-manager \
 ### Install AppWrapper CRD and controller
 
 ```bash
-kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
+kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.2.0/install.yaml
 
 kubectl wait --for=condition=Available deployment/appwrapper-controller-manager \
   -n appwrapper-system --timeout=120s
@@ -276,6 +280,7 @@ EFS_ID=<EfsFileSystemId>
 S3_BUCKET=<S3BucketName>
 CERTIFICATE_ARN=<CertificateArn>
 PLATFORMA_ROLE_ARN=<PlatformaRoleArn>
+PLATFORMA_JOBS_ROLE_ARN=<PlatformaJobsRoleArn>
 AUTOSCALER_ROLE_ARN=<AutoscalerRoleArn>
 ALB_ROLE_ARN=<ALBControllerRoleArn>
 EXTERNALDNS_ROLE_ARN=<ExternalDNSRoleArn>
@@ -292,6 +297,7 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set storage.main.s3.bucket=$S3_BUCKET \
   --set storage.main.s3.region=$REGION \
   --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_ROLE_ARN" \
+  --set "jobServiceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_JOBS_ROLE_ARN" \
   \
   --set storageClasses.efs.fileSystemId=$EFS_ID \
   \
@@ -565,7 +571,7 @@ helm uninstall kueue -n kueue-system
 # Delete all AppWrapper CRs before removing the controller — the CRD finalizer
 # blocks controller deletion until no AppWrapper objects remain.
 kubectl delete appwrappers --all -A 2>/dev/null || true
-kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml 2>/dev/null || \
+kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/v1.2.0/install.yaml 2>/dev/null || \
   kubectl delete namespace appwrapper-system --ignore-not-found
 # CRDs are not removed by the above command; delete them explicitly if needed:
 kubectl get crd | grep appwrapper | awk '{print $1}' | xargs kubectl delete crd 2>/dev/null || true

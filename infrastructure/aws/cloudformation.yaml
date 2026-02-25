@@ -29,6 +29,8 @@ Metadata:
         Parameters:
           - SystemNodeInstanceType
           - SystemNodeCount
+          - SystemLargeNodeInstanceType
+          - SystemLargeNodeMaxCount
           - UiNodeInstanceType
           - UiNodeMaxCount
           - UiNodeAlwaysOn
@@ -82,6 +84,10 @@ Metadata:
         default: System instance type
       SystemNodeCount:
         default: System node count
+      SystemLargeNodeInstanceType:
+        default: 'System-large instance type (4 vCPU / 16 GiB)'
+      SystemLargeNodeMaxCount:
+        default: System-large max node count
       UiNodeInstanceType:
         default: UI instance type
       UiNodeMaxCount:
@@ -218,6 +224,18 @@ Parameters:
     MinValue: 1
     MaxValue: 4
     Description: System node group desired count (max 4)
+
+  SystemLargeNodeInstanceType:
+    Type: String
+    Default: t3.xlarge
+    Description: 'System-large node group instance type (Platforma server on large datasets)'
+
+  SystemLargeNodeMaxCount:
+    Type: Number
+    Default: 4
+    MinValue: 0
+    MaxValue: 50
+    Description: System-large node group maximum autoscaling count (scales from 0; set to 0 to disable)
 
   UiNodeInstanceType:
     Type: String
@@ -1124,6 +1142,34 @@ Resources:
         k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
+  SystemLargeNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: system-large
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - !Ref SystemLargeNodeInstanceType
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !Ref SystemLargeNodeMaxCount
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: system
+      Tags:
+        nodegroup-type: system-large
+        k8s.io/cluster-autoscaler/enabled: 'true'
+        platforma: !Sub "${ClusterName}"
+
   UiNodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:
@@ -1366,7 +1412,7 @@ Resources:
           - Name: AUTOSCALER_ROLE_ARN
             Value: !GetAtt AutoscalerIrsaRole.Arn
           - Name: VPC_ID
-            Value: !Ref Vpc
+            Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
           - Name: ALB_ROLE_ARN
             Value: !GetAtt ALBControllerRole.Arn
           - Name: EXTERNALDNS_ROLE_ARN
@@ -1445,6 +1491,8 @@ Resources:
                     helm uninstall external-dns -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
                     helm uninstall cluster-autoscaler -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
                     helm uninstall kueue -n kueue-system --ignore-not-found --wait --timeout 3m || true
+                    # Delete AppWrapper custom resources before CRDs (finalizers would block CRD deletion)
+                    kubectl delete appwrappers --all -A --ignore-not-found || true
                     kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml \
                       --ignore-not-found || true
                     echo "Teardown complete."
@@ -1524,13 +1572,14 @@ Resources:
                   helm upgrade --install external-dns external-dns/external-dns \
                     --version $EXTERNAL_DNS_VERSION \
                     -n $NAMESPACE --create-namespace \
-                    --set policy=upsert-only \
+                    --set policy=sync \
                     --set registry=txt \
                     --set txtOwnerId=$CLUSTER_NAME \
                     --set "zoneIdFilters[0]=$HOSTED_ZONE_ID" \
                     --set serviceAccount.create=true \
                     --set serviceAccount.name=external-dns \
-                    --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN"
+                    --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \
+                    --wait --timeout 3m
 
                   # 5. AWS Load Balancer Controller
                   helm repo add eks https://aws.github.io/eks-charts
@@ -1544,11 +1593,8 @@ Resources:
                     --set serviceAccount.name=aws-load-balancer-controller \
                     --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
                     --set vpcId=$VPC_ID \
-                    --set replicaCount=1
-                  # 5b. Log ALB Controller pod status for diagnostics (non-fatal — pods may still be starting)
-                  sleep 30
-                  kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=aws-load-balancer-controller -o wide || true
-                  kubectl describe pods -n $NAMESPACE -l app.kubernetes.io/name=aws-load-balancer-controller 2>&1 | tail -40 || true
+                    --set replicaCount=1 \
+                    --wait --timeout 5m
 
                   # 6. Platforma (optional — skipped when DEPLOY_PLATFORMA=false)
                   if [ "$DEPLOY_PLATFORMA" = "true" ]; then
@@ -1642,7 +1688,6 @@ Resources:
                     STATUS="FAILED"
                     REASON="Helm deployment failed. Check CodeBuild logs: $CODEBUILD_BUILD_ID"
                   fi
-                - |
                   curl -s -X PUT -H "Content-Type: " \
                     -d "{\"Status\":\"$STATUS\",\"Reason\":\"$REASON\",\"PhysicalResourceId\":\"$CODEBUILD_BUILD_ID\",\"StackId\":\"$CFN_STACK_ID\",\"RequestId\":\"$CFN_REQUEST_ID\",\"LogicalResourceId\":\"$CFN_LOGICAL_ID\",\"Data\":{}}" \
                     "$CFN_RESPONSE_URL"
@@ -1754,6 +1799,7 @@ Resources:
   EfsFileSystem:
     Type: AWS::EFS::FileSystem
     DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       PerformanceMode: !Ref EfsPerformanceMode
       ThroughputMode: elastic
@@ -1792,7 +1838,8 @@ Resources:
   # ---------------------------------------------------------------------------
   S3Bucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Delete
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !If
         - AutoGenerateS3Name

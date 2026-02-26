@@ -390,8 +390,70 @@ app:
 
 | Mode | Description |
 |------|-------------|
-| `dedicated` (default) | Chart creates ClusterQueues, LocalQueues, ResourceFlavors |
-| `shared` | Chart references pre-existing Kueue resources |
+| `dedicated` (default) | Chart creates all Kueue resources |
+| `shared` | Chart references externally-managed cluster resources, creates LocalQueues |
+
+#### What each mode creates
+
+| Resource | Scope | Dedicated (primary) | Dedicated (secondary) | Shared |
+|----------|-------|--------------------|-----------------------|--------|
+| ResourceFlavors | Cluster | Created | Skipped | External |
+| ClusterQueues | Cluster | Created | Skipped | External |
+| WorkloadPriorityClasses | Cluster | Created | Skipped | External |
+| LocalQueues | Namespace | Created | Created | Created |
+| Job template ConfigMap | Namespace | Created | Created | Created |
+
+#### Dedicated mode: single install
+
+Default behavior — chart creates all Kueue resources:
+
+```yaml
+kueue:
+  mode: dedicated
+```
+
+#### Dedicated mode: multiple installs
+
+When deploying multiple Platforma instances on the same cluster sharing node pools:
+
+**First install** (creates cluster infrastructure):
+```yaml
+kueue:
+  mode: dedicated
+  dedicated:
+    clusterResourceName: "platforma"  # stable name shared across installs
+```
+
+**Second install** (references first install's cluster resources):
+```yaml
+kueue:
+  mode: dedicated
+  dedicated:
+    createClusterResources: false       # skip cluster-scoped resources
+    clusterResourceName: "platforma"    # must match first install
+```
+
+Both installs create their own LocalQueues pointing at the same ClusterQueues. Jobs from both namespaces compete fairly in the shared queues.
+
+> **Note:** The primary install (with `createClusterResources: true`) owns the cluster-scoped resources and must be uninstalled last.
+
+#### Shared mode
+
+For clusters where Kueue infrastructure is managed externally (e.g., by a platform team). You must create ClusterQueues, ResourceFlavors, and WorkloadPriorityClasses outside the chart. The chart creates LocalQueues pointing at your ClusterQueues:
+
+```yaml
+kueue:
+  mode: shared
+  shared:
+    clusterQueues:
+      ui: "my-ui-clusterqueue"
+      batch: "my-batch-clusterqueue"
+    priorities:
+      uiTasks: "my-ui-priority"
+      high: "my-high-priority"
+      normal: "my-normal-priority"
+      low: "my-low-priority"
+```
 
 ### Job queues
 

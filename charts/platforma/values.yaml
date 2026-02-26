@@ -266,6 +266,14 @@ kueue:
   # UI pool resources are guaranteed (borrowingLimit: 0).
   # Batch pool can borrow idle UI capacity.
   dedicated:
+    # -- When false, skip cluster-scoped resources (ResourceFlavors, ClusterQueues, WorkloadPriorityClasses).
+    # LocalQueues and ConfigMap are always created. Set to false for secondary installs
+    # sharing Kueue infrastructure with a primary install.
+    createClusterResources: true
+    # -- Name prefix for cluster-scoped resources.
+    # All installs sharing Kueue infrastructure must use the same value.
+    # Default (empty): uses the Helm release fullname.
+    clusterResourceName: ""
     pools:
       ui:
         # -- Cluster queue resource quota
@@ -294,11 +302,21 @@ kueue:
           #   value: batch
           #   effect: NoSchedule
 
-  # -- Shared mode configuration (reference existing Kueue resources)
+  # -- Shared mode configuration
+  # References externally-managed Kueue cluster resources.
+  # User must create ClusterQueues, ResourceFlavors, and WorkloadPriorityClasses outside the chart.
+  # Chart creates LocalQueues per namespace pointing at the specified ClusterQueues.
   shared:
-    queues:
-      ui: ""       # Existing LocalQueue name for UI tasks
-      batch: ""    # Existing LocalQueue name for batch tasks
+    # -- ClusterQueue names to reference (chart creates LocalQueues pointing at these)
+    clusterQueues:
+      ui: ""       # ClusterQueue name for UI tasks
+      batch: ""    # ClusterQueue name for batch tasks
+    # -- WorkloadPriorityClass names (must exist in cluster)
+    priorities:
+      uiTasks: ""
+      high: ""
+      normal: ""
+      low: ""
 
 # =============================================================================
 # NETWORKING

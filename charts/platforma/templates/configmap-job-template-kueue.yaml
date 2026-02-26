@@ -27,16 +27,16 @@ data:
         # Queue label for Kueue - maps Platforma queue to Kueue LocalQueue
         <<- if eq .PlatformaQueue "ui-tasks" >>
         kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.uiQueueName" . }}"
-        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-ui"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.kueue.priorityClassName.ui" . }}"
         <<- else if eq .PlatformaQueue "heavy" >>
         kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.batchQueueName" . }}"
-        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-high"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.kueue.priorityClassName.high" . }}"
         <<- else if eq .PlatformaQueue "medium" >>
         kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.batchQueueName" . }}"
-        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-normal"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.kueue.priorityClassName.normal" . }}"
         <<- else >>
         kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.batchQueueName" . }}"
-        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-low"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.kueue.priorityClassName.low" . }}"
         <<- end >>
       annotations:
         workload.codeflare.dev.appwrapper/warmupGracePeriodDuration: "2m"

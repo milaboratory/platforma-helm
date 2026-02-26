@@ -259,6 +259,8 @@
         "dedicated": {
           "type": "object",
           "properties": {
+            "createClusterResources": { "type": "boolean", "default": true },
+            "clusterResourceName": { "type": "string" },
             "pools": {
               "type": "object",
               "properties": {
@@ -299,11 +301,21 @@
         "shared": {
           "type": "object",
           "properties": {
-            "queues": {
+            "clusterQueues": {
               "type": "object",
               "properties": {
                 "ui": { "type": "string" },
                 "batch": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "priorities": {
+              "type": "object",
+              "properties": {
+                "uiTasks": { "type": "string" },
+                "high": { "type": "string" },
+                "normal": { "type": "string" },
+                "low": { "type": "string" }
               },
               "additionalProperties": false
             }

@@ -35,6 +35,7 @@ Metadata:
           - DeployPlatforma
           - LicenseKey
           - PlatformaVersion
+          - PlatformaImage
       - Label:
           default: Authentication (required when deploying Platforma)
         Parameters:
@@ -119,6 +120,8 @@ Metadata:
         default: Platforma license key (required when DeployPlatforma=true)
       PlatformaVersion:
         default: Platforma chart version
+      PlatformaImage:
+        default: Custom container image (leave empty for chart default)
       EfsPerformanceMode:
         default: 'EFS performance mode (generalPurpose or maxIO)'
       S3BucketName:
@@ -195,8 +198,15 @@ Parameters:
 
   PlatformaVersion:
     Type: String
-    Default: '3.0.0'
+    Default: '3.0.0-rc.2'
     Description: Platforma Helm chart version (oci://ghcr.io/milaboratory/platforma-helm/platforma)
+
+  PlatformaImage:
+    Type: String
+    Default: ''
+    Description: >
+      Custom Platforma container image (e.g. 123456.dkr.ecr.eu-central-1.amazonaws.com/repo:tag).
+      Leave empty to use the chart default image.
 
   # --- Authentication ---
   AuthMethod:
@@ -214,8 +224,9 @@ Parameters:
     NoEcho: true
     Description: >
       htpasswd file content (one line per user, e.g. "user:$apr1$...").
-      Required when AuthMethod=htpasswd and DeployPlatforma=true.
-      Generate with: htpasswd -nB username
+      When empty and AuthMethod=htpasswd, a random admin password is auto-generated
+      and stored in SSM Parameter Store (see outputs).
+      Generate manually with: htpasswd -nB username
 
   LdapServer:
     Type: String
@@ -1574,6 +1585,11 @@ Resources:
                 Action:
                   - autoscaling:CreateOrUpdateTags
                 Resource: '*'
+              # Store auto-generated admin password in SSM Parameter Store
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ClusterName}/platforma/*'
               # Needed during teardown to wait for ALBs to be deleted (resourcegroupstaggingapi)
               - Effect: Allow
                 Action:
@@ -1639,6 +1655,8 @@ Resources:
             Value: !Ref S3Bucket
           - Name: PLATFORMA_VERSION
             Value: !Ref PlatformaVersion
+          - Name: PLATFORMA_IMAGE
+            Value: !Ref PlatformaImage
           - Name: DEPLOY_PLATFORMA
             Value: !Ref DeployPlatforma
           - Name: HOSTED_ZONE_ID
@@ -1829,6 +1847,11 @@ Resources:
                     --set replicaCount=1 \
                     --wait --timeout 5m
 
+                  # Wait for ALB webhook to be ready (cert rotation after upgrade can
+                  # cause x509 errors if Platforma patches an Ingress too soon).
+                  kubectl rollout status deployment/aws-load-balancer-controller -n $NAMESPACE --timeout=120s
+                  sleep 5
+
                   # 6. Platforma (optional — skipped when DEPLOY_PLATFORMA=false)
                   if [ "$DEPLOY_PLATFORMA" = "true" ]; then
                     kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
@@ -1840,7 +1863,19 @@ Resources:
                       --dry-run=client -o yaml | kubectl apply -f -
 
                     # Auth secret (htpasswd mode only)
-                    if [ "$AUTH_METHOD" = "htpasswd" ] && [ -n "$HTPASSWD_CONTENT" ]; then
+                    if [ "$AUTH_METHOD" = "htpasswd" ]; then
+                      if [ -z "$HTPASSWD_CONTENT" ]; then
+                        echo "No HtpasswdContent provided — generating random admin password"
+                        ADMIN_PASSWORD=$(openssl rand -base64 12)
+                        HTPASSWD_CONTENT="admin:$(openssl passwd -apr1 "$ADMIN_PASSWORD")"
+                        aws ssm put-parameter \
+                          --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                          --type SecureString \
+                          --value "$ADMIN_PASSWORD" \
+                          --overwrite \
+                          --region $REGION
+                        echo "Admin password stored in SSM: /${CLUSTER_NAME}/platforma/admin-password"
+                      fi
                       kubectl create secret generic platforma-htpasswd \
                         -n $NAMESPACE \
                         --from-literal=htpasswd="$HTPASSWD_CONTENT" \
@@ -1857,10 +1892,9 @@ Resources:
                       size: 50Gi
                       storageClass: gp3
                     workspace:
-                      pvc:
+                      efs:
                         enabled: true
-                        storageClass: efs-platforma
-                        size: 100Gi
+                        fileSystemId: $EFS_FILE_SYSTEM_ID
                     main:
                       s3:
                         bucket: $S3_BUCKET
@@ -1934,18 +1968,25 @@ Resources:
                       # Convert comma-separated search rules to YAML array
                       if [ -n "$LDAP_SEARCH_RULES" ]; then
                         echo "    searchRules:" >> /tmp/platforma-values.yaml
-                        IFS=',' read -ra RULES <<< "$LDAP_SEARCH_RULES"
-                        for rule in "${RULES[@]}"; do
+                        echo "$LDAP_SEARCH_RULES" | tr ',' '\n' | while read -r rule; do
                           rule=$(echo "$rule" | xargs)
                           echo "      - \"$rule\"" >> /tmp/platforma-values.yaml
                         done
                       fi
                     fi
 
+                    HELM_ARGS=""
+                    if [ -n "$PLATFORMA_IMAGE" ]; then
+                      IMG_REPO=$(echo "$PLATFORMA_IMAGE" | sed 's/:.*//')
+                      IMG_TAG=$(echo "$PLATFORMA_IMAGE" | sed 's/.*://')
+                      HELM_ARGS="--set image.repository=$IMG_REPO --set image.tag=$IMG_TAG"
+                    fi
+
                     helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
                       --version $PLATFORMA_VERSION \
                       -n $NAMESPACE \
                       -f /tmp/platforma-values.yaml \
+                      $HELM_ARGS \
                       --wait --timeout 10m
                   fi
             post_build:
@@ -1958,8 +1999,11 @@ Resources:
                     STATUS="FAILED"
                     REASON="Helm deployment failed. Check CodeBuild logs: $CODEBUILD_BUILD_ID"
                   fi
+                  # Use a stable PhysicalResourceId so CF doesn't trigger cleanup
+                  # deletes (which run teardown) on every update.
+                  PHYSICAL_ID="${CLUSTER_NAME}-helm-deployer"
                   curl -s -X PUT -H "Content-Type: " \
-                    -d "{\"Status\":\"$STATUS\",\"Reason\":\"$REASON\",\"PhysicalResourceId\":\"$CODEBUILD_BUILD_ID\",\"StackId\":\"$CFN_STACK_ID\",\"RequestId\":\"$CFN_REQUEST_ID\",\"LogicalResourceId\":\"$CFN_LOGICAL_ID\",\"Data\":{}}" \
+                    -d "{\"Status\":\"$STATUS\",\"Reason\":\"$REASON\",\"PhysicalResourceId\":\"$PHYSICAL_ID\",\"StackId\":\"$CFN_STACK_ID\",\"RequestId\":\"$CFN_REQUEST_ID\",\"LogicalResourceId\":\"$CFN_LOGICAL_ID\",\"Data\":{}}" \
                     "$CFN_RESPONSE_URL"
 
   TriggerHelmDeployRole:
@@ -2007,13 +2051,24 @@ Resources:
         ZipFile: |
           import boto3, json, os, urllib.request
           def handler(event, context):
+            project = os.environ['CODEBUILD_PROJECT']
+            # Stable physical resource ID prevents CF cleanup deletes from
+            # triggering teardown on every update.
+            stable_id = project
             extra = []
             if event['RequestType'] == 'Delete':
+              old_id = event.get('PhysicalResourceId', '')
+              if old_id != stable_id:
+                # CF is cleaning up an old physical resource (e.g., from a
+                # previous update that used the build ID). Just acknowledge.
+                print(f'Cleanup delete for old resource {old_id}, skipping teardown')
+                send(event, 'SUCCESS', {}, stable_id)
+                return
               extra = [{'name': 'TEARDOWN', 'value': 'true', 'type': 'PLAINTEXT'}]
             try:
               cb = boto3.client('codebuild')
               resp = cb.start_build(
-                projectName=os.environ['CODEBUILD_PROJECT'],
+                projectName=project,
                 environmentVariablesOverride=[
                   {'name': 'CFN_RESPONSE_URL', 'value': event['ResponseURL'], 'type': 'PLAINTEXT'},
                   {'name': 'CFN_STACK_ID',     'value': event['StackId'],     'type': 'PLAINTEXT'},
@@ -2021,17 +2076,15 @@ Resources:
                   {'name': 'CFN_LOGICAL_ID',   'value': event['LogicalResourceId'], 'type': 'PLAINTEXT'},
                 ] + extra
               )
-              build_id = resp['build']['id']
-              print(f'Started CodeBuild build: {build_id}')
-              # Do NOT send CFN response here — CodeBuild post_build will send it.
+              print(f'Started CodeBuild build: {resp["build"]["id"]}')
             except Exception as e:
               print(f'Failed to start CodeBuild: {e}')
-              send(event, 'FAILED', {'Error': str(e)})
-          def send(event, status, data):
+              send(event, 'FAILED', {'Error': str(e)}, stable_id)
+          def send(event, status, data, physical_id=None):
             body = json.dumps({
               'Status': status,
-              'Reason': f'See CloudWatch Logs',
-              'PhysicalResourceId': event.get('PhysicalResourceId', 'helm-deployer'),
+              'Reason': 'See CloudWatch Logs',
+              'PhysicalResourceId': physical_id or event.get('PhysicalResourceId', 'helm-deployer'),
               'StackId': event['StackId'],
               'RequestId': event['RequestId'],
               'LogicalResourceId': event['LogicalResourceId'],
@@ -2056,7 +2109,9 @@ Resources:
       # Properties below trigger re-deployment when changed during stack update.
       # The Lambda does not read these — they exist only so CloudFormation
       # detects property changes and sends an UPDATE event.
+      ForceUpdate: "3"  # Bump to force re-deployment
       PlatformaVersion: !Ref PlatformaVersion
+      PlatformaImage: !Ref PlatformaImage
       DeployPlatforma: !Ref DeployPlatforma
       LicenseKey: !Ref LicenseKey
       AuthMethod: !Ref AuthMethod
@@ -2207,6 +2262,12 @@ Outputs:
       Platforma Desktop App connection endpoint.
       Open the Desktop App and connect to this address.
     Value: !Sub '${DomainName}:443'
+
+  AdminPasswordSSMPath:
+    Description: >
+      SSM Parameter containing auto-generated admin password (htpasswd mode only).
+      Retrieve with: aws ssm get-parameter --name /<ClusterName>/platforma/admin-password --with-decryption --query Parameter.Value --output text
+    Value: !Sub '/${ClusterName}/platforma/admin-password'
 
   ClusterName:
     Description: >

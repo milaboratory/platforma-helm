@@ -1,11 +1,11 @@
 # =============================================================================
 # StorageClasses (optional, cluster-scoped)
 # =============================================================================
-# Created automatically when cloud: aws. These are cluster-scoped resources.
+# Created automatically when provider: aws. These are cluster-scoped resources.
 # GKE and AKS ship with required StorageClasses pre-configured.
 # =============================================================================
 
-{{- if eq .Values.cloud "aws" }}
+{{- if eq .Values.provider "aws" }}
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass

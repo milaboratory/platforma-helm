@@ -177,16 +177,16 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
-            # Debug API (always enabled; binding depends on app.debug.enabled)
+            # Debug API (always accessible via port-forward on 9091)
             - "--debug-enabled"
             - "--debug-port=9091"
-            {{- if .Values.app.debug.enabled }}
             - "--debug-ip=0.0.0.0"
+            {{- if .Values.app.debug.enabled }}
             - "--log-level=debug"
             - "--keep-workdirs=1h"
-            {{- else }}
-            - "--debug-ip=127.0.0.1"
             {{- end }}
+            # Session stability (prevents invalidation on pod restart)
+            - "--auth-sessions-gen=1"
             # Extra arguments
             {{- range .Values.app.extraArgs }}
             - {{ . | quote }}
@@ -201,11 +201,9 @@ spec:
             - name: metrics
               containerPort: 9090
               protocol: TCP
-            {{- if .Values.app.debug.enabled }}
             - name: debug
               containerPort: 9091
               protocol: TCP
-            {{- end }}
           env:
             # License (env var - supports both PL_LICENSE and MI_LICENSE)
             - name: PL_LICENSE

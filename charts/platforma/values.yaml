@@ -398,10 +398,9 @@ app:
     # - "--network-mode=proxy"
 
   # -- Debug mode
-  # The debug API (pprof, DB inspection) always runs on port 9091.
-  # When enabled: binds on 0.0.0.0 (accessible via port-forward), sets log
-  # level to debug, keeps job workdirs for 1h.
-  # When disabled: binds on 127.0.0.1 (pod-internal only).
+  # The debug API (pprof, DB inspection) always runs on port 9091
+  # and is always accessible via port-forward.
+  # When enabled: sets log level to debug, keeps job workdirs for 1h.
   debug:
     enabled: false
 

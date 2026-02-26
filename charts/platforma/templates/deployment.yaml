@@ -47,6 +47,24 @@ spec:
       securityContext:
         fsGroup: 1010
         runAsNonRoot: true
+      {{- if not .Values.storage.workspace.existingClaim }}
+      initContainers:
+        - name: chown-workspace
+          image: busybox:1.36
+          command: ["sh", "-c", "chown -R 1010:1010 /data/workspace"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+          volumeMounts:
+            - name: workspace
+              mountPath: /data/workspace
+      {{- end }}
       containers:
         - name: platforma
           image: {{ include "platforma.image" . }}

@@ -31,9 +31,9 @@ STORAGE
 
 Database PVC: {{ include "platforma.databasePvcName" . }}
 Workspace PVC: {{ include "platforma.workspacePvcName" . }}
-{{- if eq .Values.storage.main.type "s3" }}
+{{- if eq .Values.provider "aws" }}
 Main Storage: S3 bucket {{ .Values.storage.main.s3.bucket }}
-{{- else if eq .Values.storage.main.type "gcs" }}
+{{- else if eq .Values.provider "gcp" }}
 Main Storage: GCS bucket {{ .Values.storage.main.gcs.bucket }}
 {{- end }}
 

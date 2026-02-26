@@ -2,8 +2,14 @@
 # Platforma Deployment
 # =============================================================================
 {{- /* Validate required configuration */ -}}
+{{- if not .Values.provider }}
+{{- fail "ERROR: provider is required (aws or gcp).\n\nSet provider in your values file:\n  provider: aws   # For EKS + S3\n  provider: gcp   # For GKE + GCS" }}
+{{- end }}
 {{- if ne (include "platforma.workspaceConfigured" .) "true" }}
-{{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
+{{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.fsxLustre.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
+{{- end }}
+{{- if not (or .Values.auth.htpasswd.secretName .Values.auth.ldap.server) }}
+{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.secretName: \"platforma-htpasswd\"  # htpasswd file auth\n  auth.ldap.server: \"ldap://ldap.example.com\"      # LDAP auth\n\nTo disable auth for development, add to app.extraArgs:\n  - \"--no-auth\"" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -23,13 +29,13 @@ spec:
     metadata:
       labels:
         {{- include "platforma.selectorLabels" . | nindent 8 }}
-        {{- with .Values.server.podLabels }}
+        {{- with .Values.app.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
         checksum/job-template: {{ include (print $.Template.BasePath "/configmap-job-template-kueue.yaml") . | sha256sum }}
         checksum/watch-config: {{ include (print $.Template.BasePath "/configmap-watch-config.yaml") . | sha256sum }}
-        {{- with .Values.server.podAnnotations }}
+        {{- with .Values.app.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
@@ -41,24 +47,6 @@ spec:
       securityContext:
         fsGroup: 1010
         runAsNonRoot: true
-      {{- if .Values.storage.workspace.chownOnInit }}
-      initContainers:
-        - name: chown-workspace
-          image: busybox:1.36
-          command: ["sh", "-c", "chown -R 1010:1010 /data/workspace"]
-          securityContext:
-            runAsUser: 0
-            runAsNonRoot: false
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              memory: 32Mi
-          volumeMounts:
-            - name: workspace
-              mountPath: /data/workspace
-      {{- end }}
       containers:
         - name: platforma
           image: {{ include "platforma.image" . }}
@@ -75,7 +63,7 @@ spec:
             - "--db-dir=/data/database"
             - "--work-dir=/data/workspace/work"
             - "--packages-dir=/data/workspace/packages"
-            {{- if eq .Values.storage.main.type "s3" }}
+            {{- if eq .Values.provider "aws" }}
             {{- if .Values.storage.main.s3.endpoint }}
             - "--primary-storage-s3={{ .Values.storage.main.s3.endpoint }}/{{ .Values.storage.main.s3.bucket }}{{ if .Values.storage.main.s3.prefix }}/{{ .Values.storage.main.s3.prefix }}{{ end }}"
             {{- else }}
@@ -84,7 +72,7 @@ spec:
             {{- if .Values.storage.main.s3.region }}
             - "--primary-storage-s3-region={{ .Values.storage.main.s3.region }}"
             {{- end }}
-            {{- else if eq .Values.storage.main.type "gcs" }}
+            {{- else if eq .Values.provider "gcp" }}
             - "--primary-storage-gcs=gs://{{ .Values.storage.main.gcs.bucket }}{{ if .Values.storage.main.gcs.prefix }}/{{ .Values.storage.main.gcs.prefix }}{{ end }}"
             {{- if .Values.storage.main.gcs.projectId }}
             - "--primary-storage-gcs-project-id={{ .Values.storage.main.gcs.projectId }}"
@@ -112,23 +100,21 @@ spec:
             - "--queue-runner=medium:k8s"
             - "--queue-runner=heavy:k8s"
             # Logging
-            {{- if .Values.logging.persistence.enabled }}
+            {{- if .Values.app.logging.persistence.enabled }}
             - "--log-dst=dir:///var/log/platforma"
-            {{- if .Values.logging.persistence.rotation.size }}
-            - "--log-rotation-size={{ .Values.logging.persistence.rotation.size }}"
+            {{- if .Values.app.logging.persistence.rotation.size }}
+            - "--log-rotation-size={{ .Values.app.logging.persistence.rotation.size }}"
             {{- end }}
-            {{- if .Values.logging.persistence.rotation.count }}
-            - "--log-rotation-backups={{ .Values.logging.persistence.rotation.count }}"
+            {{- if .Values.app.logging.persistence.rotation.count }}
+            - "--log-rotation-backups={{ .Values.app.logging.persistence.rotation.count }}"
             {{- end }}
             {{- end }}
             # License file (always mounted from secret)
             - "--license-file={{ include "platforma.path.license" . }}/{{ .Values.license.secretKey }}"
-            {{- if .Values.auth.enabled }}
             # Authentication
-            {{- if .Values.auth.htpasswd.enabled }}
+            {{- if .Values.auth.htpasswd.secretName }}
             - "--auth-htpasswd=/etc/platforma/secrets/htpasswd"
-            {{- end }}
-            {{- if .Values.auth.ldap.enabled }}
+            {{- else if .Values.auth.ldap.server }}
             - "--auth-ldap-server={{ .Values.auth.ldap.server }}"
             {{- if .Values.auth.ldap.startTLS }}
             - "--auth-ldap-start-tls"
@@ -155,7 +141,6 @@ spec:
             - "--auth-ldap-client-cert=/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.certKey }},/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.keyKey }}"
             {{- end }}
             {{- end }}
-            {{- end }}
             # Disable default host data library (exposes entire pod filesystem)
             - "--no-host-data-library"
             # Data library sources
@@ -174,14 +159,18 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
-            {{- if .Values.debug.enabled }}
+            # Debug API (always enabled; binding depends on app.debug.enabled)
             - "--debug-enabled"
+            - "--debug-port=9091"
+            {{- if .Values.app.debug.enabled }}
+            - "--debug-ip=0.0.0.0"
             - "--log-level=debug"
             - "--keep-workdirs=1h"
-            - "--debug-port={{ .Values.debug.port }}"
+            {{- else }}
+            - "--debug-ip=127.0.0.1"
             {{- end }}
             # Extra arguments
-            {{- range .Values.extraArgs }}
+            {{- range .Values.app.extraArgs }}
             - {{ . | quote }}
             {{- end }}
           ports:
@@ -191,14 +180,12 @@ spec:
             - name: http
               containerPort: 6347
               protocol: TCP
-            {{- if .Values.monitoring.enabled }}
             - name: metrics
-              containerPort: {{ .Values.monitoring.port }}
+              containerPort: 9090
               protocol: TCP
-            {{- end }}
-            {{- if .Values.debug.enabled }}
+            {{- if .Values.app.debug.enabled }}
             - name: debug
-              containerPort: {{ .Values.debug.port }}
+              containerPort: 9091
               protocol: TCP
             {{- end }}
           env:
@@ -208,7 +195,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.license.secretName }}
                   key: {{ .Values.license.secretKey }}
-            {{- if and (eq .Values.storage.main.type "s3") .Values.storage.main.s3.secretRef.name }}
+            {{- if and (eq .Values.provider "aws") .Values.storage.main.s3.secretRef.name }}
             - name: PL_PRIMARY_STORAGE_S3_KEY
               valueFrom:
                 secretKeyRef:
@@ -220,7 +207,7 @@ spec:
                   name: {{ .Values.storage.main.s3.secretRef.name }}
                   key: {{ .Values.storage.main.s3.secretRef.secretKeyField }}
             {{- end }}
-            {{- if and .Values.auth.enabled .Values.auth.ldap.enabled }}
+            {{- if .Values.auth.ldap.server }}
             {{- if .Values.auth.ldap.searchPassword }}
             - name: PL_AUTH_LDAP_SEARCH_PASSWORD
               value: {{ .Values.auth.ldap.searchPassword | quote }}
@@ -232,54 +219,53 @@ spec:
                   key: {{ .Values.auth.ldap.searchPasswordSecretRef.key }}
             {{- end }}
             {{- end }}
-            {{- with .Values.env.variables }}
-            # Additional environment variables
+            {{- with .Values.app.env.variables }}
             {{- range $key, $value := . }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
             {{- end }}
-            {{- range .Values.env.secretVariables }}
+            {{- range .Values.app.env.secretVariables }}
             - name: {{ .name }}
               valueFrom:
                 secretKeyRef:
                   name: {{ .secretName }}
                   key: {{ .secretKey }}
             {{- end }}
-            {{- range .Values.env.configMapVariables }}
+            {{- range .Values.app.env.configMapVariables }}
             - name: {{ .name }}
               valueFrom:
                 configMapKeyRef:
                   name: {{ .configMapName }}
                   key: {{ .configMapKey }}
             {{- end }}
-          {{- if .Values.server.startupProbe.enabled }}
+          {{- if .Values.app.startupProbe.enabled }}
           startupProbe:
             grpc:
               port: 6345
-            initialDelaySeconds: {{ .Values.server.startupProbe.initialDelaySeconds }}
-            periodSeconds: {{ .Values.server.startupProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.server.startupProbe.timeoutSeconds }}
-            failureThreshold: {{ .Values.server.startupProbe.failureThreshold }}
+            initialDelaySeconds: {{ .Values.app.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.app.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.app.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.app.startupProbe.failureThreshold }}
           {{- end }}
-          {{- if .Values.server.livenessProbe.enabled }}
+          {{- if .Values.app.livenessProbe.enabled }}
           livenessProbe:
             grpc:
               port: 6345
-            initialDelaySeconds: {{ .Values.server.livenessProbe.initialDelaySeconds }}
-            periodSeconds: {{ .Values.server.livenessProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.server.livenessProbe.timeoutSeconds }}
+            initialDelaySeconds: {{ .Values.app.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.app.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.app.livenessProbe.timeoutSeconds }}
           {{- end }}
-          {{- if .Values.server.readinessProbe.enabled }}
+          {{- if .Values.app.readinessProbe.enabled }}
           readinessProbe:
             grpc:
               port: 6345
-            initialDelaySeconds: {{ .Values.server.readinessProbe.initialDelaySeconds }}
-            periodSeconds: {{ .Values.server.readinessProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.server.readinessProbe.timeoutSeconds }}
+            initialDelaySeconds: {{ .Values.app.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.app.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.app.readinessProbe.timeoutSeconds }}
           {{- end }}
           resources:
-            {{- toYaml .Values.server.resources | nindent 12 }}
+            {{- toYaml .Values.app.resources | nindent 12 }}
           volumeMounts:
             - name: database
               mountPath: {{ include "platforma.path.database" . }}
@@ -298,21 +284,21 @@ spec:
             - name: license
               mountPath: {{ include "platforma.path.license" . }}
               readOnly: true
-            {{- if .Values.logging.persistence.enabled }}
+            {{- if .Values.app.logging.persistence.enabled }}
             - name: logs
               mountPath: /var/log/platforma
             {{- end }}
-            {{- if and .Values.auth.enabled .Values.auth.htpasswd.enabled .Values.auth.htpasswd.secretName }}
+            {{- if .Values.auth.htpasswd.secretName }}
             - name: htpasswd
               mountPath: {{ include "platforma.path.secrets" . }}
               readOnly: true
             {{- end }}
-            {{- if and .Values.auth.enabled .Values.auth.ldap.enabled .Values.auth.ldap.tls.caSecretRef.name }}
+            {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.caSecretRef.name }}
             - name: ldap-ca
               mountPath: {{ include "platforma.path.secrets" . }}/ldap-ca
               readOnly: true
             {{- end }}
-            {{- if and .Values.auth.enabled .Values.auth.ldap.enabled .Values.auth.ldap.tls.clientCertSecretRef.name }}
+            {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.clientCertSecretRef.name }}
             - name: ldap-client
               mountPath: {{ include "platforma.path.secrets" . }}/ldap-client
               readOnly: true
@@ -345,12 +331,12 @@ spec:
             items:
               - key: {{ .Values.license.secretKey }}
                 path: {{ .Values.license.secretKey }}
-        {{- if .Values.logging.persistence.enabled }}
+        {{- if .Values.app.logging.persistence.enabled }}
         - name: logs
           persistentVolumeClaim:
-            claimName: {{ .Values.logging.persistence.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
+            claimName: {{ .Values.app.logging.persistence.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
         {{- end }}
-        {{- if and .Values.auth.enabled .Values.auth.htpasswd.enabled .Values.auth.htpasswd.secretName }}
+        {{- if .Values.auth.htpasswd.secretName }}
         - name: htpasswd
           secret:
             secretName: {{ .Values.auth.htpasswd.secretName }}
@@ -358,12 +344,12 @@ spec:
               - key: {{ .Values.auth.htpasswd.secretKey }}
                 path: htpasswd
         {{- end }}
-        {{- if and .Values.auth.enabled .Values.auth.ldap.enabled .Values.auth.ldap.tls.caSecretRef.name }}
+        {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.caSecretRef.name }}
         - name: ldap-ca
           secret:
             secretName: {{ .Values.auth.ldap.tls.caSecretRef.name }}
         {{- end }}
-        {{- if and .Values.auth.enabled .Values.auth.ldap.enabled .Values.auth.ldap.tls.clientCertSecretRef.name }}
+        {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.clientCertSecretRef.name }}
         - name: ldap-client
           secret:
             secretName: {{ .Values.auth.ldap.tls.clientCertSecretRef.name }}
@@ -376,15 +362,15 @@ spec:
             readOnly: true
         {{- end }}
         {{- end }}
-      {{- with .Values.server.nodeSelector }}
+      {{- with .Values.app.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.server.affinity }}
+      {{- with .Values.app.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.server.tolerations }}
+      {{- with .Values.app.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

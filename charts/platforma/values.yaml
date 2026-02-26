@@ -2,14 +2,17 @@
 # Platforma Helm Chart Values
 # =============================================================================
 # Platforma is a bioinformatics workflow platform. Key concepts:
-#   - Server: The main Platforma pod that manages workflows and state
+#   - App: The main Platforma pod that manages workflows and state
 #   - Jobs: Compute tasks created by Platforma, run as K8s Jobs via Kueue
 #   - Queues: ui-tasks (interactive), light/medium/heavy (batch workloads)
 #   - Desktop App: Client application that connects to the server via gRPC
 #
 # Minimum required configuration:
-#   1. License secret (see license.secretName)
-#   2. Workspace storage (see storage.workspace) - must be RWX
+#   1. provider (aws or gcp)
+#   2. Auth (htpasswd secretName or LDAP server)
+#   3. License secret (see license.secretName)
+#   4. Workspace storage (see storage.workspace) - must be RWX
+#   5. Main storage bucket (see storage.main.s3 or storage.main.gcs)
 #
 # See infrastructure/aws/ and infrastructure/gcp/ for cloud-specific examples.
 # =============================================================================
@@ -28,22 +31,22 @@ image:
 imagePullSecrets: []
 
 # =============================================================================
-# CLOUD PROVIDER
+# PROVIDER
 # =============================================================================
-# Setting cloud provider auto-creates cloud-specific resources:
-#   aws:   gp3 StorageClass (EBS), efs-platforma StorageClass (if efsFileSystemId set)
-#   gcp:   (no auto-created resources — GKE ships with required StorageClasses)
-#   azure: (no auto-created resources — AKS ships with required StorageClasses)
-#   "":    no cloud-specific resources
+# Determines cloud-specific StorageClasses and primary storage backend.
+#   aws: creates gp3 StorageClass (EBS), efs-platforma StorageClass (if
+#        efsFileSystemId set). Primary storage: S3.
+#   gcp: no auto-created resources (GKE ships with required StorageClasses).
+#        Primary storage: GCS.
 # =============================================================================
 
-# -- Cloud provider (aws | gcp | azure | "")
-cloud: ""
+# -- Cloud provider (REQUIRED: aws | gcp)
+provider: ""
 
 # -- AWS-specific configuration
 aws:
   # -- EFS file system ID for dynamic workspace provisioning via StorageClass
-  # When set (and cloud: aws), creates an EFS StorageClass with uid/gid 1010
+  # When set (and provider: aws), creates an EFS StorageClass with uid/gid 1010
   # Example: fs-0123456789abcdef
   efsFileSystemId: ""
 
@@ -63,15 +66,16 @@ license:
 # =============================================================================
 # AUTHENTICATION
 # =============================================================================
+# Authentication is mandatory. Configure exactly one method:
+#   - htpasswd: Set auth.htpasswd.secretName to enable
+#   - LDAP: Set auth.ldap.server to enable
+# Helm fails if neither is configured.
+# To disable auth for development, pass --no-auth via app.extraArgs.
 
 auth:
-  # -- Enable authentication (if false, no authentication required)
-  enabled: false
-
   # -- htpasswd file-based authentication
   htpasswd:
-    enabled: false
-    # -- Existing secret containing htpasswd file
+    # -- Existing secret containing htpasswd file (set to enable htpasswd auth)
     # Create with: kubectl create secret generic platforma-htpasswd --from-file=htpasswd=./htpasswd
     secretName: ""
     # -- Key in secret containing htpasswd content
@@ -82,8 +86,8 @@ auth:
   #   1. Direct bind: user DN is predictable (bindDN template with %u placeholder)
   #   2. Search bind: search for user first, then bind (searchRules + searchUser)
   ldap:
-    enabled: false
-    # -- LDAP server address (e.g., ldap://ldap.example.com:389)
+    # -- LDAP server address (set to enable LDAP auth)
+    # Example: ldap://ldap.example.com:389
     server: ""
     # -- Enable StartTLS
     startTLS: false
@@ -133,8 +137,8 @@ auth:
 #    write outputs here. MUST be RWX (ReadWriteMany) - EFS, Filestore, NFS.
 #    Size: Depends on data volume. This is your working data area.
 #
-# 3. MAIN (optional) - Long-term result storage exposed to Desktop App.
-#    Options: S3 or GCS. Desktop App accesses cloud storage directly.
+# 3. MAIN - Long-term result storage exposed to Desktop App.
+#    Determined by provider: aws → S3, gcp → GCS.
 # =============================================================================
 
 storage:
@@ -147,28 +151,19 @@ storage:
   # -- Shared workspace for jobs (RWX required)
   # Configure exactly ONE of: existingClaim, efs, fsxLustre, filestore, nfs, pvc
   # Note: Block storage is NOT supported - workspace must be shared (RWX)
-  #
-  # PERMISSIONS: Platforma runs as non-root (UID/GID 1010:1010).
-  # See README.md "Workspace storage" section for per-storage permission setup.
-  # Summary:
-  #   EFS:        Use "pvc" option with StorageClass that sets uid/gid (recommended)
-  #   FSx Lustre: Use "fsxLustre" option + chownOnInit: true
-  #   NFS:        Configure server-side ownership, or use chownOnInit: true
   workspace:
     # -- Use existing RWX PVC
     existingClaim: ""
 
     # -- AWS EFS via static PV (chart creates PV+PVC)
-    # For EFS, prefer "pvc" option with a StorageClass that creates Access Points
-    # with uid/gid 1010 (see cloud: aws + aws.efsFileSystemId for auto-setup)
     efs:
       enabled: false
       fileSystemId: ""
       path: "/"
 
     # -- AWS FSx for Lustre (chart creates PV+PVC)
-    # Requires chownOnInit: true (FSx has no Access Points for UID/GID enforcement)
-    # Requires lustre-client installed on all nodes
+    # Requires lustre-client installed on all nodes.
+    # Permissions: a pre-install hook automatically chowns the workspace to UID/GID 1010.
     fsxLustre:
       enabled: false
       fileSystemId: ""
@@ -176,6 +171,7 @@ storage:
       mountName: ""
 
     # -- GCP Filestore (chart creates PV+PVC)
+    # Permissions: a pre-install hook automatically chowns the workspace to UID/GID 1010.
     filestore:
       enabled: false
       instanceName: ""
@@ -185,28 +181,24 @@ storage:
       path: "/"
 
     # -- Generic NFS server (chart creates PV+PVC)
+    # Permissions: a pre-install hook automatically chowns the workspace to UID/GID 1010.
     nfs:
       enabled: false
       server: ""
       path: "/"
 
     # -- Generic RWX PVC via StorageClass (e.g., for CSI drivers)
+    # Permissions: a pre-install hook automatically chowns the workspace to UID/GID 1010.
     pvc:
       enabled: false
       size: 100Gi
       storageClass: ""
 
-    # -- Run chown on workspace mount before server starts
-    # Required for FSx Lustre. Not needed for EFS with uid/gid StorageClass.
-    # The init container runs as root and changes ownership to UID/GID 1010.
-    chownOnInit: false
-
   # -- Main storage (exposed to Desktop App)
-  # Desktop App downloads results from this storage. Configure S3 or GCS.
+  # Desktop App downloads results from this storage.
+  # Backend is determined by provider: aws → S3 (configure s3.*), gcp → GCS (configure gcs.*).
   main:
-    type: ""  # s3 | gcs
-
-    # -- S3 storage (when type: s3)
+    # -- S3 storage (when provider: aws)
     s3:
       bucket: ""
       region: ""
@@ -217,7 +209,7 @@ storage:
         accessKeyField: "access-key"
         secretKeyField: "secret-key"
 
-    # -- GCS storage (when type: gcs)
+    # -- GCS storage (when provider: gcp)
     gcs:
       bucket: ""
       projectId: ""
@@ -342,14 +334,15 @@ additionalIngress:
   annotations: {}
 
 # =============================================================================
-# SERVER POD
+# APPLICATION
 # =============================================================================
-# All configuration for the Platforma server pod: resources, probes, scheduling.
+# All configuration for the Platforma application: resources, probes,
+# scheduling, environment, logging, monitoring, and debug.
 # Security context is hardcoded (UID/GID 1010 — set by the container image).
 # =============================================================================
 
-server:
-  # -- Server pod resources
+app:
+  # -- Pod resources
   resources:
     requests:
       cpu: 2000m
@@ -358,14 +351,85 @@ server:
       cpu: 4000m
       memory: 8Gi
 
+  # -- Pod scheduling
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+
+  # -- Extra labels/annotations for the pod
+  podLabels: {}
+  podAnnotations: {}
+
+  # -- Additional environment variables
+  env:
+    # -- Plain key-value environment variables
+    variables: {}
+    # -- Environment variables from secrets
+    secretVariables: []
+      # - name: SECRET_VAR
+      #   secretName: my-secret
+      #   secretKey: key
+    # -- Environment variables from config maps
+    configMapVariables: []
+
+  # -- Additional command-line arguments for Platforma binary
+  extraArgs: []
+    # Examples:
+    # - "--runner-cpu=4"
+    # - "--runner-ram=16G"
+    # - "--network-mode=proxy"
+
+  # -- Debug mode
+  # The debug API (pprof, DB inspection) always runs on port 9091.
+  # When enabled: binds on 0.0.0.0 (accessible via port-forward), sets log
+  # level to debug, keeps job workdirs for 1h.
+  # When disabled: binds on 127.0.0.1 (pod-internal only).
+  debug:
+    enabled: false
+
+  # -- Logging configuration
+  logging:
+    # -- Enable persistent log storage
+    # When false (default), logs stream to container stderr — collected by the cluster log driver.
+    # When true, logs write to a PVC at /var/log/platforma with rotation.
+    persistence:
+      enabled: false
+      size: 10Gi
+      storageClass: ""      # "" = cluster default
+      existingClaim: ""     # Use pre-created PVC instead of creating one
+      rotation:
+        size: 1Gi           # Max size per log file before rotation
+        count: 15           # Number of rotated log files to keep
+
+  # -- Monitoring configuration
+  # Platforma exposes Prometheus metrics on port 9090 (hardcoded in backend).
+  # A ClusterIP metrics service is always created on port 9090.
+  #
+  # To enable Prometheus scraping, add annotations:
+  #   app:
+  #     monitoring:
+  #       annotations:
+  #         prometheus.io/scrape: "true"
+  #         prometheus.io/port: "9090"
+  #
+  # For GKE with Google Managed Prometheus, enable podMonitoring below.
+  # For AWS/generic clusters, configure a ServiceMonitor separately.
+  monitoring:
+    # -- Annotations for the metrics service
+    annotations: {}
+    # -- PodMonitoring for GKE/GMP (Google Managed Prometheus)
+    podMonitoring:
+      enabled: false
+      interval: 30s
+
   # -- Startup probe (for long bootstrap on large datasets)
-  # Allows up to failureThreshold * periodSeconds for initial startup.
+  # Allows up to 30 minutes for initial startup (periodSeconds * failureThreshold).
   startupProbe:
     enabled: true
     initialDelaySeconds: 5
-    periodSeconds: 10
+    periodSeconds: 30
     timeoutSeconds: 5
-    failureThreshold: 30  # Up to 5 min startup
+    failureThreshold: 60  # 30 * 60 = 1800s = 30 minutes
 
   # -- Liveness probe
   livenessProbe:
@@ -380,15 +444,6 @@ server:
     initialDelaySeconds: 10
     periodSeconds: 5
     timeoutSeconds: 3
-
-  # -- Pod scheduling
-  nodeSelector: {}
-  affinity: {}
-  tolerations: []
-
-  # -- Extra labels/annotations for the server pod
-  podLabels: {}
-  podAnnotations: {}
 
 # =============================================================================
 # SERVICE ACCOUNTS
@@ -405,84 +460,6 @@ jobServiceAccount:
   create: true
   name: ""
   annotations: {}
-
-# =============================================================================
-# DEBUG
-# =============================================================================
-
-# -- Debug mode configuration
-# Enables pprof endpoints (cpu, heap, trace) and database inspection.
-# Exposed on a separate port (9091) via a ClusterIP service.
-debug:
-  enabled: false
-  port: 9091
-
-# =============================================================================
-# EXTRA CLI ARGUMENTS
-# =============================================================================
-
-# -- Additional command-line arguments for Platforma server
-# These are passed directly to the platforma binary.
-extraArgs: []
-  # Examples:
-  # - "--runner-cpu=4"
-  # - "--runner-ram=16G"
-  # - "--log-level=debug"
-  # - "--network-mode=proxy"
-
-# -- Additional environment variables
-env:
-  # -- Plain key-value environment variables
-  variables: {}
-  # -- Environment variables from secrets
-  secretVariables: []
-    # - name: SECRET_VAR
-    #   secretName: my-secret
-    #   secretKey: key
-  # -- Environment variables from config maps
-  configMapVariables: []
-
-# =============================================================================
-# OBSERVABILITY
-# =============================================================================
-# Platforma backend exposes:
-#   /metrics on port 9090 — Prometheus metrics (gRPC proxy, transactions, resources)
-#   gRPC Health on port 6345 — grpc.health.v1.Health (Check, Watch, List)
-#   /health on port 6345 — HTTP health check (returns 200 OK)
-#   /debug/pprof/* on port 9091 — Go profiling (only when debug.enabled: true)
-# =============================================================================
-
-logging:
-  # -- Enable persistent log storage
-  # When false (default), logs stream to container stderr — collected by the cluster log driver.
-  # When true, logs write to a PVC at /var/log/platforma with rotation.
-  persistence:
-    enabled: false
-    size: 10Gi
-    storageClass: ""      # "" = cluster default
-    existingClaim: ""     # Use pre-created PVC instead of creating one
-    rotation:
-      size: 1Gi           # Max size per log file before rotation
-      count: 15           # Number of rotated log files to keep
-
-monitoring:
-  # -- Enable metrics endpoint (Prometheus /metrics on port 9090)
-  enabled: true
-  # -- Metrics port (hardcoded in backend as --monitoring-listen)
-  port: 9090
-
-  service:
-    type: ClusterIP
-    annotations: {}
-      # prometheus.io/scrape: "true"
-      # prometheus.io/port: "9090"
-
-  # -- PodMonitoring for GKE/GMP (Google Managed Prometheus)
-  # For AWS/generic clusters, add prometheus.io/scrape annotation above
-  # or configure a ServiceMonitor separately.
-  podMonitoring:
-    enabled: false
-    interval: 30s
 
 # =============================================================================
 # JOB CONFIGURATION

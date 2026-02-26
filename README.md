@@ -12,7 +12,7 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
 - Kubernetes 1.28+
 - Helm 3.12+
 - [Kueue](https://kueue.sigs.k8s.io/) 0.16.1+
-- [AppWrapper](https://project-codeflare.github.io/appwrapper/) v1.1.2+
+- [AppWrapper](https://project-codeflare.github.io/appwrapper/) v1.2.0+
 - RWX-capable storage (EFS, Filestore, NFS, etc.)
 - License key from MiLaboratories
 
@@ -41,16 +41,25 @@ helm install kueue oci://registry.k8s.io/kueue/charts/kueue \
 ### 2. Install AppWrapper
 
 ```bash
-kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.1.2/install.yaml
+kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.2.0/install.yaml
 ```
 
-### 3. Create license secret
+### 3. Create secrets
 
 ```bash
 kubectl create namespace platforma
+
+# License (required)
 kubectl create secret generic platforma-license \
   -n platforma \
   --from-literal=MI_LICENSE="your-license-key"
+
+# Authentication (required — choose one)
+# Option A: htpasswd file
+kubectl create secret generic platforma-htpasswd \
+  -n platforma \
+  --from-file=htpasswd=./htpasswd
+# Option B: LDAP — configure auth.ldap.server in values file
 ```
 
 ### 4. Install Platforma
@@ -81,14 +90,27 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version 3.0.0 \
   -n platforma \
+  --set provider=aws \
+  --set auth.htpasswd.secretName=platforma-htpasswd \
   --set storage.workspace.nfs.enabled=true \
   --set storage.workspace.nfs.server=nfs.example.com \
-  --set storage.workspace.nfs.path=/exports/platforma
+  --set storage.workspace.nfs.path=/exports/platforma \
+  --set storage.main.s3.bucket=my-bucket \
+  --set storage.main.s3.region=eu-central-1
 ```
 
 ## Configuration
 
 See [values.yaml](charts/platforma/values.yaml) for all options.
+
+### Required values
+
+| Value | Description |
+|-------|-------------|
+| `provider` | Cloud provider: `aws` or `gcp`. Determines StorageClasses and storage backend. |
+| `auth.htpasswd.secretName` or `auth.ldap.server` | Authentication method. At least one must be set. |
+| `storage.workspace.*` | Exactly one RWX workspace option must be enabled. |
+| `storage.main.s3.*` or `storage.main.gcs.*` | Primary storage bucket (matches provider). |
 
 ### Storage
 
@@ -98,7 +120,7 @@ Platforma requires three storage areas:
 |------|------|-------------|
 | Database | RWO | RocksDB state. Fast SSD recommended (gp3, pd-ssd). |
 | Workspace | **RWX** | Shared job data. EFS, Filestore, or NFS. |
-| Main | RWO or S3/GCS | Result storage exposed to Desktop App. |
+| Main | S3/GCS | Result storage exposed to Desktop App. |
 
 ### Workspace storage
 
@@ -111,12 +133,11 @@ The workspace is shared between the Platforma server pod and all job pods. It **
 | `storage.workspace.efs` | AWS EFS (static PV, chart creates PV+PVC) |
 | `storage.workspace.filestore` | GCP Filestore |
 | `storage.workspace.fsxLustre` | AWS FSx for Lustre (high-performance) |
-| `storage.workspace.azureFiles` | Azure Files |
 | `storage.workspace.nfs` | Generic NFS server |
 
 #### File ownership and permissions
 
-Platforma runs as a non-root user (UID 1010, GID 1010 by default). The workspace must be writable by this user. How to achieve this depends on the storage type:
+Platforma runs as a non-root user (UID 1010, GID 1010). The workspace must be writable by this user.
 
 **AWS EFS — use a StorageClass with `uid`/`gid` parameters (recommended)**
 
@@ -148,11 +169,11 @@ storage:
       size: 100Gi
 ```
 
-The EFS Access Point enforces UID/GID 1010 for all file operations, so no init container is needed. This is the simplest and most reliable approach.
+The EFS Access Point enforces UID/GID 1010 for all file operations, so no extra setup is needed. This is the simplest and most reliable approach. When `provider: aws` and `aws.efsFileSystemId` is set, the chart creates this StorageClass automatically.
 
-**AWS FSx for Lustre — use `chownOnInit`**
+**AWS FSx for Lustre, GCP Filestore, NFS, generic PVC — automatic pre-install hook**
 
-FSx Lustre has no Access Point concept. The filesystem root is always owned by root. Enable `chownOnInit` to run an init container that changes ownership before the server starts:
+For workspace types without native UID/GID support, the chart automatically runs a Helm pre-install hook Job that `chown`s the workspace directory to UID/GID 1010 before the server starts. No manual configuration is needed.
 
 ```yaml
 storage:
@@ -162,17 +183,9 @@ storage:
       fileSystemId: fs-0123456789abcdef
       dnsName: fs-0123456789abcdef.fsx.eu-central-1.amazonaws.com
       mountName: abcdefgh
-      path: "/platforma"    # Subdirectory on Lustre filesystem
-    chownOnInit: true        # Required for FSx Lustre
 ```
 
-The `path` field is important — the init container only changes ownership of this subdirectory, not the entire Lustre filesystem. All job mounts use the same path prefix, so files are accessible across pods.
-
 Note: FSx Lustre requires the `lustre-client` package on all nodes. EKS AL2023 AMI does not include it by default — see the [AWS infrastructure guide](infrastructure/aws/) for installation steps.
-
-**GCP Filestore / Generic NFS — typically works without extra configuration**
-
-Filestore and NFS servers can usually be configured at the server level to set the default UID/GID. If your NFS export is owned by root, use `chownOnInit: true`.
 
 **Performance comparison (tested on AWS):**
 
@@ -185,24 +198,22 @@ Filestore and NFS servers can usually be configured at the server level to set t
 
 The main storage is where Platforma stores results that the Desktop App downloads:
 
-| Type | When to use | Desktop App access |
-|------|-------------|-------------------|
-| `s3` | AWS deployments | Direct to S3 |
-| `gcs` | GCP deployments | Direct to GCS |
+| Provider | Storage | Desktop App access |
+|----------|---------|-------------------|
+| `aws` | S3 | Direct to S3 |
+| `gcp` | GCS | Direct to GCS |
 
 The Desktop App accesses cloud storage directly — you only need the gRPC ingress for API connectivity.
 
 ### Authentication
 
-Platforma supports optional authentication. Disabled by default.
+Authentication is mandatory. Configure exactly one method:
 
 **htpasswd (file-based):**
 
 ```yaml
 auth:
-  enabled: true
   htpasswd:
-    enabled: true
     secretName: "platforma-htpasswd"  # kubectl create secret generic platforma-htpasswd --from-file=htpasswd=./htpasswd
 ```
 
@@ -210,9 +221,7 @@ auth:
 
 ```yaml
 auth:
-  enabled: true
   ldap:
-    enabled: true
     server: "ldap://ldap.example.com:389"
     bindDN: "cn=%u,ou=users,dc=example,dc=com"  # %u = username
 ```
@@ -221,9 +230,7 @@ auth:
 
 ```yaml
 auth:
-  enabled: true
   ldap:
-    enabled: true
     server: "ldap://ldap.example.com:389"
     searchRules:
       - "(uid=%s)|ou=users,dc=example,dc=com"
@@ -233,13 +240,15 @@ auth:
       key: "password"
 ```
 
+To disable auth for development, add `--no-auth` to `app.extraArgs`.
+
 See [values.yaml](charts/platforma/values.yaml) `auth` section for TLS, CA certificates, and client certificate options.
 
 ### Networking
 
 Platforma exposes a gRPC API on port 6345. The Desktop App connects here for all operations. When using S3 or GCS main storage, the Desktop App downloads results directly from the cloud — no additional ingress is needed.
 
-The chart generates Ingress resources from `ingress` and `additionalIngress` blocks. Each block has `api` (gRPC) and `data` (HTTP) sub-sections with independent annotations.
+The chart supports `ingress` and `additionalIngress` blocks with `host`, `tls`, and `annotations`.
 
 #### AWS ALB Ingress Controller
 
@@ -249,17 +258,15 @@ The [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-ba
 ingress:
   enabled: true
   className: alb
-
-  api:
-    host: "platforma.example.com"
-    annotations:
-      alb.ingress.kubernetes.io/group.name: "shared"
-      alb.ingress.kubernetes.io/group.order: "100"
-      alb.ingress.kubernetes.io/scheme: internet-facing
-      alb.ingress.kubernetes.io/target-type: ip
-      alb.ingress.kubernetes.io/backend-protocol-version: GRPC
-      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
-      alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:..."
+  host: "platforma.example.com"
+  annotations:
+    alb.ingress.kubernetes.io/group.name: "shared"
+    alb.ingress.kubernetes.io/group.order: "100"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:..."
 ```
 
 How it works: all Ingress resources with the same `group.name` merge into one ALB. Each becomes a host-based routing rule pointing to its own target group. Other services in the cluster can join the same ALB by using the same `group.name` value. All resources in a group must agree on `scheme` (internet-facing vs internal).
@@ -272,14 +279,12 @@ nginx runs as pods behind a single LoadBalancer Service. All Ingress resources a
 ingress:
   enabled: true
   className: nginx
-
-  api:
-    host: "platforma.example.com"
-    tls:
-      enabled: true
-      secretName: "platforma-tls"
-    annotations:
-      nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+  host: "platforma.example.com"
+  tls:
+    enabled: true
+    secretName: "platforma-tls"
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
 ```
 
 nginx handles gRPC natively via the `backend-protocol: "GRPC"` annotation.
@@ -292,15 +297,13 @@ traefik is the default ingress controller in k3s. It handles gRPC via HTTP/2 (h2
 ingress:
   enabled: true
   className: traefik
-
-  api:
-    host: "platforma.example.com"
-    tls:
-      enabled: true
-      secretName: "platforma-tls"
-    annotations:
-      traefik.ingress.kubernetes.io/router.entrypoints: websecure
-      traefik.ingress.kubernetes.io/service.serversscheme: h2c
+  host: "platforma.example.com"
+  tls:
+    enabled: true
+    secretName: "platforma-tls"
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/service.serversscheme: h2c
 ```
 
 #### LoadBalancer service (no ingress)
@@ -336,38 +339,52 @@ kubectl port-forward svc/platforma -n platforma 6345:6345
 
 ### Logging
 
-```yaml
-logging:
-  # Default: logs to container stderr (use kubectl logs)
-  destination: "stream://stderr"
-
-  # Alternative: logs to persistent volume with rotation
-  # destination: "dir:///var/log/platforma"
-  # rotation:
-  #   size: 1Gi     # Max size per log file
-  #   count: 15     # Number of rotated files to keep
-```
-
-When using `dir://` destination, enable the logs PVC:
+By default, logs stream to container stderr and are collected by the cluster log driver. To persist logs to a PVC with rotation:
 
 ```yaml
-storage:
-  logs:
-    enabled: true
-    size: 10Gi
+app:
+  logging:
+    persistence:
+      enabled: true
+      size: 10Gi
+      rotation:
+        size: 1Gi     # Max size per log file
+        count: 15     # Number of rotated files to keep
 ```
 
 ### Monitoring
 
+Platforma exposes Prometheus metrics on port 9090 (hardcoded). A ClusterIP metrics service is always created.
+
+To enable Prometheus scraping, add annotations to the metrics service:
+
 ```yaml
-monitoring:
-  enabled: true   # Exposes /metrics on port 9090
-  podMonitoring:
-    enabled: true   # GKE PodMonitoring resource (for GMP)
-    interval: 30s
+app:
+  monitoring:
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9090"
 ```
 
-For Prometheus on AWS/generic clusters, scrape the metrics service directly or add annotations.
+For GKE with Google Managed Prometheus, enable the PodMonitoring resource:
+
+```yaml
+app:
+  monitoring:
+    podMonitoring:
+      enabled: true
+      interval: 30s
+```
+
+### Debug
+
+The debug API (pprof, DB inspection) always runs on port 9091. By default it binds to 127.0.0.1 (pod-internal only). To make it accessible via port-forward:
+
+```yaml
+app:
+  debug:
+    enabled: true  # Binds on 0.0.0.0, sets log level to debug, keeps workdirs for 1h
+```
 
 ### Kueue modes
 
@@ -408,7 +425,7 @@ dataSources:
 
 ### Extra CLI arguments
 
-Additional Platforma CLI arguments can be passed via `extraArgs`. See [values.yaml](charts/platforma/values.yaml) for examples.
+Additional Platforma CLI arguments can be passed via `app.extraArgs`. See [values.yaml](charts/platforma/values.yaml) for examples.
 
 ## Upgrade
 

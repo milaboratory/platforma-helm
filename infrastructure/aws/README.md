@@ -33,13 +33,13 @@ The deployment has three phases:
 
 **Phase 1 — AWS Console:** Deploy the CloudFormation stack. It creates the EKS cluster, node groups, EFS filesystem, S3 bucket, and all IAM roles. Takes ~15-20 minutes.
 
-**Phase 2 — CLI:** Configure kubectl, then install Kueue and Platforma via Helm. The Platforma chart includes Cluster Autoscaler, ALB Controller, and External DNS as bundled sub-charts — all configured in a single `helm install`. Service accounts are created automatically; the namespace and license secret are created manually before the install (Steps 3-4).
+**Phase 2 — CLI:** Configure kubectl, then install Kueue, infrastructure components (Cluster Autoscaler, ALB Controller, External DNS), and Platforma via Helm. Each is a separate Helm release. Service accounts are created automatically; the namespace and license secret are created manually before the install (Steps 3-5).
 
 **Phase 3 — Desktop App:** Download the Platforma Desktop App, connect to your cluster at `platforma.example.com`, and start running analyses.
 
 ## Prerequisites
 
-- **This repository** — `git clone https://github.com/milaboratory/platforma-helm.git`; Steps 3 and 5 read files from `infrastructure/aws/`
+- **This repository** — `git clone https://github.com/milaboratory/platforma-helm.git`; Steps 3 and 6 read files from `infrastructure/aws/`
 - **AWS account** with permissions to create EKS, EFS, S3, IAM roles, ACM certificates (see [permissions.md](permissions.md))
 - **Route53 hosted zone** with a registered domain (e.g. `example.com`) — the Desktop App connects only over TLS, so a domain and certificate are mandatory
 - **Platforma license key**
@@ -141,16 +141,17 @@ Once complete, go to the **Outputs** tab. The outputs below are used in the inst
 
 | Output | Used in |
 |--------|---------|
-| `ClusterName` | Step 2 (kubeconfig) |
+| `ClusterName` | Step 2 (kubeconfig), Step 5 |
 | `Region` | Step 2, Step 5 |
-| `EfsFileSystemId` | Step 5 (EFS StorageClass) |
-| `S3BucketName` | Step 5 (Platforma install) |
+| `VpcId` | Step 5 (ALB Controller) |
 | `AutoscalerRoleArn` | Step 5 |
 | `ALBControllerRoleArn` | Step 5 |
 | `ExternalDNSRoleArn` | Step 5 |
-| `PlatformaRoleArn` | Step 5 |
-| `PlatformaJobsRoleArn` | Step 5 |
-| `CertificateArn` | Step 5 (ingress) |
+| `EfsFileSystemId` | Step 6 (EFS StorageClass) |
+| `S3BucketName` | Step 6 (Platforma install) |
+| `PlatformaRoleArn` | Step 6 |
+| `PlatformaJobsRoleArn` | Step 6 |
+| `CertificateArn` | Step 6 (ingress) |
 
 ---
 
@@ -245,9 +246,9 @@ Replace `your-license-key` with your Platforma license key. The secret name (`pl
 
 ---
 
-## Step 5: Install Platforma
+## Step 5: Install infrastructure components
 
-One `helm install` deploys Platforma and all infrastructure components: Cluster Autoscaler, ALB Controller, External DNS, and both StorageClasses (gp3 + EFS). It also creates the Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors) that Platforma uses for job scheduling — these are configured by the `kueue` section in `values-aws-s3.yaml`. Service accounts are created automatically. The namespace must already exist — create it in Step 4 before running this command.
+Install Cluster Autoscaler, External DNS, and ALB Controller as separate Helm releases. Each gets its own service account annotated with an IRSA role from the CloudFormation outputs.
 
 Before installing, confirm the EBS and EFS CSI drivers are running (installed by CloudFormation as EKS addons):
 
@@ -258,77 +259,148 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-efs-csi-driver
 
 Both should show at least one Running pod. If they're still starting up, wait and retry — they may take a minute after the cluster becomes ready.
 
-Switch to the `infrastructure/aws/` directory if not already there:
-
-```bash
-cd platforma-helm/infrastructure/aws   # relative to where you ran git clone; use an absolute path if unsure, e.g. ~/platforma-helm/infrastructure/aws
-```
-
-Fill in values from CloudFormation Outputs (nine variables) plus two you supply yourself (`DOMAIN` and `DOMAIN_FILTER`).
-
-> **`DOMAIN_FILTER` must be set correctly.** It is the domain of your Route53 hosted zone — the zone External DNS writes DNS records into. For most users this is the registered domain root (e.g. `example.com`). If you created a dedicated hosted zone for a subdomain like `platforma.example.com`, use `platforma.example.com` instead. **Using the wrong value causes External DNS to silently skip record creation** — the cluster will appear healthy but the domain won't resolve.
-
-> `CLUSTER_NAME` doubles as the External DNS `txtOwnerId` — a unique string written into TXT records so External DNS tracks which records it owns. If multiple clusters share a hosted zone, each must have a distinct cluster name.
-
-Set all variables below before running `helm install`. Shell variables don't persist across sessions — if you've opened a new terminal since Step 2, re-set everything here.
+Set variables from CloudFormation Outputs. Shell variables don't persist across sessions — if you've opened a new terminal since Step 2, re-set everything here.
 
 ```bash
 # From CloudFormation Outputs tab:
-CLUSTER_NAME=<ClusterName>   # must match the name used in the Step 2 kubeconfig command
-REGION=<Region>   # from CloudFormation Outputs
-EFS_ID=<EfsFileSystemId>
-S3_BUCKET=<S3BucketName>
-CERTIFICATE_ARN=<CertificateArn>
-PLATFORMA_ROLE_ARN=<PlatformaRoleArn>
-PLATFORMA_JOBS_ROLE_ARN=<PlatformaJobsRoleArn>
+CLUSTER_NAME=<ClusterName>
+REGION=<Region>
+VPC_ID=<VpcId>
 AUTOSCALER_ROLE_ARN=<AutoscalerRoleArn>
 ALB_ROLE_ARN=<ALBControllerRoleArn>
 EXTERNALDNS_ROLE_ARN=<ExternalDNSRoleArn>
 
 # Not in Outputs — same values you entered as stack parameters:
-DOMAIN=<the domain you entered, e.g. platforma.example.com>
-DOMAIN_FILTER=<your Route53 hosted zone domain, e.g. example.com>   # see note above
+DOMAIN_FILTER=<your Route53 hosted zone domain, e.g. example.com>
+```
 
+> **`DOMAIN_FILTER` must be set correctly.** It is the domain of your Route53 hosted zone — the zone External DNS writes DNS records into. For most users this is the registered domain root (e.g. `example.com`). If you created a dedicated hosted zone for a subdomain like `platforma.example.com`, use `platforma.example.com` instead. **Using the wrong value causes External DNS to silently skip record creation** — the cluster will appear healthy but the domain won't resolve.
+
+> `CLUSTER_NAME` doubles as the External DNS `txtOwnerId` — a unique string written into TXT records so External DNS tracks which records it owns. If multiple clusters share a hosted zone, each must have a distinct cluster name.
+
+Add Helm repositories:
+
+```bash
+helm repo add autoscaler https://kubernetes.github.io/autoscaler
+helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+```
+
+Install the three infrastructure components. **Order matters** — install External DNS before ALB Controller (ALB registers a mutating webhook; if the ALB controller isn't ready when External DNS service is created, the service creation fails).
+
+```bash
+# Cluster Autoscaler
+helm install cluster-autoscaler autoscaler/cluster-autoscaler \
+  --version 9.44.0 \
+  -n platforma \
+  --set autoDiscovery.clusterName=$CLUSTER_NAME \
+  --set awsRegion=$REGION \
+  --set rbac.serviceAccount.create=true \
+  --set rbac.serviceAccount.name=cluster-autoscaler \
+  --set "rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$AUTOSCALER_ROLE_ARN" \
+  --set extraArgs.scale-down-delay-after-add=10m \
+  --set extraArgs.scale-down-unneeded-time=10m \
+  --set extraArgs.scale-down-utilization-threshold=0.5 \
+  --set extraArgs.expander=least-waste \
+  --wait --timeout 5m
+
+# External DNS (before ALB Controller)
+helm install external-dns external-dns/external-dns \
+  -n platforma \
+  --set policy=sync \
+  --set registry=txt \
+  --set txtOwnerId=$CLUSTER_NAME \
+  --set domainFilters[0]=$DOMAIN_FILTER \
+  --set serviceAccount.create=true \
+  --set serviceAccount.name=external-dns \
+  --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \
+  --wait --timeout 5m
+
+# ALB Controller
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n platforma \
+  --set clusterName=$CLUSTER_NAME \
+  --set region=$REGION \
+  --set serviceAccount.create=true \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
+  --set vpcId=$VPC_ID \
+  --set replicaCount=1 \
+  --wait --timeout 5m
+```
+
+> **Service account names** are pinned explicitly (`cluster-autoscaler`, `aws-load-balancer-controller`, `external-dns`) to match the IRSA trust policies in the CloudFormation roles. If any name differs, IRSA authentication silently fails.
+
+---
+
+## Step 6: Install Platforma
+
+The Platforma chart creates StorageClasses (gp3 + EFS), Kueue queue resources (ClusterQueues, LocalQueues, ResourceFlavors), and the Platforma server. The namespace must already exist — create it in Step 4 before running this command.
+
+Switch to the `infrastructure/aws/` directory if not already there:
+
+```bash
+cd platforma-helm/infrastructure/aws
+```
+
+Set the remaining variables (re-set `REGION` if you opened a new terminal since Step 5):
+
+```bash
+REGION=<Region>
+EFS_ID=<EfsFileSystemId>
+S3_BUCKET=<S3BucketName>
+CERTIFICATE_ARN=<CertificateArn>
+PLATFORMA_ROLE_ARN=<PlatformaRoleArn>
+PLATFORMA_JOBS_ROLE_ARN=<PlatformaJobsRoleArn>
+DOMAIN=<the domain you entered, e.g. platforma.example.com>
+```
+
+Create the auth secret. Choose **one** method:
+
+```bash
+# Option A: htpasswd (file-based auth)
+# Create htpasswd file first: htpasswd -cB ./htpasswd admin
+kubectl create secret generic platforma-htpasswd \
+  -n platforma \
+  --from-file=htpasswd=./htpasswd
+
+# Option B: LDAP — no secret needed, configure via --set flags below
+```
+
+Install Platforma:
+
+```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version 3.0.0 \
   -n platforma \
   -f values-aws-s3.yaml \
   \
+  --set aws.efsFileSystemId=$EFS_ID \
   --set storage.main.s3.bucket=$S3_BUCKET \
   --set storage.main.s3.region=$REGION \
   --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_ROLE_ARN" \
   --set "jobServiceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_JOBS_ROLE_ARN" \
   \
-  --set storageClasses.efs.fileSystemId=$EFS_ID \
-  \
-  --set cluster-autoscaler.autoDiscovery.clusterName=$CLUSTER_NAME \
-  --set cluster-autoscaler.awsRegion=$REGION \
-  --set "cluster-autoscaler.rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$AUTOSCALER_ROLE_ARN" \
-  \
-  --set aws-load-balancer-controller.clusterName=$CLUSTER_NAME \
-  --set aws-load-balancer-controller.region=$REGION \
-  --set "aws-load-balancer-controller.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
-  \
-  --set external-dns.domainFilters[0]=$DOMAIN_FILTER \
-  --set external-dns.txtOwnerId=$CLUSTER_NAME \
-  --set "external-dns.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \
-  \
   --set ingress.enabled=true \
   --set ingress.className=alb \
-  --set ingress.api.host=$DOMAIN \
-  --set ingress.api.tls.enabled=true \
-  --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/scheme"=internet-facing \
-  --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/target-type"=ip \
-  --set-json 'ingress.api.annotations."alb\.ingress\.kubernetes\.io/listen-ports"=[{"HTTPS":443}]' \
-  --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=$CERTIFICATE_ARN \
-  --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC
+  --set ingress.host=$DOMAIN \
+  --set ingress.tls.enabled=true \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/scheme"=internet-facing \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/target-type"=ip \
+  --set-json 'ingress.annotations."alb\.ingress\.kubernetes\.io/listen-ports"=[{"HTTPS":443}]' \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=$CERTIFICATE_ARN \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC \
+  \
+  --set auth.htpasswd.secretName=platforma-htpasswd
+  # For LDAP instead of htpasswd, replace the line above with:
+  # --set auth.ldap.server=ldap://ldap.example.com:389 \
+  # --set auth.ldap.bindDN="cn=%u,ou=users,dc=example,dc=com"
 ```
 
-> **Note:** `--set-json` for `listen-ports` — the value is a JSON array (`[{"HTTPS":443}]`), which `--set` cannot express. It is the only flag in this command that uses `--set-json`. `tls.enabled=true` tells the chart to emit an HTTPS-only Ingress rule that the ALB controller interprets as a TLS listener; the ACM certificate annotation supplies the actual certificate. `tls.secretName` defaults to empty in `values-aws-s3.yaml` — TLS is terminated at the ALB; no Kubernetes TLS secret is used.
+> **Note:** `--set-json` for `listen-ports` — the value is a JSON array (`[{"HTTPS":443}]`), which `--set` cannot express. `tls.enabled=true` tells the chart to emit an HTTPS-only Ingress rule; the ACM certificate annotation supplies the actual certificate. `tls.secretName` defaults to empty — TLS is terminated at the ALB; no Kubernetes TLS secret is used.
 
 After `helm install` completes, ALB provisioning and DNS propagation take 1-3 minutes. The ingress `ADDRESS` field will be empty until the ALB is ready — this is normal.
-
-> **Service account names:** The values file pins each service account name explicitly (`cluster-autoscaler`, `aws-load-balancer-controller`, `external-dns`, `platforma`) to match the IRSA trust policies baked into the CloudFormation roles. Verify after install: `kubectl get sa -n platforma` — if any name differs from what CloudFormation expects, IRSA authentication will silently fail.
 
 ```bash
 kubectl get pods -n platforma
@@ -350,11 +422,11 @@ nslookup $DOMAIN
 
 ---
 
-## Step 6: Connect from Desktop App
+## Step 7: Connect from Desktop App
 
 1. **Open** the Platforma Desktop App (download from [platforma.bio](https://platforma.bio) if needed)
 2. **Add** a new connection
-3. **Enter** your endpoint: `$DOMAIN:443` (the domain you set in Step 5)
+3. **Enter** your endpoint: `$DOMAIN:443` (the domain you set in Step 6)
 4. The ACM certificate secures the connection via TLS
 
 For quick testing before DNS propagates, use port-forwarding. The Desktop App supports non-TLS connections to `localhost` — no certificate needed for this mode. Wait for the Platforma pod to reach `Running` state before forwarding (`kubectl get pods -n platforma`):
@@ -555,7 +627,6 @@ S3_BUCKET=<S3BucketName from outputs>
 EFS_ID=<EfsFileSystemId from outputs>
 
 # 1. Uninstall Helm releases (removes ALBs, DNS records, K8s resources)
-# platforma uninstall also removes the sub-charts: CA, ALB controller, External DNS
 helm uninstall platforma -n platforma
 
 # Wait for the ALB to be deprovisioned before proceeding — the ALB Controller
@@ -566,6 +637,9 @@ kubectl get ingress -n platforma
 kubectl get svc --all-namespaces -o wide | grep LoadBalancer
 # Also confirm in the AWS Console: EC2 → Load Balancers
 
+helm uninstall aws-load-balancer-controller -n platforma
+helm uninstall external-dns -n platforma
+helm uninstall cluster-autoscaler -n platforma
 helm uninstall kueue -n kueue-system
 
 # Delete all AppWrapper CRs before removing the controller — the CRD finalizer

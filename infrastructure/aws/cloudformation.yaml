@@ -36,6 +36,17 @@ Metadata:
           - LicenseKey
           - PlatformaVersion
       - Label:
+          default: Authentication (required when deploying Platforma)
+        Parameters:
+          - AuthMethod
+          - HtpasswdContent
+          - LdapServer
+          - LdapStartTLS
+          - LdapBindDN
+          - LdapSearchRules
+          - LdapSearchUser
+          - LdapSearchPassword
+      - Label:
           default: 'Node groups — system and UI'
         Parameters:
           - SystemNodeInstanceType
@@ -126,6 +137,22 @@ Metadata:
         default: External DNS chart version
       AlbControllerVersion:
         default: ALB Controller chart version
+      AuthMethod:
+        default: 'Authentication method (htpasswd or ldap)'
+      HtpasswdContent:
+        default: 'htpasswd file content (htpasswd mode only)'
+      LdapServer:
+        default: 'LDAP server URL (ldap mode only)'
+      LdapStartTLS:
+        default: 'LDAP StartTLS'
+      LdapBindDN:
+        default: 'LDAP bind DN template (direct bind)'
+      LdapSearchRules:
+        default: 'LDAP search rules (comma-separated)'
+      LdapSearchUser:
+        default: 'LDAP search user DN'
+      LdapSearchPassword:
+        default: 'LDAP search user password'
 
 # =============================================================================
 # Parameters
@@ -170,6 +197,68 @@ Parameters:
     Type: String
     Default: '3.0.0'
     Description: Platforma Helm chart version (oci://ghcr.io/milaboratory/platforma-helm/platforma)
+
+  # --- Authentication ---
+  AuthMethod:
+    Type: String
+    Default: htpasswd
+    AllowedValues: [htpasswd, ldap]
+    Description: >
+      Authentication method for Platforma. Required when DeployPlatforma=true.
+      htpasswd: provide HtpasswdContent parameter.
+      ldap: provide LdapServer and related parameters.
+
+  HtpasswdContent:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >
+      htpasswd file content (one line per user, e.g. "user:$apr1$...").
+      Required when AuthMethod=htpasswd and DeployPlatforma=true.
+      Generate with: htpasswd -nB username
+
+  LdapServer:
+    Type: String
+    Default: ''
+    Description: >
+      LDAP server URL (e.g. ldap://ldap.example.com:389).
+      Required when AuthMethod=ldap.
+
+  LdapStartTLS:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable LDAP StartTLS
+
+  LdapBindDN:
+    Type: String
+    Default: ''
+    Description: >
+      Direct bind DN template where %u is replaced with username
+      (e.g. cn=%u,ou=users,dc=example,dc=com).
+      Set for direct bind mode. Leave empty for search bind mode.
+
+  LdapSearchRules:
+    Type: String
+    Default: ''
+    Description: >
+      Comma-delimited LDAP search rules. Each rule: "FILTER|BASE_DN"
+      (e.g. "(uid=%s)|ou=users,dc=example,dc=com").
+      Set for search bind mode. Leave empty for direct bind mode.
+
+  LdapSearchUser:
+    Type: String
+    Default: ''
+    Description: >
+      Service account DN for LDAP search queries
+      (e.g. cn=readonly,dc=example,dc=com).
+      Required when using search bind mode.
+
+  LdapSearchPassword:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Password for the LDAP search user. Required when LdapSearchUser is set.
 
   # --- Networking ---
   # CloudFormation cannot query subnets from a VPC — you must provide them.
@@ -1566,6 +1655,22 @@ Resources:
             Value: !Ref ExternalDnsVersion
           - Name: ALB_CONTROLLER_VERSION
             Value: !Ref AlbControllerVersion
+          - Name: AUTH_METHOD
+            Value: !Ref AuthMethod
+          - Name: HTPASSWD_CONTENT
+            Value: !Ref HtpasswdContent
+          - Name: LDAP_SERVER
+            Value: !Ref LdapServer
+          - Name: LDAP_START_TLS
+            Value: !Ref LdapStartTLS
+          - Name: LDAP_BIND_DN
+            Value: !Ref LdapBindDN
+          - Name: LDAP_SEARCH_RULES
+            Value: !Ref LdapSearchRules
+          - Name: LDAP_SEARCH_USER
+            Value: !Ref LdapSearchUser
+          - Name: LDAP_SEARCH_PASSWORD
+            Value: !Ref LdapSearchPassword
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -1727,11 +1832,26 @@ Resources:
                   # 6. Platforma (optional — skipped when DEPLOY_PLATFORMA=false)
                   if [ "$DEPLOY_PLATFORMA" = "true" ]; then
                     kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+                    # License secret
                     kubectl create secret generic platforma-license \
                       -n $NAMESPACE \
                       --from-literal=MI_LICENSE="$LICENSE_KEY" \
                       --dry-run=client -o yaml | kubectl apply -f -
+
+                    # Auth secret (htpasswd mode only)
+                    if [ "$AUTH_METHOD" = "htpasswd" ] && [ -n "$HTPASSWD_CONTENT" ]; then
+                      kubectl create secret generic platforma-htpasswd \
+                        -n $NAMESPACE \
+                        --from-literal=htpasswd="$HTPASSWD_CONTENT" \
+                        --dry-run=client -o yaml | kubectl apply -f -
+                    fi
+
+                    # Base values
                     cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
+                  provider: aws
+                  aws:
+                    efsFileSystemId: $EFS_FILE_SYSTEM_ID
                   storage:
                     database:
                       size: 50Gi
@@ -1742,20 +1862,9 @@ Resources:
                         storageClass: efs-platforma
                         size: 100Gi
                     main:
-                      type: s3
                       s3:
                         bucket: $S3_BUCKET
                         region: $REGION
-                  storageClasses:
-                    gp3:
-                      create: true
-                      name: gp3
-                    efs:
-                      create: true
-                      name: efs-platforma
-                      fileSystemId: $EFS_FILE_SYSTEM_ID
-                      uid: "1010"
-                      gid: "1010"
                   serviceAccount:
                     create: true
                     annotations:
@@ -1767,16 +1876,15 @@ Resources:
                   ingress:
                     enabled: true
                     className: alb
-                    api:
-                      host: $DOMAIN_NAME
-                      tls:
-                        enabled: true
-                      annotations:
-                        alb.ingress.kubernetes.io/scheme: internet-facing
-                        alb.ingress.kubernetes.io/target-type: ip
-                        alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
-                        alb.ingress.kubernetes.io/certificate-arn: $CERTIFICATE_ARN
-                        alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+                    host: $DOMAIN_NAME
+                    tls:
+                      enabled: true
+                    annotations:
+                      alb.ingress.kubernetes.io/scheme: internet-facing
+                      alb.ingress.kubernetes.io/target-type: ip
+                      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+                      alb.ingress.kubernetes.io/certificate-arn: $CERTIFICATE_ARN
+                      alb.ingress.kubernetes.io/backend-protocol-version: GRPC
                   kueue:
                     mode: dedicated
                     dedicated:
@@ -1801,9 +1909,39 @@ Resources:
                             - key: dedicated
                               value: batch
                               effect: NoSchedule
-                  nodeSelector:
-                    node.kubernetes.io/pool: system
+                  app:
+                    nodeSelector:
+                      node.kubernetes.io/pool: system
                   PLATFORMA_VALUES
+
+                    # Append auth configuration
+                    if [ "$AUTH_METHOD" = "htpasswd" ]; then
+                      cat >> /tmp/platforma-values.yaml << AUTH_VALUES
+                  auth:
+                    htpasswd:
+                      secretName: platforma-htpasswd
+                  AUTH_VALUES
+                    elif [ "$AUTH_METHOD" = "ldap" ]; then
+                      cat >> /tmp/platforma-values.yaml << AUTH_VALUES
+                  auth:
+                    ldap:
+                      server: $LDAP_SERVER
+                      startTLS: $LDAP_START_TLS
+                      bindDN: "$LDAP_BIND_DN"
+                      searchUser: "$LDAP_SEARCH_USER"
+                      searchPassword: "$LDAP_SEARCH_PASSWORD"
+                  AUTH_VALUES
+                      # Convert comma-separated search rules to YAML array
+                      if [ -n "$LDAP_SEARCH_RULES" ]; then
+                        echo "    searchRules:" >> /tmp/platforma-values.yaml
+                        IFS=',' read -ra RULES <<< "$LDAP_SEARCH_RULES"
+                        for rule in "${RULES[@]}"; do
+                          rule=$(echo "$rule" | xargs)
+                          echo "      - \"$rule\"" >> /tmp/platforma-values.yaml
+                        done
+                      fi
+                    fi
+
                     helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
                       --version $PLATFORMA_VERSION \
                       -n $NAMESPACE \
@@ -1915,6 +2053,26 @@ Resources:
       - Certificate
     Properties:
       ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
+      # Properties below trigger re-deployment when changed during stack update.
+      # The Lambda does not read these — they exist only so CloudFormation
+      # detects property changes and sends an UPDATE event.
+      PlatformaVersion: !Ref PlatformaVersion
+      DeployPlatforma: !Ref DeployPlatforma
+      LicenseKey: !Ref LicenseKey
+      AuthMethod: !Ref AuthMethod
+      HtpasswdContent: !Ref HtpasswdContent
+      LdapServer: !Ref LdapServer
+      LdapStartTLS: !Ref LdapStartTLS
+      LdapBindDN: !Ref LdapBindDN
+      LdapSearchRules: !Ref LdapSearchRules
+      LdapSearchUser: !Ref LdapSearchUser
+      LdapSearchPassword: !Ref LdapSearchPassword
+      DomainName: !Ref DomainName
+      KueueVersion: !Ref KueueVersion
+      AppWrapperVersion: !Ref AppWrapperVersion
+      ClusterAutoscalerChartVersion: !Ref ClusterAutoscalerChartVersion
+      ExternalDnsVersion: !Ref ExternalDnsVersion
+      AlbControllerVersion: !Ref AlbControllerVersion
 
   # ---------------------------------------------------------------------------
   # 6. Storage — EFS (shared workspace)
@@ -2071,7 +2229,7 @@ Outputs:
   EfsFileSystemId:
     Description: >
       EFS filesystem ID for Platforma workspace.
-      Use: --set storageClasses.efs.fileSystemId=<value>
+      Use: --set aws.efsFileSystemId=<value>
     Value: !Ref EfsFileSystem
 
   S3BucketName:

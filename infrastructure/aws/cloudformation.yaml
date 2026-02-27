@@ -1727,7 +1727,8 @@ Resources:
                   if [ "${TEARDOWN:-false}" = "true" ]; then
                     echo "=== TEARDOWN MODE: uninstalling Helm releases ==="
                     # 1. Platforma first — it owns the Ingress resources that back the ALBs.
-                    helm uninstall platforma -n $NAMESPACE --ignore-not-found --wait --timeout 5m || true
+                    #    Longer timeout to ensure Ingress finalizers complete cleanly.
+                    helm uninstall platforma -n $NAMESPACE --ignore-not-found --wait --timeout 8m || true
                     # 2. Wait for ALBs to be fully deleted.
                     #    ALB Controller v2 tags with elbv2.k8s.aws/cluster (not kubernetes.io/cluster/...).
                     #    Only after ALBs are gone is it safe to remove the controller and delete the VPC.
@@ -1764,17 +1765,21 @@ Resources:
                     # 2b. Clean up ALB-created target groups and security groups.
                     #     ALB Controller creates these outside CloudFormation.
                     #     If not cleaned up, they block VPC and certificate deletion.
+                    #     Wait briefly for ALB listeners to fully release TGs.
+                    sleep 10
                     echo "Cleaning up ALB target groups..."
                     for TG_ARN in $(aws resourcegroupstaggingapi get-resources \
                       --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
                       --resource-type-filters "elasticloadbalancing:targetgroup" \
                       --query 'ResourceTagMappingList[].ResourceARN' --output text --region $REGION 2>/dev/null); do
                       echo "  Deleting target group: $TG_ARN"
-                      aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region $REGION || true
+                      for t in $(seq 1 6); do
+                        aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region $REGION 2>/dev/null && break
+                        sleep 5
+                      done
                     done
                     echo "Cleaning up ALB security groups..."
-                    VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
-                      --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "")
+                    # $VPC_ID is available from CodeBuild environment variables
                     if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
                       ALB_SGS=$(aws ec2 describe-security-groups --region $REGION \
                         --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
@@ -2086,7 +2091,7 @@ Resources:
                       -n $NAMESPACE \
                       -f /tmp/platforma-values.yaml \
                       $HELM_ARGS \
-                      --wait --timeout 10m
+                      --atomic --timeout 10m
                   fi
             post_build:
               commands:

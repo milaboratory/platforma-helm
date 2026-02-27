@@ -90,7 +90,7 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version 3.0.0 \
   -n platforma \
-  --set provider=aws \
+  --set environment="" \
   --set auth.htpasswd.secretName=platforma-htpasswd \
   --set storage.workspace.nfs.enabled=true \
   --set storage.workspace.nfs.server=nfs.example.com \
@@ -107,10 +107,10 @@ See [values.yaml](charts/platforma/values.yaml) for all options.
 
 | Value | Description |
 |-------|-------------|
-| `provider` | Cloud provider: `aws` or `gcp`. Determines StorageClasses and storage backend. |
+| `environment` | Cloud environment: `aws`, `gcp`, or `""` (vanilla K8s). Controls StorageClass creation. |
 | `auth.htpasswd.secretName` or `auth.ldap.server` | Authentication method. At least one must be set. |
 | `storage.workspace.*` | Exactly one RWX workspace option must be enabled. |
-| `storage.main.s3.*` or `storage.main.gcs.*` | Primary storage bucket (matches provider). |
+| `storage.main.s3.*` or `storage.main.gcs.*` | Primary storage bucket. |
 
 ### Storage
 
@@ -169,7 +169,7 @@ storage:
       size: 100Gi
 ```
 
-The EFS Access Point enforces UID/GID 1010 for all file operations, so no extra setup is needed. This is the simplest and most reliable approach. When `provider: aws` and `aws.efsFileSystemId` is set, the chart creates this StorageClass automatically.
+The EFS Access Point enforces UID/GID 1010 for all file operations, so no extra setup is needed. This is the simplest and most reliable approach. When `environment: aws` and `storage.workspace.efs.fileSystemId` is set, the chart creates this StorageClass automatically.
 
 **AWS FSx for Lustre, GCP Filestore, NFS, generic PVC — automatic pre-install hook**
 
@@ -243,6 +243,43 @@ auth:
 To disable auth for development, add `--no-auth` to `app.extraArgs`.
 
 See [values.yaml](charts/platforma/values.yaml) `auth` section for TLS, CA certificates, and client certificate options.
+
+### Service accounts
+
+The chart creates two Kubernetes service accounts:
+
+| Service account | Default name | Purpose |
+|---|---|---|
+| Server | `<release>-platforma` | Platforma pod — manages jobs, reads secrets |
+| Jobs | `<release>-platforma-jobs` | Job pods — needs cloud storage access only |
+
+Both names can be overridden via `serviceAccount.name` and `jobServiceAccount.name`.
+
+#### Cloud IAM (OIDC)
+
+To grant cloud permissions (S3/GCS access), annotate the service accounts with your IAM role/identity. Create the IAM role with an OIDC trust policy for the service account, then pass the ARN/email:
+
+**AWS (IRSA):**
+```yaml
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/platforma-server
+jobServiceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/platforma-jobs
+```
+
+**GCP (Workload Identity):**
+```yaml
+serviceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: platforma-server@project.iam.gserviceaccount.com
+jobServiceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: platforma-jobs@project.iam.gserviceaccount.com
+```
+
+Alternatively, set `serviceAccount.create: false` and `serviceAccount.name: "my-sa"` to use a pre-existing service account.
 
 ### Networking
 
@@ -371,7 +408,7 @@ For GKE with Google Managed Prometheus, enable the PodMonitoring resource:
 ```yaml
 app:
   monitoring:
-    podMonitoring:
+    gkeMonitoring:
       enabled: true
       interval: 30s
 ```

@@ -2,16 +2,15 @@
 # Platforma Helm Chart Values
 # =============================================================================
 # Platforma is a bioinformatics workflow platform. Key concepts:
-#   - App: The main Platforma pod that manages workflows and state
-#   - Jobs: Compute tasks created by Platforma, run as K8s Jobs via Kueue
-#   - Queues: ui-tasks (interactive), light/medium/heavy (batch workloads)
-#   - Desktop App: Client application that connects to the server via gRPC
+#   - App: The main Platforma server — manages workflows, state, and user sessions
+#   - Jobs: Compute tasks scheduled as K8s Jobs via Kueue queues
+#   - Desktop App: The client application users connect with
 #
 # Minimum required configuration:
-#   1. Auth (htpasswd secretName or LDAP server)
-#   2. License secret (see license.secretName)
-#   3. Workspace storage (see storage.workspace) - must be RWX
-#   4. Main storage bucket (see storage.main.s3 or storage.main.gcs)
+#   1. License secret (license.secretName)
+#   2. Auth — htpasswd or LDAP (users cannot log in without auth)
+#   3. Workspace storage (RWX shared filesystem for job data)
+#   4. Main storage bucket (S3 or GCS — where Desktop App downloads results)
 #
 # See infrastructure/aws/ and infrastructure/gcp/ for cloud-specific examples.
 # =============================================================================
@@ -21,7 +20,7 @@ nameOverride: ""
 # -- Override full release name
 fullnameOverride: ""
 
-# -- Container image configuration
+# -- Container image
 image:
   repository: quay.io/milaboratories/platforma
   tag: ""  # Defaults to Chart.appVersion
@@ -46,70 +45,71 @@ environment: ""
 # =============================================================================
 
 # -- License configuration (required)
-# The chart reads the secret key (default: MI_LICENSE) and mounts it both as
-# an env var (PL_LICENSE) and as a file (--license-file).
+# Platforma will not start without a valid license.
+# Create the secret before installing:
+#   kubectl create secret generic platforma-license --from-literal=MI_LICENSE="<your-license>"
 license:
-  # -- Existing secret containing the license
+  # -- Name of the existing secret containing the license
   secretName: "platforma-license"
-  # -- Key within the secret containing the license
+  # -- Key within the secret
   secretKey: "MI_LICENSE"
 
 # =============================================================================
 # AUTHENTICATION
 # =============================================================================
-# Authentication is mandatory. Configure exactly one method:
-#   - htpasswd: Set auth.htpasswd.secretName to enable
-#   - LDAP: Set auth.ldap.server to enable
+# Authentication is mandatory — users cannot log in without it.
+# Configure exactly one method:
+#   - htpasswd: file-based, set auth.htpasswd.secretName to enable
+#   - LDAP: directory-based, set auth.ldap.server to enable
 # Helm fails if neither is configured.
-# To disable auth for development, pass --no-auth via app.extraArgs.
 
 auth:
   # -- htpasswd file-based authentication
+  # Users are defined in an htpasswd-format file stored in a K8s secret.
   htpasswd:
-    # -- Existing secret containing htpasswd file (set to enable htpasswd auth)
-    # Create with: kubectl create secret generic platforma-htpasswd --from-file=htpasswd=./htpasswd
+    # -- Set to enable htpasswd auth. Create the secret first:
+    #   htpasswd -nB username > htpasswd
+    #   kubectl create secret generic platforma-htpasswd --from-file=htpasswd=./htpasswd
     secretName: ""
     # -- Key in secret containing htpasswd content
     secretKey: "htpasswd"
 
   # -- LDAP authentication
-  # Two modes available:
-  #   1. Direct bind: user DN is predictable (bindDN template with %u placeholder)
-  #   2. Search bind: search for user first, then bind (searchRules + searchUser)
+  # Users authenticate against your LDAP directory. Two modes:
+  #   1. Direct bind: set bindDN (user DN is predictable from username)
+  #   2. Search bind: set searchRules + searchUser (search for user first, then bind)
   ldap:
-    # -- LDAP server address (set to enable LDAP auth)
+    # -- LDAP server URL (set to enable LDAP auth)
     # Example: ldap://ldap.example.com:389
     server: ""
-    # -- Enable StartTLS
+    # -- Enable StartTLS for the LDAP connection
     startTLS: false
 
-    # -- Mode 1: Direct bind
-    # DN template where %u is replaced with username
+    # -- Direct bind: DN template where %u is replaced with the username
     # Example: "cn=%u,ou=users,dc=example,dc=com"
     bindDN: ""
 
-    # -- Mode 2: Search bind
+    # -- Search bind: rules to find user entries
     # Each rule: "FILTER|BASE_DN" (e.g., "(uid=%s)|ou=users,dc=example,dc=com")
     searchRules: []
-    # -- Service account for LDAP search queries
+    # -- Service account DN for running LDAP searches
     searchUser: ""
-    # -- Search user password (use secretRef for production)
+    # -- Search user password (plaintext — use searchPasswordSecretRef for production)
     searchPassword: ""
-    # -- Secret containing search user password
+    # -- Secret reference for search user password (recommended for production)
     searchPasswordSecretRef:
       name: ""
       key: "password"
 
-    # -- TLS configuration
+    # -- LDAP TLS settings
     tls:
-      # -- Skip TLS verification (not recommended for production)
+      # -- Skip server certificate verification (not recommended for production)
       insecureSkipVerify: false
-      # -- CA certificate secret (mounted and passed via --auth-ldap-trusted-cas)
+      # -- CA certificate for verifying the LDAP server
       caSecretRef:
         name: ""
         key: "ca.crt"
-      # -- Client certificate for mutual TLS
-      # Both cert and key are passed as single flag: --auth-ldap-client-cert=<cert>,<key>
+      # -- Client certificate for mutual TLS authentication
       clientCertSecretRef:
         name: ""
         certKey: "tls.crt"
@@ -120,20 +120,18 @@ auth:
 # =============================================================================
 # Platforma requires three storage areas:
 #
-# 1. DATABASE (RWO) - RocksDB state database. Stores workflow state, job
-#    metadata, and internal indices. Fast local SSD recommended (gp3, pd-ssd).
-#    Size: 20-100Gi depending on workflow volume.
+# 1. DATABASE (RWO) — Internal state (workflow metadata, indices).
+#    Fast SSD recommended (gp3, pd-ssd). 20-100Gi depending on workflow volume.
 #
-# 2. WORKSPACE (RWX) - Shared filesystem for job data. Jobs read inputs and
-#    write outputs here. MUST be RWX (ReadWriteMany) - EFS, Filestore, NFS.
-#    Size: Depends on data volume. This is your working data area.
+# 2. WORKSPACE (RWX) — Shared filesystem where jobs read inputs and write outputs.
+#    Must be ReadWriteMany (EFS, Filestore, NFS). Size depends on data volume.
 #
-# 3. MAIN - Long-term result storage exposed to Desktop App.
-#    Options: S3 or GCS. Desktop App accesses cloud storage directly.
+# 3. MAIN — Long-term result storage. Desktop App downloads results directly
+#    from this bucket. Configure S3 or GCS.
 # =============================================================================
 
 storage:
-  # -- RocksDB database storage (RWO) - internal state, NOT user data
+  # -- Database storage (RWO) — internal state, not user data
   database:
     size: 20Gi
     storageClass: ""
@@ -141,26 +139,25 @@ storage:
 
   # -- Shared workspace for jobs (RWX required)
   # Configure exactly ONE of: existingClaim, efs, fsxLustre, filestore, nfs, pvc
-  # Note: Block storage is NOT supported - workspace must be shared (RWX)
+  # Block storage (EBS, PD) is NOT supported — workspace must be a shared filesystem.
   workspace:
-    # -- Use existing RWX PVC
+    # -- Use an existing RWX PVC
     existingClaim: ""
 
-    # -- AWS EFS via static PV (chart creates PV+PVC)
+    # -- AWS EFS
     efs:
       enabled: false
       fileSystemId: ""
       path: "/"
 
-    # -- AWS FSx for Lustre (chart creates PV+PVC)
-    # Requires lustre-client installed on all nodes.
+    # -- AWS FSx for Lustre (requires lustre-client on all nodes)
     fsxLustre:
       enabled: false
       fileSystemId: ""
       dnsName: ""
       mountName: ""
 
-    # -- GCP Filestore (chart creates PV+PVC)
+    # -- GCP Filestore
     filestore:
       enabled: false
       instanceName: ""
@@ -169,41 +166,40 @@ storage:
       ip: ""
       path: "/"
 
-    # -- Generic NFS server (chart creates PV+PVC)
+    # -- Generic NFS server
     nfs:
       enabled: false
       server: ""
       path: "/"
 
-    # -- Generic RWX PVC via StorageClass (e.g., for CSI drivers)
+    # -- Generic RWX PVC via StorageClass (for CSI drivers or other provisioners)
     pvc:
       enabled: false
       size: 100Gi
       storageClass: ""
 
-  # -- Main storage (exposed to Desktop App)
-  # Desktop App downloads results from this storage. Configure S3 or GCS.
+  # -- Main storage — where Desktop App downloads results from
+  # Configure S3 or GCS. On AWS with IRSA, leave secretRef empty.
   main:
-    # -- S3 storage
     s3:
       bucket: ""
       region: ""
       prefix: ""
-      endpoint: ""
-      secretRef:
+      endpoint: ""   # Custom S3-compatible endpoint (leave empty for AWS S3)
+      secretRef:     # Only needed for non-IRSA setups or S3-compatible storage
         name: ""
         accessKeyField: "access-key"
         secretKeyField: "secret-key"
 
-    # -- GCS storage
     gcs:
       bucket: ""
       projectId: ""
       prefix: ""
-      serviceAccount: ""
+      serviceAccount: ""  # GCP service account for Workload Identity
 
 # -- External read-only data sources (data library)
-# Each source gets a --data-library-* CLI flag. PVC sources also get volume mounts.
+# Makes external datasets available to workflows. Each source appears
+# in the Desktop App as a browsable data library entry.
 dataSources: []
   # - name: "sequencing-archive"
   #   type: s3
@@ -224,47 +220,45 @@ dataSources: []
 # =============================================================================
 # JOB EXECUTION (Kueue)
 # =============================================================================
-# Platforma has 4 fixed queues with hardcoded priorities:
-#   - ui-tasks: Priority 1000 (highest, for interactive tasks)
-#   - heavy:    Priority 1000 (high priority batch)
-#   - medium:   Priority 100  (normal batch)
-#   - light:    Priority 10   (low priority batch)
+# Platforma submits compute jobs to Kueue queues. There are 4 fixed queues:
+#   - ui-tasks: interactive tasks triggered from the Desktop App (highest priority)
+#   - heavy/medium/light: batch workloads with decreasing priority
 #
 # Two modes:
-#   dedicated: Chart creates ClusterQueues, LocalQueues, ResourceFlavors,
-#              and WorkloadPriorityClasses. Use when Platforma owns the cluster
-#              or has a dedicated namespace.
-#   shared:    Chart references existing Kueue queues. Use when a cluster admin
-#              manages Kueue resources centrally for multiple tenants.
+#   dedicated: Chart creates all Kueue resources. Use when Platforma owns
+#              the cluster or has dedicated compute nodes.
+#   shared:    Chart references existing Kueue queues managed by a cluster admin.
+#              Use in multi-tenant clusters.
 # =============================================================================
 
 kueue:
   # -- Mode: dedicated (chart creates all resources) or shared (uses existing queues)
   mode: dedicated  # dedicated | shared
 
-  # -- Maximum resources per job (applies to K8s runner)
+  # -- Maximum resources a single job can request
+  # Jobs requesting more than this are rejected. Increase if you have large-memory nodes.
   maxJobResources:
     cpu: 64
     memory: 256Gi
 
-  # -- Node pool topology (used in both dedicated and shared modes)
-  # Jobs are scheduled onto nodes matching these selectors/tolerations.
-  # In dedicated mode, also used by ResourceFlavors for Kueue admission.
+  # -- Node pool topology — controls where jobs run
+  # Set nodeSelector/tolerations to match your node groups.
+  # In dedicated mode, these also configure Kueue ResourceFlavors.
   pools:
     ui:
-      # -- Node selector for UI pool
-      # AWS: node.kubernetes.io/pool: ui
-      # GKE: pool: ui  (GKE rejects node.kubernetes.io/ prefix)
+      # -- Node selector for interactive (UI) jobs
+      # AWS example: { node.kubernetes.io/pool: ui }
+      # GKE example: { pool: ui }
       nodeSelector: {}
-      # -- Tolerations for UI pool
+      # -- Tolerations for UI pool nodes
       tolerations: []
         # - key: dedicated
         #   value: ui
         #   effect: NoSchedule
 
     batch:
-      # AWS: node.kubernetes.io/pool: batch
-      # GKE: pool: batch
+      # AWS example: { node.kubernetes.io/pool: batch }
+      # GKE example: { pool: batch }
       nodeSelector: {}
       tolerations: []
         # - key: dedicated
@@ -272,19 +266,21 @@ kueue:
         #   effect: NoSchedule
 
   # -- Dedicated mode configuration
-  # Chart creates ClusterQueues, ResourceFlavors, and WorkloadPriorityClasses.
-  # UI queue has guaranteed resources (borrowingLimit: 0 — never shares with batch).
-  # Batch queue can borrow idle UI capacity up to UI's nominal quota.
+  # Controls how much compute can run simultaneously in each queue.
+  # UI queue has guaranteed resources (never shares with batch).
+  # Batch queue can borrow idle UI capacity when available.
   dedicated:
-    # -- Create cluster-scoped Kueue resources (ResourceFlavors, ClusterQueues,
-    # WorkloadPriorityClasses). Set to false for secondary installs that share
-    # Kueue infrastructure with a primary install — only LocalQueues are created.
+    # -- Create cluster-scoped Kueue resources (ClusterQueues, ResourceFlavors,
+    # WorkloadPriorityClasses). Set to false for secondary Platforma installs
+    # that share Kueue infrastructure with a primary install.
     createClusterResources: true
     # -- Shared name prefix for cluster-scoped resources.
     # When multiple Helm releases share one set of ClusterQueues, all must use
-    # the same value here (e.g., "platforma"). Default: Helm release fullname.
+    # the same value. Default: Helm release fullname.
     clusterResourceName: ""
-    # -- Resource quotas for each ClusterQueue
+    # -- Max simultaneous resources per queue (ClusterQueue quotas)
+    # These cap total concurrent usage, not individual job limits.
+    # Increase to allow more jobs to run in parallel.
     resources:
       ui:
         cpu: 4
@@ -294,15 +290,13 @@ kueue:
         memory: 240Gi
 
   # -- Shared mode configuration
-  # References externally-managed Kueue cluster resources.
-  # User must create ClusterQueues, ResourceFlavors, and WorkloadPriorityClasses outside the chart.
-  # Chart creates LocalQueues per namespace pointing at the specified ClusterQueues.
+  # Point at existing Kueue resources managed outside this chart.
   shared:
-    # -- ClusterQueue names to reference (chart creates LocalQueues pointing at these)
+    # -- ClusterQueue names (chart creates LocalQueues pointing at these)
     clusterQueues:
-      ui: ""       # ClusterQueue name for UI tasks
-      batch: ""    # ClusterQueue name for batch tasks
-    # -- WorkloadPriorityClass names (must exist in cluster)
+      ui: ""       # ClusterQueue for UI tasks
+      batch: ""    # ClusterQueue for batch tasks
+    # -- WorkloadPriorityClass names (must already exist in cluster)
     priorities:
       uiTasks: ""
       high: ""
@@ -313,22 +307,21 @@ kueue:
 # NETWORKING
 # =============================================================================
 
-# -- Ingress configuration
-# Platforma exposes gRPC on port 6345 — Desktop App connects here.
-# For ALB with gRPC, use annotations:
-#   alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+# -- Ingress for the Platforma API
+# Desktop App connects to Platforma through this ingress.
+# The backend protocol is gRPC — configure your ingress controller accordingly.
+# For AWS ALB: set annotation alb.ingress.kubernetes.io/backend-protocol-version: GRPC
 ingress:
   enabled: false
   className: ""
-  # -- Hostname for the gRPC API endpoint
   host: ""
   tls:
     enabled: false
-    secretName: ""
+    secretName: ""  # Leave empty when the ingress controller manages TLS (e.g., ALB with ACM)
   annotations: {}
 
 # -- Additional ingress (e.g., internal network, second region)
-# Same structure as ingress. Creates a second ingress resource.
+# Same structure as ingress. Creates a second Ingress resource.
 additionalIngress:
   enabled: false
   className: ""
@@ -341,8 +334,8 @@ additionalIngress:
 # =============================================================================
 # APPLICATION
 # =============================================================================
-# All configuration for the Platforma application: resources,
-# scheduling, environment, logging, monitoring, and debug.
+# Configuration for the Platforma server pod: resources, scheduling,
+# logging, monitoring, and debug settings.
 # =============================================================================
 
 app:
@@ -364,19 +357,16 @@ app:
   podLabels: {}
   podAnnotations: {}
 
-  # -- Additional environment variables
+  # -- Additional environment variables for the Platforma process
   env:
-    # -- Plain key-value environment variables
     variables: {}
-    # -- Environment variables from secrets
     secretVariables: []
       # - name: SECRET_VAR
       #   secretName: my-secret
       #   secretKey: key
-    # -- Environment variables from config maps
     configMapVariables: []
 
-  # -- Additional command-line arguments for Platforma binary
+  # -- Additional command-line arguments
   extraArgs: []
     # Examples:
     # - "--runner-cpu=4"
@@ -384,43 +374,38 @@ app:
     # - "--network-mode=proxy"
 
   # -- Debug mode
-  # The debug API (pprof, DB inspection) always runs on port 9091
-  # and is always accessible via port-forward.
-  # When enabled: sets log level to debug, keeps job workdirs for 1h.
+  # Increases log verbosity and preserves job working directories for 1 hour
+  # after completion (normally cleaned up immediately). Useful for diagnosing
+  # failed workflows. The debug API is always accessible via port-forward
+  # regardless of this setting.
   debug:
     enabled: false
 
-  # -- Logging configuration
+  # -- Logging
   logging:
-    # -- Enable persistent log storage
-    # When false (default), logs stream to container stderr — collected by the cluster log driver.
-    # When true, logs write to a PVC at /var/log/platforma with rotation.
+    # -- Persistent log storage
+    # By default, logs go to container stderr and are collected by your cluster's
+    # log driver (CloudWatch, Stackdriver, etc.). Enable persistence to write
+    # logs to a dedicated PVC with rotation — useful when cluster logging is
+    # not configured or you need logs to survive pod restarts.
     persistence:
       enabled: false
       size: 10Gi
       storageClass: ""      # "" = cluster default
       existingClaim: ""     # Use pre-created PVC instead of creating one
       rotation:
-        size: 1Gi           # Max size per log file before rotation
-        count: 15           # Number of rotated log files to keep
+        size: 1Gi           # Rotate when a log file reaches this size
+        count: 15           # Number of rotated files to keep
 
-  # -- Monitoring configuration
-  # Platforma exposes Prometheus metrics on port 9090 (hardcoded in backend).
-  # A ClusterIP metrics service is always created on port 9090.
-  #
-  # To enable Prometheus scraping, add annotations:
-  #   app:
-  #     monitoring:
-  #       annotations:
-  #         prometheus.io/scrape: "true"
-  #         prometheus.io/port: "9090"
-  #
-  # For GKE with Google Managed Prometheus, enable gkeMonitoring below.
-  # For AWS/generic clusters, configure a ServiceMonitor separately.
+  # -- Monitoring
+  # Platforma exposes Prometheus metrics. To enable scraping:
   monitoring:
-    # -- Annotations for the metrics service
+    # -- Annotations added to the metrics service
+    # For Prometheus auto-discovery:
+    #   prometheus.io/scrape: "true"
+    #   prometheus.io/port: "9090"
     annotations: {}
-    # -- GKE PodMonitoring (Google Managed Prometheus)
+    # -- GKE PodMonitoring (for Google Managed Prometheus)
     gkeMonitoring:
       enabled: false
       interval: 30s
@@ -430,13 +415,17 @@ app:
 # SERVICE ACCOUNTS
 # =============================================================================
 
-# -- Service account for Platforma server
+# -- Service account for the Platforma server pod
+# On AWS, annotate with IRSA role for S3 access.
+# On GKE, bind to a GCP service account via Workload Identity.
 serviceAccount:
   create: true
   name: ""
   annotations: {}
 
 # -- Service account for job pods
+# Jobs may need cloud storage access (e.g., S3 for data libraries).
+# Annotate with IRSA role or Workload Identity as needed.
 jobServiceAccount:
   create: true
   name: ""
@@ -446,9 +435,8 @@ jobServiceAccount:
 # JOB CONFIGURATION
 # =============================================================================
 
-# -- Job pod configuration (passed to job template)
+# -- Job pod configuration
 jobs:
-  # -- Secret containing environment variables for job pods
-  # The operator pre-creates this secret with all needed credentials.
-  # Currently contains MI_LICENSE; extensible for future secrets.
+  # -- Secret mounted into every job pod
+  # Contains credentials jobs need at runtime (license key, etc.).
   secretName: "platforma-license"

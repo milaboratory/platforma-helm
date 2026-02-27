@@ -65,20 +65,20 @@ data:
                   serviceAccountName: {{ include "platforma.jobServiceAccountName" . }}
                   restartPolicy: Never
                   <<- if eq .PlatformaQueue "ui-tasks" >>
-                  {{- with .Values.kueue.dedicated.pools.ui.nodeSelector }}
+                  {{- with .Values.kueue.pools.ui.nodeSelector }}
                   nodeSelector:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
-                  {{- with .Values.kueue.dedicated.pools.ui.tolerations }}
+                  {{- with .Values.kueue.pools.ui.tolerations }}
                   tolerations:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
                   <<- else >>
-                  {{- with .Values.kueue.dedicated.pools.batch.nodeSelector }}
+                  {{- with .Values.kueue.pools.batch.nodeSelector }}
                   nodeSelector:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
-                  {{- with .Values.kueue.dedicated.pools.batch.tolerations }}
+                  {{- with .Values.kueue.pools.batch.tolerations }}
                   tolerations:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}

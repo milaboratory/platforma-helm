@@ -249,40 +249,46 @@
           },
           "additionalProperties": false
         },
+        "pools": {
+          "type": "object",
+          "properties": {
+            "ui": {
+              "type": "object",
+              "properties": {
+                "nodeSelector": { "type": "object" },
+                "tolerations": { "type": "array" }
+              }
+            },
+            "batch": {
+              "type": "object",
+              "properties": {
+                "nodeSelector": { "type": "object" },
+                "tolerations": { "type": "array" }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "dedicated": {
           "type": "object",
           "properties": {
             "createClusterResources": { "type": "boolean", "default": true },
             "clusterResourceName": { "type": "string" },
-            "pools": {
+            "resources": {
               "type": "object",
               "properties": {
                 "ui": {
                   "type": "object",
                   "properties": {
-                    "resources": {
-                      "type": "object",
-                      "properties": {
-                        "cpu": { "type": ["integer", "string"] },
-                        "memory": { "type": "string" }
-                      }
-                    },
-                    "nodeSelector": { "type": "object" },
-                    "tolerations": { "type": "array" }
+                    "cpu": { "type": ["integer", "string"] },
+                    "memory": { "type": "string" }
                   }
                 },
                 "batch": {
                   "type": "object",
                   "properties": {
-                    "resources": {
-                      "type": "object",
-                      "properties": {
-                        "cpu": { "type": ["integer", "string"] },
-                        "memory": { "type": "string" }
-                      }
-                    },
-                    "nodeSelector": { "type": "object" },
-                    "tolerations": { "type": "array" }
+                    "cpu": { "type": ["integer", "string"] },
+                    "memory": { "type": "string" }
                   }
                 }
               },
@@ -448,7 +454,7 @@
           "type": "object",
           "properties": {
             "annotations": { "type": "object" },
-            "podMonitoring": {
+            "gkeMonitoring": {
               "type": "object",
               "properties": {
                 "enabled": { "type": "boolean" },

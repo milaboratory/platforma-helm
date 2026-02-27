@@ -598,32 +598,27 @@ kubectl create secret generic platforma-license \
 
 ## Step 10: Install Platforma
 
-The `values-aws-s3.yaml` file enables sub-charts and StorageClass creation by default (for the CloudFormation path). Disable them here since you've set them up manually in previous steps. The chart creates the `platforma` and `platforma-jobs` service accounts — pass the IRSA role ARNs from Step 6:
+The `values-aws-s3.yaml` file is designed for the CloudFormation path. When installing manually, you've already created infrastructure in previous steps. The chart creates the `platforma` and `platforma-jobs` service accounts — pass the IRSA role ARNs from Step 6:
 
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --version $PLATFORMA_VERSION \
   -n $PLATFORMA_NAMESPACE \
   -f values-aws-s3.yaml \
+  --set storage.workspace.efs.fileSystemId=$EFS_ID \
   --set storage.main.s3.bucket=$S3_BUCKET \
   --set storage.main.s3.region=$AWS_REGION \
   --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_ROLE_ARN" \
   --set "jobServiceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_JOBS_ROLE_ARN" \
-  --set storageClasses.gp3.create=false \
-  --set storageClasses.efs.create=false \
-  --set cluster-autoscaler.enabled=false \
-  --set aws-load-balancer-controller.enabled=false \
-  --set external-dns.enabled=false \
   --set ingress.enabled=true \
   --set ingress.className=alb \
-  --set ingress.api.host=$DOMAIN_NAME \
-  --set ingress.api.tls.enabled=true \
-  --set ingress.api.tls.secretName="" \
-  --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/scheme"=internet-facing \
-  --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/target-type"=ip \
-  --set-json 'ingress.api.annotations.alb\.ingress\.kubernetes\.io/listen-ports=[{"HTTPS":443}]' \
-  --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=$CERT_ARN \
-  --set ingress.api.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC
+  --set ingress.host=$DOMAIN_NAME \
+  --set ingress.tls.enabled=true \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/scheme"=internet-facing \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/target-type"=ip \
+  --set-json 'ingress.annotations."alb\.ingress\.kubernetes\.io/listen-ports"=[{"HTTPS":443}]' \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=$CERT_ARN \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC
 ```
 
 Verify:

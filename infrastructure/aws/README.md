@@ -376,7 +376,7 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   -n platforma \
   -f values-aws-s3.yaml \
   \
-  --set aws.efsFileSystemId=$EFS_ID \
+  --set storage.workspace.efs.fileSystemId=$EFS_ID \
   --set storage.main.s3.bucket=$S3_BUCKET \
   --set storage.main.s3.region=$REGION \
   --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_ROLE_ARN" \

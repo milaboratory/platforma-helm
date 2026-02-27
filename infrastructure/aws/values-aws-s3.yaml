@@ -2,22 +2,19 @@
 # Designed for CloudFormation deployments where S3 bucket and IRSA are pre-created.
 # Usage: see infrastructure/aws/README.md
 
-provider: aws
-
-aws:
-  efsFileSystemId: ""  # --set aws.efsFileSystemId=<EfsFileSystemId>
+environment: aws
 
 storage:
   database:
     size: 50Gi
-    storageClass: gp3  # auto-created by chart when provider: aws
+    storageClass: gp3  # auto-created by chart when environment: aws
 
   workspace:
-    # EFS Access Point enforces UID/GID 1010 (Platforma's container user) — no chown hook needed.
-    pvc:
+    # EFS with Access Points — chart creates PV+PVC automatically.
+    # The StorageClass "efs-platforma" is auto-created when environment: aws + fileSystemId is set.
+    efs:
       enabled: true
-      storageClass: efs-platforma  # auto-created by chart when provider: aws + aws.efsFileSystemId
-      size: 100Gi  # EFS is elastic — this value is required by K8s but does not cap actual storage
+      fileSystemId: ""  # --set storage.workspace.efs.fileSystemId=<EfsFileSystemId>
 
   main:
     s3:
@@ -56,35 +53,33 @@ ingress:
 
 kueue:
   mode: dedicated
+  # Node pool topology — controls where jobs are scheduled
+  pools:
+    ui:
+      nodeSelector:
+        node.kubernetes.io/pool: ui
+      tolerations:
+        - key: dedicated
+          value: ui
+          effect: NoSchedule
+    batch:
+      nodeSelector:
+        node.kubernetes.io/pool: batch
+      tolerations:
+        - key: dedicated
+          value: batch
+          effect: NoSchedule
   dedicated:
-    pools:
+    # ClusterQueue quotas: max simultaneous CPU/memory admitted across all workloads per queue.
+    # UI default (4 CPU / 16Gi) matches one t3.xlarge. Increase for concurrent UI jobs.
+    # Batch default (60 CPU / 240Gi) is ~7 × m5.2xlarge concurrent. Increase for heavier workloads.
+    resources:
       ui:
-        # resources = Kueue ClusterQueue quota: max simultaneous CPU/memory admitted across all UI workloads.
-        # Default (4 CPU / 16Gi) matches one t3.xlarge. Increase to match UiNodeMaxCount × instance size
-        # if you want multiple concurrent UI jobs (e.g. 16 CPU / 64Gi for 4 × t3.xlarge).
-        resources:
-          cpu: 4
-          memory: 16Gi
-        nodeSelector:
-          node.kubernetes.io/pool: ui
-        tolerations:
-          - key: dedicated
-            value: ui
-            effect: NoSchedule
-
+        cpu: 4
+        memory: 16Gi
       batch:
-        # resources = Kueue ClusterQueue quota: max simultaneous CPU/memory admitted across all batch workloads.
-        # Default (60 CPU / 240Gi) is a conservative starting point (~7 × m5.2xlarge concurrent).
-        # Increase to match your expected concurrent workload, up to BatchMaxCountPerGroup × instance size.
-        resources:
-          cpu: 60
-          memory: 240Gi
-        nodeSelector:
-          node.kubernetes.io/pool: batch
-        tolerations:
-          - key: dedicated
-            value: batch
-            effect: NoSchedule
+        cpu: 60
+        memory: 240Gi
 
 # Schedule Platforma server on system nodes
 app:

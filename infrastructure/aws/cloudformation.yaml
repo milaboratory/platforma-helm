@@ -1988,9 +1988,7 @@ Resources:
 
                     # Base values
                     cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
-                  provider: aws
-                  aws:
-                    efsFileSystemId: $EFS_FILE_SYSTEM_ID
+                  environment: aws
                   storage:
                     database:
                       size: 50Gi
@@ -2025,28 +2023,29 @@ Resources:
                       alb.ingress.kubernetes.io/backend-protocol-version: GRPC
                   kueue:
                     mode: dedicated
+                    pools:
+                      ui:
+                        nodeSelector:
+                          node.kubernetes.io/pool: ui
+                        tolerations:
+                          - key: dedicated
+                            value: ui
+                            effect: NoSchedule
+                      batch:
+                        nodeSelector:
+                          node.kubernetes.io/pool: batch
+                        tolerations:
+                          - key: dedicated
+                            value: batch
+                            effect: NoSchedule
                     dedicated:
-                      pools:
+                      resources:
                         ui:
-                          resources:
-                            cpu: 4
-                            memory: 16Gi
-                          nodeSelector:
-                            node.kubernetes.io/pool: ui
-                          tolerations:
-                            - key: dedicated
-                              value: ui
-                              effect: NoSchedule
+                          cpu: 4
+                          memory: 16Gi
                         batch:
-                          resources:
-                            cpu: 60
-                            memory: 240Gi
-                          nodeSelector:
-                            node.kubernetes.io/pool: batch
-                          tolerations:
-                            - key: dedicated
-                              value: batch
-                              effect: NoSchedule
+                          cpu: 60
+                          memory: 240Gi
                   app:
                     nodeSelector:
                       node.kubernetes.io/pool: system
@@ -2398,7 +2397,7 @@ Outputs:
   EfsFileSystemId:
     Description: >
       EFS filesystem ID for Platforma workspace.
-      Use: --set aws.efsFileSystemId=<value>
+      Use: --set storage.workspace.efs.fileSystemId=<value>
     Value: !Ref EfsFileSystem
 
   S3BucketName:

@@ -63,6 +63,8 @@ data:
                     app.kubernetes.io/managed-by: platforma
                 spec:
                   serviceAccountName: {{ include "platforma.jobServiceAccountName" . }}
+                  securityContext:
+                    runAsNonRoot: true
                   restartPolicy: Never
                   <<- if eq .PlatformaQueue "ui-tasks" >>
                   {{- with .Values.kueue.pools.ui.nodeSelector }}
@@ -120,6 +122,9 @@ data:
                       securityContext:
                         runAsUser: 1010
                         runAsGroup: 1010
+                        allowPrivilegeEscalation: false
+                        capabilities:
+                          drop: ["ALL"]
                       <<- if .Resources >>
                       resources:
                         requests:

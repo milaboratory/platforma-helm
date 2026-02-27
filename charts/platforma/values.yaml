@@ -138,11 +138,23 @@ storage:
     existingClaim: ""
 
   # -- Shared workspace for jobs (RWX required)
-  # Configure exactly ONE of: existingClaim, efs, fsxLustre, filestore, nfs, pvc
-  # Block storage (EBS, PD) is NOT supported — workspace must be a shared filesystem.
+  # Configure exactly ONE option. Block storage (EBS, PD) is NOT supported —
+  # workspace must be a shared filesystem accessible by all job pods.
   workspace:
-    # -- Use an existing RWX PVC
+    # -- Use an existing RWX PVC (simplest option for vanilla K8s)
     existingClaim: ""
+
+    # -- RWX PVC via StorageClass (for CSI drivers or other provisioners)
+    pvc:
+      enabled: false
+      size: 100Gi
+      storageClass: ""
+
+    # -- NFS server
+    nfs:
+      enabled: false
+      server: ""
+      path: "/"
 
     # -- AWS EFS
     efs:
@@ -165,18 +177,6 @@ storage:
       shareName: ""
       ip: ""
       path: "/"
-
-    # -- Generic NFS server
-    nfs:
-      enabled: false
-      server: ""
-      path: "/"
-
-    # -- Generic RWX PVC via StorageClass (for CSI drivers or other provisioners)
-    pvc:
-      enabled: false
-      size: 100Gi
-      storageClass: ""
 
   # -- Main storage — where Desktop App downloads results from
   # Configure S3 or GCS. On AWS with IRSA, leave secretRef empty.
@@ -220,10 +220,6 @@ dataSources: []
 # =============================================================================
 # JOB EXECUTION (Kueue)
 # =============================================================================
-# Platforma submits compute jobs to Kueue queues. There are 4 fixed queues:
-#   - ui-tasks: interactive tasks triggered from the Desktop App (highest priority)
-#   - heavy/medium/light: batch workloads with decreasing priority
-#
 # Two modes:
 #   dedicated: Chart creates all Kueue resources. Use when Platforma owns
 #              the cluster or has dedicated compute nodes.

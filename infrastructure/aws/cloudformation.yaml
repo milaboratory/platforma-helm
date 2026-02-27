@@ -65,6 +65,13 @@ Metadata:
           - BatchXlargeInstanceType
           - BatchMaxCountPerGroup
       - Label:
+          default: 'Kueue resource quotas'
+        Parameters:
+          - UiQueueCpu
+          - UiQueueMemoryGi
+          - BatchQueueCpu
+          - BatchQueueMemoryGi
+      - Label:
           default: Storage
         Parameters:
           - EfsPerformanceMode
@@ -114,6 +121,14 @@ Metadata:
         default: 'Batch xlarge (32 vCPU / 128 GiB)'
       BatchMaxCountPerGroup:
         default: Batch max nodes per group
+      UiQueueCpu:
+        default: 'UI queue max CPU (ClusterQueue quota)'
+      UiQueueMemoryGi:
+        default: 'UI queue max memory GiB (ClusterQueue quota)'
+      BatchQueueCpu:
+        default: 'Batch queue max CPU (ClusterQueue quota)'
+      BatchQueueMemoryGi:
+        default: 'Batch queue max memory GiB (ClusterQueue quota)'
       DeployPlatforma:
         default: 'Deploy Platforma (false = infrastructure + controllers only)'
       LicenseKey:
@@ -380,6 +395,41 @@ Parameters:
     MaxValue: 100
     Description: Maximum nodes per batch node group
 
+  # --- Kueue resource quotas ---
+  # ClusterQueue quotas: max simultaneous CPU/memory admitted across all workloads per queue.
+  # These don't limit individual jobs — they cap total concurrent resource usage.
+  UiQueueCpu:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    Description: >
+      Max simultaneous CPU across all UI queue workloads (ClusterQueue quota).
+      Default (4) matches one t3.xlarge. Increase for concurrent UI jobs.
+
+  UiQueueMemoryGi:
+    Type: Number
+    Default: 16
+    MinValue: 1
+    Description: >
+      Max simultaneous memory (GiB) across all UI queue workloads.
+      Default (16) matches one t3.xlarge.
+
+  BatchQueueCpu:
+    Type: Number
+    Default: 60
+    MinValue: 1
+    Description: >
+      Max simultaneous CPU across all batch queue workloads (ClusterQueue quota).
+      Default (60) is ~7 x m5.2xlarge concurrent.
+
+  BatchQueueMemoryGi:
+    Type: Number
+    Default: 240
+    MinValue: 1
+    Description: >
+      Max simultaneous memory (GiB) across all batch queue workloads.
+      Default (240) is ~7 x m5.2xlarge concurrent.
+
   # --- Storage ---
   EfsPerformanceMode:
     Type: String
@@ -465,6 +515,23 @@ Conditions:
   AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
   HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
   UiAlwaysOn: !Equals [!Ref UiNodeAlwaysOn, 'true']
+
+# =============================================================================
+# Rules — fail fast on invalid parameter combinations
+# =============================================================================
+Rules:
+  LicenseRequiredForDeploy:
+    RuleCondition: !Equals [!Ref DeployPlatforma, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref LicenseKey, '']]
+        AssertDescription: LicenseKey is required when DeployPlatforma is true
+  LdapServerRequired:
+    RuleCondition: !And
+      - !Equals [!Ref DeployPlatforma, 'true']
+      - !Equals [!Ref AuthMethod, 'ldap']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref LdapServer, '']]
+        AssertDescription: LdapServer is required when AuthMethod is ldap
 
 # =============================================================================
 # Resources
@@ -736,6 +803,24 @@ Resources:
         - Key: platforma
           Value: !Ref ClusterName
 
+  HelmDeployerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${ClusterName}-helm-deployer'
+      RetentionInDays: 30
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  HelmTriggerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ClusterName}-helm-trigger'
+      RetentionInDays: 14
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
   EksCluster:
     Type: AWS::EKS::Cluster
     DependsOn: EksClusterLogGroup
@@ -771,6 +856,8 @@ Resources:
             - Type: api
             - Type: audit
             - Type: authenticator
+            - Type: scheduler
+            - Type: controllerManager
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -1603,6 +1690,14 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*/*'
                   - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*/*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSecurityGroupRules
+                  - ec2:DeleteSecurityGroup
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupEgress
+                Resource: '*'
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -1619,8 +1714,13 @@ Resources:
           AccessScope:
             Type: cluster
 
+  # IMPORTANT: This CodeBuild project runs on the public internet and connects
+  # to the EKS API via the public endpoint (EndpointPublicAccess: true).
+  # If you restrict the cluster to private-only access, you must add a VpcConfig
+  # to this project (security group, subnets, NAT Gateway route).
   HelmDeployerProject:
     Type: AWS::CodeBuild::Project
+    DependsOn: HelmDeployerLogGroup
     Properties:
       Name: !Sub '${ClusterName}-helm-deployer'
       ServiceRole: !GetAtt HelmDeployerRole.Arn
@@ -1638,6 +1738,10 @@ Resources:
             Value: !Ref AWS::Region
           - Name: NAMESPACE
             Value: !Ref PlatformaNamespace
+          # NOTE: Secrets below are visible in CodeBuild console/API.
+          # The auto-generated admin password uses SSM SecureString (see buildspec).
+          # For user-provided secrets, restrict codebuild:BatchGetBuilds/BatchGetProjects
+          # IAM permissions to trusted roles only.
           - Name: LICENSE_KEY
             Value: !Ref LicenseKey
             Type: PLAINTEXT
@@ -1681,6 +1785,14 @@ Resources:
             Value: !Ref ExternalDnsVersion
           - Name: ALB_CONTROLLER_VERSION
             Value: !Ref AlbControllerVersion
+          - Name: UI_QUEUE_CPU
+            Value: !Ref UiQueueCpu
+          - Name: UI_QUEUE_MEMORY_GI
+            Value: !Ref UiQueueMemoryGi
+          - Name: BATCH_QUEUE_CPU
+            Value: !Ref BatchQueueCpu
+          - Name: BATCH_QUEUE_MEMORY_GI
+            Value: !Ref BatchQueueMemoryGi
           - Name: AUTH_METHOD
             Value: !Ref AuthMethod
           - Name: HTPASSWD_CONTENT
@@ -1708,7 +1820,7 @@ Resources:
             install:
               commands:
                 # Install kubectl
-                - curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                - curl -sLO "https://dl.k8s.io/release/v${KUBERNETES_VERSION}.0/bin/linux/amd64/kubectl"
                 - chmod +x kubectl && mv kubectl /usr/local/bin/
                 # Install Helm
                 - curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
@@ -1786,9 +1898,19 @@ Resources:
                         --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || echo "")
                       for SG_ID in $ALB_SGS; do
                         echo "  Cleaning up SG $SG_ID..."
-                        # Revoke cross-SG references that block deletion
+                        # Revoke rules in this SG that reference other groups
+                        for RULE_ID in $(aws ec2 describe-security-group-rules --region $REGION \
+                          --filters "Name=group-id,Values=$SG_ID" \
+                          --query "SecurityGroupRules[?ReferencedGroupInfo].SecurityGroupRuleId" \
+                          --output text 2>/dev/null); do
+                          aws ec2 revoke-security-group-ingress --region $REGION \
+                            --group-id "$SG_ID" --security-group-rule-ids "$RULE_ID" 2>/dev/null || \
+                          aws ec2 revoke-security-group-egress --region $REGION \
+                            --group-id "$SG_ID" --security-group-rule-ids "$RULE_ID" 2>/dev/null || true
+                        done
+                        # Revoke rules in OTHER SGs that reference this ALB SG
                         for OTHER_SG in $(aws ec2 describe-security-groups --region $REGION \
-                          --filters "Name=vpc-id,Values=$VPC_ID" \
+                          --filters "Name=vpc-id,Values=$VPC_ID" "Name=ip-permission.group-id,Values=$SG_ID" \
                           --query 'SecurityGroups[].GroupId' --output text 2>/dev/null); do
                           for RULE_ID in $(aws ec2 describe-security-group-rules --region $REGION \
                             --filters "Name=group-id,Values=$OTHER_SG" \
@@ -1810,6 +1932,11 @@ Resources:
                     fi
                     # 3. Controllers — safe to remove now that ALBs and their SGs are gone.
                     helm uninstall aws-load-balancer-controller -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                    # Wait for External DNS to sync the Ingress deletion and remove Route53 record.
+                    # External DNS default sync interval is 1 minute; 30s is usually enough since
+                    # the Ingress was deleted several minutes ago during helm uninstall + ALB wait.
+                    echo "Waiting 30s for External DNS to sync DNS record deletion..."
+                    sleep 30
                     helm uninstall external-dns -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
                     helm uninstall cluster-autoscaler -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
                     helm uninstall kueue -n kueue-system --ignore-not-found --wait --timeout 3m || true
@@ -1844,7 +1971,7 @@ Resources:
                     --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[0]=kube-system' \
                     --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[1]=kueue-system' \
                     --set metrics.enableClusterQueueResources=true \
-                    --wait --timeout 5m
+                    --atomic --timeout 5m
 
                   # 2. AppWrapper controller
                   kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml
@@ -1889,7 +2016,7 @@ Resources:
                     --set extraArgs.scale-down-unneeded-time=10m \
                     --set extraArgs.scale-down-utilization-threshold=0.5 \
                     --set extraArgs.expander=least-waste \
-                    --wait --timeout 5m
+                    --atomic --timeout 5m
 
                   # 4. External DNS (installed before ALB Controller so its Service is created
                   #    before the ALB mutating webhook is registered)
@@ -1905,7 +2032,7 @@ Resources:
                     --set serviceAccount.create=true \
                     --set serviceAccount.name=external-dns \
                     --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \
-                    --wait --timeout 3m
+                    --atomic --timeout 3m
 
                   # 5. AWS Load Balancer Controller
                   helm repo add eks https://aws.github.io/eks-charts
@@ -1920,7 +2047,7 @@ Resources:
                     --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
                     --set vpcId=$VPC_ID \
                     --set replicaCount=1 \
-                    --wait --timeout 5m
+                    --atomic --timeout 5m
 
                   # Wait for ALB webhook to be ready. The webhook's CA bundle must be
                   # propagated to the API server before any Ingress/Service creation.
@@ -2041,17 +2168,20 @@ Resources:
                     dedicated:
                       resources:
                         ui:
-                          cpu: 4
-                          memory: 16Gi
+                          cpu: $UI_QUEUE_CPU
+                          memory: ${UI_QUEUE_MEMORY_GI}Gi
                         batch:
-                          cpu: 60
-                          memory: 240Gi
+                          cpu: $BATCH_QUEUE_CPU
+                          memory: ${BATCH_QUEUE_MEMORY_GI}Gi
                   app:
                     nodeSelector:
                       node.kubernetes.io/pool: system
                   PLATFORMA_VALUES
 
                     # Append auth configuration
+                    # LDAP values use --set-string to avoid YAML-special characters
+                    # (colons, hashes, braces in bind DNs) breaking the values file.
+                    HELM_ARGS=""
                     if [ "$AUTH_METHOD" = "htpasswd" ]; then
                       cat >> /tmp/platforma-values.yaml << AUTH_VALUES
                   auth:
@@ -2059,30 +2189,30 @@ Resources:
                       secretName: platforma-htpasswd
                   AUTH_VALUES
                     elif [ "$AUTH_METHOD" = "ldap" ]; then
-                      cat >> /tmp/platforma-values.yaml << AUTH_VALUES
-                  auth:
-                    ldap:
-                      server: $LDAP_SERVER
-                      startTLS: $LDAP_START_TLS
-                      bindDN: "$LDAP_BIND_DN"
-                      searchUser: "$LDAP_SEARCH_USER"
-                      searchPassword: "$LDAP_SEARCH_PASSWORD"
-                  AUTH_VALUES
-                      # Convert comma-separated search rules to YAML array
+                      HELM_ARGS="$HELM_ARGS --set auth.ldap.server=$LDAP_SERVER"
+                      HELM_ARGS="$HELM_ARGS --set auth.ldap.startTLS=$LDAP_START_TLS"
+                      if [ -n "$LDAP_BIND_DN" ]; then
+                        HELM_ARGS="$HELM_ARGS --set-string auth.ldap.bindDN=$LDAP_BIND_DN"
+                      fi
+                      if [ -n "$LDAP_SEARCH_USER" ]; then
+                        HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchUser=$LDAP_SEARCH_USER"
+                        HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchPassword=$LDAP_SEARCH_PASSWORD"
+                      fi
                       if [ -n "$LDAP_SEARCH_RULES" ]; then
-                        echo "    searchRules:" >> /tmp/platforma-values.yaml
-                        echo "$LDAP_SEARCH_RULES" | tr ',' '\n' | while read -r rule; do
+                        i=0
+                        IFS=',' read -ra RULES <<< "$LDAP_SEARCH_RULES"
+                        for rule in "${RULES[@]}"; do
                           rule=$(echo "$rule" | xargs)
-                          echo "      - \"$rule\"" >> /tmp/platforma-values.yaml
+                          HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchRules[$i]=$rule"
+                          i=$((i + 1))
                         done
                       fi
                     fi
 
-                    HELM_ARGS=""
                     if [ -n "$PLATFORMA_IMAGE" ]; then
                       IMG_REPO=$(echo "$PLATFORMA_IMAGE" | sed 's/:.*//')
                       IMG_TAG=$(echo "$PLATFORMA_IMAGE" | sed 's/.*://')
-                      HELM_ARGS="--set image.repository=$IMG_REPO --set image.tag=$IMG_TAG"
+                      HELM_ARGS="$HELM_ARGS --set image.repository=$IMG_REPO --set image.tag=$IMG_TAG"
                     fi
 
                     helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
@@ -2137,7 +2267,9 @@ Resources:
 
   TriggerHelmDeployFunction:
     Type: AWS::Lambda::Function
-    DependsOn: HelmDeployerProject
+    DependsOn:
+      - HelmDeployerProject
+      - HelmTriggerLogGroup
     Properties:
       FunctionName: !Sub '${ClusterName}-helm-trigger'
       Runtime: python3.12
@@ -2205,6 +2337,9 @@ Resources:
       - HelmDeployerAccessEntry
       - EbsCsiAddon
       - EfsCsiAddon
+      - EfsMountTarget1
+      - EfsMountTarget2
+      - EfsMountTarget3
       - S3Bucket
       - Certificate
     Properties:
@@ -2231,6 +2366,10 @@ Resources:
       ClusterAutoscalerChartVersion: !Ref ClusterAutoscalerChartVersion
       ExternalDnsVersion: !Ref ExternalDnsVersion
       AlbControllerVersion: !Ref AlbControllerVersion
+      UiQueueCpu: !Ref UiQueueCpu
+      UiQueueMemoryGi: !Ref UiQueueMemoryGi
+      BatchQueueCpu: !Ref BatchQueueCpu
+      BatchQueueMemoryGi: !Ref BatchQueueMemoryGi
 
   # ---------------------------------------------------------------------------
   # 6. Storage — EFS (shared workspace)

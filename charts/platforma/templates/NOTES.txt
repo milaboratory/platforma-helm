@@ -31,10 +31,21 @@ STORAGE
 
 Database PVC: {{ include "platforma.databasePvcName" . }}
 Workspace PVC: {{ include "platforma.workspacePvcName" . }}
-{{- if eq .Values.provider "aws" }}
+{{- if .Values.storage.main.s3.bucket }}
 Main Storage: S3 bucket {{ .Values.storage.main.s3.bucket }}
-{{- else if eq .Values.provider "gcp" }}
+{{- else if .Values.storage.main.gcs.bucket }}
 Main Storage: GCS bucket {{ .Values.storage.main.gcs.bucket }}
+{{- end }}
+{{- if eq .Values.environment "aws" }}
+
+StorageClasses created:
+  - gp3 (EBS CSI, for database PVC)
+{{- if .Values.storage.workspace.efs.fileSystemId }}
+  - efs-platforma (EFS CSI, for workspace PVC)
+{{- else }}
+
+NOTE: Set storage.workspace.efs.fileSystemId to create the EFS StorageClass.
+{{- end }}
 {{- end }}
 
 =============================================================================

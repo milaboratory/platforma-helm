@@ -8,11 +8,10 @@
 #   - Desktop App: Client application that connects to the server via gRPC
 #
 # Minimum required configuration:
-#   1. provider (aws or gcp)
-#   2. Auth (htpasswd secretName or LDAP server)
-#   3. License secret (see license.secretName)
-#   4. Workspace storage (see storage.workspace) - must be RWX
-#   5. Main storage bucket (see storage.main.s3 or storage.main.gcs)
+#   1. Auth (htpasswd secretName or LDAP server)
+#   2. License secret (see license.secretName)
+#   3. Workspace storage (see storage.workspace) - must be RWX
+#   4. Main storage bucket (see storage.main.s3 or storage.main.gcs)
 #
 # See infrastructure/aws/ and infrastructure/gcp/ for cloud-specific examples.
 # =============================================================================
@@ -31,24 +30,16 @@ image:
 imagePullSecrets: []
 
 # =============================================================================
-# PROVIDER
+# ENVIRONMENT
 # =============================================================================
-# Determines cloud-specific StorageClasses and primary storage backend.
-#   aws: creates gp3 StorageClass (EBS), efs-platforma StorageClass (if
-#        efsFileSystemId set). Primary storage: S3.
-#   gcp: no auto-created resources (GKE ships with required StorageClasses).
-#        Primary storage: GCS.
+# Cloud environment hint. Controls automatic StorageClass creation:
+#   aws: creates gp3 (EBS) and efs-platforma (EFS) StorageClasses
+#   gcp: no auto-created resources (GKE ships with required StorageClasses)
+#   "": vanilla K8s — no cloud-specific resources created
 # =============================================================================
 
-# -- Cloud provider (REQUIRED: aws | gcp)
-provider: ""
-
-# -- AWS-specific configuration
-aws:
-  # -- EFS file system ID for dynamic workspace provisioning via StorageClass
-  # When set (and provider: aws), creates an EFS StorageClass with uid/gid 1010
-  # Example: fs-0123456789abcdef
-  efsFileSystemId: ""
+# -- Cloud environment (aws | gcp | "")
+environment: ""
 
 # =============================================================================
 # LICENSE
@@ -138,7 +129,7 @@ auth:
 #    Size: Depends on data volume. This is your working data area.
 #
 # 3. MAIN - Long-term result storage exposed to Desktop App.
-#    Determined by provider: aws → S3, gcp → GCS.
+#    Options: S3 or GCS. Desktop App accesses cloud storage directly.
 # =============================================================================
 
 storage:
@@ -163,7 +154,6 @@ storage:
 
     # -- AWS FSx for Lustre (chart creates PV+PVC)
     # Requires lustre-client installed on all nodes.
-    # Permissions: a pre-install hook automatically chowns the workspace to UID/GID 1010.
     fsxLustre:
       enabled: false
       fileSystemId: ""
@@ -171,7 +161,6 @@ storage:
       mountName: ""
 
     # -- GCP Filestore (chart creates PV+PVC)
-    # Permissions: a pre-install hook automatically chowns the workspace to UID/GID 1010.
     filestore:
       enabled: false
       instanceName: ""
@@ -181,24 +170,21 @@ storage:
       path: "/"
 
     # -- Generic NFS server (chart creates PV+PVC)
-    # Permissions: a pre-install hook automatically chowns the workspace to UID/GID 1010.
     nfs:
       enabled: false
       server: ""
       path: "/"
 
     # -- Generic RWX PVC via StorageClass (e.g., for CSI drivers)
-    # Permissions: a pre-install hook automatically chowns the workspace to UID/GID 1010.
     pvc:
       enabled: false
       size: 100Gi
       storageClass: ""
 
   # -- Main storage (exposed to Desktop App)
-  # Desktop App downloads results from this storage.
-  # Backend is determined by provider: aws → S3 (configure s3.*), gcp → GCS (configure gcs.*).
+  # Desktop App downloads results from this storage. Configure S3 or GCS.
   main:
-    # -- S3 storage (when provider: aws)
+    # -- S3 storage
     s3:
       bucket: ""
       region: ""
@@ -209,7 +195,7 @@ storage:
         accessKeyField: "access-key"
         secretKeyField: "secret-key"
 
-    # -- GCS storage (when provider: gcp)
+    # -- GCS storage
     gcs:
       bucket: ""
       projectId: ""
@@ -354,9 +340,8 @@ additionalIngress:
 # =============================================================================
 # APPLICATION
 # =============================================================================
-# All configuration for the Platforma application: resources, probes,
+# All configuration for the Platforma application: resources,
 # scheduling, environment, logging, monitoring, and debug.
-# Security context is hardcoded (UID/GID 1010 — set by the container image).
 # =============================================================================
 
 app:
@@ -439,28 +424,6 @@ app:
       enabled: false
       interval: 30s
 
-  # -- Startup probe (for long bootstrap on large datasets)
-  # Allows up to 30 minutes for initial startup (periodSeconds * failureThreshold).
-  startupProbe:
-    enabled: true
-    initialDelaySeconds: 5
-    periodSeconds: 30
-    timeoutSeconds: 5
-    failureThreshold: 60  # 30 * 60 = 1800s = 30 minutes
-
-  # -- Liveness probe
-  livenessProbe:
-    enabled: true
-    initialDelaySeconds: 30
-    periodSeconds: 10
-    timeoutSeconds: 5
-
-  # -- Readiness probe
-  readinessProbe:
-    enabled: true
-    initialDelaySeconds: 10
-    periodSeconds: 5
-    timeoutSeconds: 3
 
 # =============================================================================
 # SERVICE ACCOUNTS

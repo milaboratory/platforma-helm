@@ -13,12 +13,12 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 spec:
-  {{- if or .Values.kueue.dedicated.pools.ui.nodeSelector .Values.kueue.dedicated.pools.ui.tolerations }}
-  {{- with .Values.kueue.dedicated.pools.ui.nodeSelector }}
+  {{- if or .Values.kueue.pools.ui.nodeSelector .Values.kueue.pools.ui.tolerations }}
+  {{- with .Values.kueue.pools.ui.nodeSelector }}
   nodeLabels:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- with .Values.kueue.dedicated.pools.ui.tolerations }}
+  {{- with .Values.kueue.pools.ui.tolerations }}
   tolerations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -32,12 +32,12 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 spec:
-  {{- if or .Values.kueue.dedicated.pools.batch.nodeSelector .Values.kueue.dedicated.pools.batch.tolerations }}
-  {{- with .Values.kueue.dedicated.pools.batch.nodeSelector }}
+  {{- if or .Values.kueue.pools.batch.nodeSelector .Values.kueue.pools.batch.tolerations }}
+  {{- with .Values.kueue.pools.batch.nodeSelector }}
   nodeLabels:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- with .Values.kueue.dedicated.pools.batch.tolerations }}
+  {{- with .Values.kueue.pools.batch.tolerations }}
   tolerations:
     {{- toYaml . | nindent 4 }}
   {{- end }}

@@ -49,6 +49,31 @@ NOTE: Set storage.workspace.efs.fileSystemId to create the EFS StorageClass.
 {{- end }}
 
 =============================================================================
+SERVICE ACCOUNTS
+=============================================================================
+
+Server SA: {{ include "platforma.serviceAccountName" . }}
+Jobs SA:   {{ include "platforma.jobServiceAccountName" . }}
+
+To bind cloud IAM roles (IRSA / Workload Identity), annotate in values.yaml:
+
+  # AWS (IRSA)
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/ROLE_NAME
+  jobServiceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/ROLE_NAME
+
+  # GCP (Workload Identity)
+  serviceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: SA@PROJECT.iam.gserviceaccount.com
+  jobServiceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: SA@PROJECT.iam.gserviceaccount.com
+
+=============================================================================
 JOB EXECUTION
 =============================================================================
 

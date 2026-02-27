@@ -8,6 +8,9 @@
 {{- if not (or .Values.auth.htpasswd.secretName .Values.auth.ldap.server) }}
 {{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.secretName: \"platforma-htpasswd\"  # htpasswd file auth\n  auth.ldap.server: \"ldap://ldap.example.com\"      # LDAP auth\n\nTo disable auth for development, add to app.extraArgs:\n  - \"--no-auth\"" }}
 {{- end }}
+{{- if and (eq .Values.environment "aws") (not .Values.storage.workspace.efs.fileSystemId) }}
+{{- fail "ERROR: EFS file system ID is required for AWS environment.\n\nThe chart creates an EFS StorageClass that needs a file system ID.\nSet storage.workspace.efs.fileSystemId in your values." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

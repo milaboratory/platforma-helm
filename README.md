@@ -343,21 +343,6 @@ ingress:
     traefik.ingress.kubernetes.io/service.serversscheme: h2c
 ```
 
-#### LoadBalancer service (no ingress)
-
-For simpler setups without an ingress controller:
-
-```yaml
-service:
-  type: LoadBalancer
-  annotations:
-    # AWS NLB example:
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
-```
-
-This exposes the raw gRPC port. The Desktop App connects to `<lb-address>:6345`. No TLS termination — configure TLS in Platforma directly or accept unencrypted connections.
-
 #### Port-forwarding (development)
 
 ```bash

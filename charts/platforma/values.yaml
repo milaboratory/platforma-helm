@@ -313,10 +313,6 @@ kueue:
 # NETWORKING
 # =============================================================================
 
-service:
-  type: ClusterIP
-  annotations: {}
-
 # -- Ingress configuration
 # Platforma exposes gRPC on port 6345 — Desktop App connects here.
 # For ALB with gRPC, use annotations:

@@ -1591,11 +1591,18 @@ Resources:
                   - ssm:PutParameter
                   - ssm:DeleteParameter
                 Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ClusterName}/platforma/*'
-              # Needed during teardown to wait for ALBs to be deleted (resourcegroupstaggingapi)
+              # Teardown: delete ALBs, TGs, and SGs that ALB Controller created outside CF
               - Effect: Allow
                 Action:
                   - tag:GetResources
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:DeleteLoadBalancer
+                  - elasticloadbalancing:DeleteTargetGroup
+                Resource:
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*/*'
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*/*'
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -1736,7 +1743,6 @@ Resources:
                     done
                     if [ "${COUNT:-0}" != "0" ]; then
                       echo "WARNING: $COUNT ALB(s) still present after 5 minutes. Attempting direct deletion..."
-                      # Force-delete remaining ALBs by ARN
                       for ALB_ARN in $(aws resourcegroupstaggingapi get-resources \
                         --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
                         --resource-type-filters "elasticloadbalancing:loadbalancer" \
@@ -1744,12 +1750,20 @@ Resources:
                         echo "  Deleting ALB: $ALB_ARN"
                         aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN" --region $REGION || true
                       done
-                      # Wait for ENIs to detach
-                      sleep 15
+                      # Wait for ALBs to fully vanish (async — ENIs need time to release)
+                      echo "  Waiting for force-deleted ALBs to vanish..."
+                      for j in $(seq 1 24); do
+                        REMAINING=$(aws resourcegroupstaggingapi get-resources \
+                          --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
+                          --resource-type-filters "elasticloadbalancing:loadbalancer" \
+                          --query 'length(ResourceTagMappingList)' --output text --region $REGION 2>/dev/null || echo "0")
+                        [ "$REMAINING" = "0" ] && echo "  All ALBs gone." && break
+                        sleep 5
+                      done
                     fi
-                    # 2b. Clean up ALB-created security groups and target groups.
-                    #     ALB Controller creates SGs (k8s-platform-*, k8s-traffic-*) and TGs
-                    #     outside CloudFormation. If not cleaned up, they block VPC deletion.
+                    # 2b. Clean up ALB-created target groups and security groups.
+                    #     ALB Controller creates these outside CloudFormation.
+                    #     If not cleaned up, they block VPC and certificate deletion.
                     echo "Cleaning up ALB target groups..."
                     for TG_ARN in $(aws resourcegroupstaggingapi get-resources \
                       --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
@@ -1762,13 +1776,12 @@ Resources:
                     VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
                       --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "")
                     if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
-                      # Find SGs tagged by ALB Controller
                       ALB_SGS=$(aws ec2 describe-security-groups --region $REGION \
                         --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
                         --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || echo "")
                       for SG_ID in $ALB_SGS; do
-                        echo "  Removing ingress/egress rules referencing $SG_ID from other SGs..."
-                        # Find and revoke rules in other SGs that reference this SG
+                        echo "  Cleaning up SG $SG_ID..."
+                        # Revoke cross-SG references that block deletion
                         for OTHER_SG in $(aws ec2 describe-security-groups --region $REGION \
                           --filters "Name=vpc-id,Values=$VPC_ID" \
                           --query 'SecurityGroups[].GroupId' --output text 2>/dev/null); do
@@ -1776,15 +1789,18 @@ Resources:
                             --filters "Name=group-id,Values=$OTHER_SG" \
                             --query "SecurityGroupRules[?ReferencedGroupInfo.GroupId=='$SG_ID'].SecurityGroupRuleId" \
                             --output text 2>/dev/null); do
-                            echo "    Revoking rule $RULE_ID in $OTHER_SG"
                             aws ec2 revoke-security-group-ingress --region $REGION \
                               --group-id "$OTHER_SG" --security-group-rule-ids "$RULE_ID" 2>/dev/null || \
                             aws ec2 revoke-security-group-egress --region $REGION \
                               --group-id "$OTHER_SG" --security-group-rule-ids "$RULE_ID" 2>/dev/null || true
                           done
                         done
-                        echo "  Deleting security group: $SG_ID"
-                        aws ec2 delete-security-group --group-id "$SG_ID" --region $REGION || true
+                        # Retry SG deletion (ALB ENIs may still be releasing)
+                        for k in $(seq 1 6); do
+                          aws ec2 delete-security-group --group-id "$SG_ID" --region $REGION 2>/dev/null && echo "  Deleted $SG_ID" && break
+                          echo "  SG $SG_ID still has dependencies, retrying... ($((k * 5))s)"
+                          sleep 5
+                        done
                       done
                     fi
                     # 3. Controllers — safe to remove now that ALBs and their SGs are gone.

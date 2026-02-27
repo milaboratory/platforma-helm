@@ -82,8 +82,10 @@ Kueue Mode: {{ .Values.kueue.mode }}
 {{- if eq .Values.kueue.mode "dedicated" }}
 
 Kueue Resources Created:
+{{- if .Values.kueue.dedicated.createClusterResources }}
 - ClusterQueue: {{ include "platforma.kueue.uiClusterQueueName" . }} (UI tasks)
 - ClusterQueue: {{ include "platforma.kueue.batchClusterQueueName" . }} (Batch tasks)
+{{- end }}
 - LocalQueue: {{ include "platforma.kueue.uiQueueName" . }}
 - LocalQueue: {{ include "platforma.kueue.batchQueueName" . }}
 {{- end }}

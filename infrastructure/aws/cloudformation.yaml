@@ -1589,6 +1589,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - ssm:PutParameter
+                  - ssm:DeleteParameter
                 Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ClusterName}/platforma/*'
               # Needed during teardown to wait for ALBs to be deleted (resourcegroupstaggingapi)
               - Effect: Allow
@@ -1734,10 +1735,59 @@ Resources:
                       sleep 5
                     done
                     if [ "${COUNT:-0}" != "0" ]; then
-                      echo "ERROR: $COUNT ALB(s) still present after 5 minutes. VPC deletion will fail. Manual cleanup required."
-                      exit 1
+                      echo "WARNING: $COUNT ALB(s) still present after 5 minutes. Attempting direct deletion..."
+                      # Force-delete remaining ALBs by ARN
+                      for ALB_ARN in $(aws resourcegroupstaggingapi get-resources \
+                        --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
+                        --resource-type-filters "elasticloadbalancing:loadbalancer" \
+                        --query 'ResourceTagMappingList[].ResourceARN' --output text --region $REGION 2>/dev/null); do
+                        echo "  Deleting ALB: $ALB_ARN"
+                        aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN" --region $REGION || true
+                      done
+                      # Wait for ENIs to detach
+                      sleep 15
                     fi
-                    # 3. Controllers — safe to remove now that ALBs are gone.
+                    # 2b. Clean up ALB-created security groups and target groups.
+                    #     ALB Controller creates SGs (k8s-platform-*, k8s-traffic-*) and TGs
+                    #     outside CloudFormation. If not cleaned up, they block VPC deletion.
+                    echo "Cleaning up ALB target groups..."
+                    for TG_ARN in $(aws resourcegroupstaggingapi get-resources \
+                      --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
+                      --resource-type-filters "elasticloadbalancing:targetgroup" \
+                      --query 'ResourceTagMappingList[].ResourceARN' --output text --region $REGION 2>/dev/null); do
+                      echo "  Deleting target group: $TG_ARN"
+                      aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region $REGION || true
+                    done
+                    echo "Cleaning up ALB security groups..."
+                    VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
+                      --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "")
+                    if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+                      # Find SGs tagged by ALB Controller
+                      ALB_SGS=$(aws ec2 describe-security-groups --region $REGION \
+                        --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
+                        --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || echo "")
+                      for SG_ID in $ALB_SGS; do
+                        echo "  Removing ingress/egress rules referencing $SG_ID from other SGs..."
+                        # Find and revoke rules in other SGs that reference this SG
+                        for OTHER_SG in $(aws ec2 describe-security-groups --region $REGION \
+                          --filters "Name=vpc-id,Values=$VPC_ID" \
+                          --query 'SecurityGroups[].GroupId' --output text 2>/dev/null); do
+                          for RULE_ID in $(aws ec2 describe-security-group-rules --region $REGION \
+                            --filters "Name=group-id,Values=$OTHER_SG" \
+                            --query "SecurityGroupRules[?ReferencedGroupInfo.GroupId=='$SG_ID'].SecurityGroupRuleId" \
+                            --output text 2>/dev/null); do
+                            echo "    Revoking rule $RULE_ID in $OTHER_SG"
+                            aws ec2 revoke-security-group-ingress --region $REGION \
+                              --group-id "$OTHER_SG" --security-group-rule-ids "$RULE_ID" 2>/dev/null || \
+                            aws ec2 revoke-security-group-egress --region $REGION \
+                              --group-id "$OTHER_SG" --security-group-rule-ids "$RULE_ID" 2>/dev/null || true
+                          done
+                        done
+                        echo "  Deleting security group: $SG_ID"
+                        aws ec2 delete-security-group --group-id "$SG_ID" --region $REGION || true
+                      done
+                    fi
+                    # 3. Controllers — safe to remove now that ALBs and their SGs are gone.
                     helm uninstall aws-load-balancer-controller -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
                     helm uninstall external-dns -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
                     helm uninstall cluster-autoscaler -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
@@ -1746,6 +1796,10 @@ Resources:
                     kubectl delete appwrappers --all -A --ignore-not-found || true
                     kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml \
                       --ignore-not-found || true
+                    # Clean up SSM parameter (created by install script, not CF)
+                    aws ssm delete-parameter \
+                      --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                      --region $REGION 2>/dev/null || true
                     echo "Teardown complete."
                     exit 0
                   fi
@@ -2257,6 +2311,10 @@ Resources:
 # Outputs
 # =============================================================================
 Outputs:
+  PlatformaURL:
+    Description: Open this URL in your browser to access Platforma
+    Value: !Sub 'https://${DomainName}'
+
   ConnectionEndpoint:
     Description: >
       Platforma Desktop App connection endpoint.

@@ -24,16 +24,9 @@
         "required": ["name"]
       }
     },
-    "provider": {
+    "environment": {
       "type": "string",
       "enum": ["", "aws", "gcp"]
-    },
-    "aws": {
-      "type": "object",
-      "properties": {
-        "efsFileSystemId": { "type": "string" }
-      },
-      "additionalProperties": false
     },
     "license": {
       "type": "object",
@@ -463,37 +456,6 @@
               },
               "additionalProperties": false
             }
-          },
-          "additionalProperties": false
-        },
-        "startupProbe": {
-          "type": "object",
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "initialDelaySeconds": { "type": "integer" },
-            "periodSeconds": { "type": "integer" },
-            "timeoutSeconds": { "type": "integer" },
-            "failureThreshold": { "type": "integer" }
-          },
-          "additionalProperties": false
-        },
-        "livenessProbe": {
-          "type": "object",
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "initialDelaySeconds": { "type": "integer" },
-            "periodSeconds": { "type": "integer" },
-            "timeoutSeconds": { "type": "integer" }
-          },
-          "additionalProperties": false
-        },
-        "readinessProbe": {
-          "type": "object",
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "initialDelaySeconds": { "type": "integer" },
-            "periodSeconds": { "type": "integer" },
-            "timeoutSeconds": { "type": "integer" }
           },
           "additionalProperties": false
         }

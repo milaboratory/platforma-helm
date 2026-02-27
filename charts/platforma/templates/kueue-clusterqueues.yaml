@@ -1,4 +1,4 @@
-{{- if eq .Values.kueue.mode "dedicated" }}
+{{- if and (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources }}
 # =============================================================================
 # ClusterQueues
 # =============================================================================
@@ -24,7 +24,7 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 spec:
-  cohortName: {{ include "platforma.fullname" . }}
+  cohortName: {{ include "platforma.kueue.clusterResourceName" . }}
   namespaceSelector: {}
   preemption:
     reclaimWithinCohort: Never
@@ -32,7 +32,7 @@ spec:
   resourceGroups:
     - coveredResources: ["cpu", "memory"]
       flavors:
-        - name: {{ include "platforma.fullname" . }}-ui-flavor
+        - name: {{ include "platforma.kueue.clusterResourceName" . }}-ui-flavor
           resources:
             - name: cpu
               nominalQuota: {{ .Values.kueue.dedicated.pools.ui.resources.cpu | quote }}
@@ -49,7 +49,7 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 spec:
-  cohortName: {{ include "platforma.fullname" . }}
+  cohortName: {{ include "platforma.kueue.clusterResourceName" . }}
   namespaceSelector: {}
   preemption:
     reclaimWithinCohort: Never   # Jobs not retryable, never preempt
@@ -57,7 +57,7 @@ spec:
   resourceGroups:
     - coveredResources: ["cpu", "memory"]
       flavors:
-        - name: {{ include "platforma.fullname" . }}-batch-flavor
+        - name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-flavor
           resources:
             - name: cpu
               nominalQuota: {{ .Values.kueue.dedicated.pools.batch.resources.cpu | quote }}

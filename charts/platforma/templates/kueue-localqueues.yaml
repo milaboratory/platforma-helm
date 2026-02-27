@@ -1,12 +1,13 @@
-{{- if eq .Values.kueue.mode "dedicated" }}
 # =============================================================================
-# LocalQueues (dedicated mode only)
+# LocalQueues
 # =============================================================================
 # Jobs reference LocalQueues. The template maps:
 # - ui-tasks queue → ui-tasks LocalQueue → UI ClusterQueue
 # - light/medium/heavy queues → batch-tasks LocalQueue → Batch ClusterQueue
 #
-# In shared mode, LocalQueues are pre-existing and not created by this chart.
+# Created in both modes:
+# - Dedicated: points at chart-created ClusterQueues
+# - Shared: points at externally-managed ClusterQueues
 # =============================================================================
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
@@ -28,4 +29,3 @@ metadata:
     {{- include "platforma.labels" . | nindent 4 }}
 spec:
   clusterQueue: {{ include "platforma.kueue.batchClusterQueueName" . }}
-{{- end }}

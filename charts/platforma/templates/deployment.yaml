@@ -156,7 +156,9 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
-            # Debug API (always enabled; binding depends on app.debug.enabled)
+            # Debug API: always available via port-forward.
+            # When app.debug.enabled: also reachable from within the cluster,
+            # verbose logging, job working directories kept for 1h after completion.
             - "--debug-enabled"
             - "--debug-port=9091"
             {{- if .Values.app.debug.enabled }}
@@ -166,7 +168,8 @@ spec:
             {{- else }}
             - "--debug-ip=127.0.0.1"
             {{- end }}
-            # Session stability (prevents invalidation on pod restart)
+            # Keeps user sessions valid across pod restarts.
+            # To force-logout all users: add "--auth-sessions-gen=2" to app.extraArgs
             - "--auth-sessions-gen=1"
             # Extra arguments
             {{- range .Values.app.extraArgs }}

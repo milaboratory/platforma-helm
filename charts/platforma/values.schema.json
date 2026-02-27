@@ -324,14 +324,6 @@
       },
       "additionalProperties": false
     },
-    "service": {
-      "type": "object",
-      "properties": {
-        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
-        "annotations": { "type": "object" }
-      },
-      "additionalProperties": false
-    },
     "ingress": {
       "type": "object",
       "properties": {

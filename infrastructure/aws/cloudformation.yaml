@@ -1901,10 +1901,39 @@ Resources:
                     --set replicaCount=1 \
                     --wait --timeout 5m
 
-                  # Wait for ALB webhook to be ready (cert rotation after upgrade can
-                  # cause x509 errors if Platforma patches an Ingress too soon).
+                  # Wait for ALB webhook to be ready. The webhook's CA bundle must be
+                  # propagated to the API server before any Ingress/Service creation.
+                  # `rollout status` only checks the pod — probe the webhook directly.
                   kubectl rollout status deployment/aws-load-balancer-controller -n $NAMESPACE --timeout=120s
-                  sleep 5
+                  echo "Waiting for ALB webhook to become ready..."
+                  for i in $(seq 1 30); do
+                    if kubectl create -f - --dry-run=server <<'PROBE' 2>/dev/null; then
+                  apiVersion: networking.k8s.io/v1
+                  kind: Ingress
+                  metadata:
+                    name: alb-webhook-probe
+                    namespace: default
+                    annotations:
+                      alb.ingress.kubernetes.io/scheme: internal
+                  spec:
+                    ingressClassName: alb
+                    rules:
+                      - http:
+                          paths:
+                            - path: /
+                              pathType: Prefix
+                              backend:
+                                service:
+                                  name: probe
+                                  port:
+                                    number: 80
+                  PROBE
+                      echo "  ALB webhook ready."
+                      break
+                    fi
+                    echo "  Webhook not ready, retrying... ($((i * 5))s elapsed)"
+                    sleep 5
+                  done
 
                   # 6. Platforma (optional — skipped when DEPLOY_PLATFORMA=false)
                   if [ "$DEPLOY_PLATFORMA" = "true" ]; then
@@ -2163,7 +2192,7 @@ Resources:
       # Properties below trigger re-deployment when changed during stack update.
       # The Lambda does not read these — they exist only so CloudFormation
       # detects property changes and sends an UPDATE event.
-      ForceUpdate: "3"  # Bump to force re-deployment
+      ForceUpdate: "4"  # Bump to force re-deployment
       PlatformaVersion: !Ref PlatformaVersion
       PlatformaImage: !Ref PlatformaImage
       DeployPlatforma: !Ref DeployPlatforma

@@ -247,9 +247,9 @@ kueue:
     cpu: 64
     memory: 256Gi
 
-  # -- Node pool configuration (shared between dedicated and shared modes)
-  # Defines node selectors and tolerations for UI and Batch pools.
-  # These describe the cluster topology — same regardless of Kueue mode.
+  # -- Node pool topology (used in both dedicated and shared modes)
+  # Jobs are scheduled onto nodes matching these selectors/tolerations.
+  # In dedicated mode, also used by ResourceFlavors for Kueue admission.
   pools:
     ui:
       # -- Node selector for UI pool
@@ -272,19 +272,19 @@ kueue:
         #   effect: NoSchedule
 
   # -- Dedicated mode configuration
-  # Creates ClusterQueues, ResourceFlavors, and WorkloadPriorityClasses.
-  # UI pool resources are guaranteed (borrowingLimit: 0).
-  # Batch pool can borrow idle UI capacity.
+  # Chart creates ClusterQueues, ResourceFlavors, and WorkloadPriorityClasses.
+  # UI queue has guaranteed resources (borrowingLimit: 0 — never shares with batch).
+  # Batch queue can borrow idle UI capacity up to UI's nominal quota.
   dedicated:
-    # -- When false, skip cluster-scoped resources (ResourceFlavors, ClusterQueues, WorkloadPriorityClasses).
-    # LocalQueues and ConfigMap are always created. Set to false for secondary installs
-    # sharing Kueue infrastructure with a primary install.
+    # -- Create cluster-scoped Kueue resources (ResourceFlavors, ClusterQueues,
+    # WorkloadPriorityClasses). Set to false for secondary installs that share
+    # Kueue infrastructure with a primary install — only LocalQueues are created.
     createClusterResources: true
-    # -- Name prefix for cluster-scoped resources.
-    # All installs sharing Kueue infrastructure must use the same value.
-    # Default (empty): uses the Helm release fullname.
+    # -- Shared name prefix for cluster-scoped resources.
+    # When multiple Helm releases share one set of ClusterQueues, all must use
+    # the same value here (e.g., "platforma"). Default: Helm release fullname.
     clusterResourceName: ""
-    # -- Cluster queue resource quotas
+    # -- Resource quotas for each ClusterQueue
     resources:
       ui:
         cpu: 4

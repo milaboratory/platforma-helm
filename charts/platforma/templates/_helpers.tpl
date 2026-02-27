@@ -108,39 +108,87 @@ Database PVC name
 {{- end }}
 
 {{/*
-Kueue UI LocalQueue name
+Kueue cluster resource name prefix.
+Used for cluster-scoped resources (ResourceFlavors, ClusterQueues, WorkloadPriorityClasses).
+Defaults to fullname when kueue.dedicated.clusterResourceName is empty.
 */}}
-{{- define "platforma.kueue.uiQueueName" -}}
-{{- if eq .Values.kueue.mode "shared" }}
-{{- .Values.kueue.shared.queues.ui }}
-{{- else }}
-{{- printf "%s-ui-tasks" (include "platforma.fullname" .) }}
-{{- end }}
+{{- define "platforma.kueue.clusterResourceName" -}}
+{{- if .Values.kueue.dedicated.clusterResourceName -}}
+{{- .Values.kueue.dedicated.clusterResourceName -}}
+{{- else -}}
+{{- include "platforma.fullname" . -}}
+{{- end -}}
 {{- end }}
 
 {{/*
-Kueue Batch LocalQueue name
+Kueue UI LocalQueue name — always chart-generated (both modes create LocalQueues)
+*/}}
+{{- define "platforma.kueue.uiQueueName" -}}
+{{- printf "%s-ui-tasks" (include "platforma.fullname" .) -}}
+{{- end }}
+
+{{/*
+Kueue Batch LocalQueue name — always chart-generated (both modes create LocalQueues)
 */}}
 {{- define "platforma.kueue.batchQueueName" -}}
-{{- if eq .Values.kueue.mode "shared" }}
-{{- .Values.kueue.shared.queues.batch }}
-{{- else }}
-{{- printf "%s-batch-tasks" (include "platforma.fullname" .) }}
-{{- end }}
+{{- printf "%s-batch-tasks" (include "platforma.fullname" .) -}}
 {{- end }}
 
 {{/*
 Kueue UI ClusterQueue name
 */}}
 {{- define "platforma.kueue.uiClusterQueueName" -}}
-{{- printf "%s-ui" (include "platforma.fullname" .) }}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.clusterQueues.ui is required in shared mode" .Values.kueue.shared.clusterQueues.ui -}}
+{{- else -}}
+{{- printf "%s-ui" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
 {{- end }}
 
 {{/*
 Kueue Batch ClusterQueue name
 */}}
 {{- define "platforma.kueue.batchClusterQueueName" -}}
-{{- printf "%s-batch" (include "platforma.fullname" .) }}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.clusterQueues.batch is required in shared mode" .Values.kueue.shared.clusterQueues.batch -}}
+{{- else -}}
+{{- printf "%s-batch" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Kueue WorkloadPriorityClass names — mode-aware
+*/}}
+{{- define "platforma.kueue.priorityClassName.ui" -}}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.priorities.uiTasks is required in shared mode" .Values.kueue.shared.priorities.uiTasks -}}
+{{- else -}}
+{{- printf "%s-ui" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "platforma.kueue.priorityClassName.high" -}}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.priorities.high is required in shared mode" .Values.kueue.shared.priorities.high -}}
+{{- else -}}
+{{- printf "%s-high" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "platforma.kueue.priorityClassName.normal" -}}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.priorities.normal is required in shared mode" .Values.kueue.shared.priorities.normal -}}
+{{- else -}}
+{{- printf "%s-normal" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "platforma.kueue.priorityClassName.low" -}}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.priorities.low is required in shared mode" .Values.kueue.shared.priorities.low -}}
+{{- else -}}
+{{- printf "%s-low" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
 {{- end }}
 
 {{/*

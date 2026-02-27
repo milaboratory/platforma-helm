@@ -1,4 +1,4 @@
-{{- if eq .Values.kueue.mode "dedicated" }}
+{{- if and (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources }}
 # =============================================================================
 # ResourceFlavors
 # =============================================================================
@@ -9,7 +9,7 @@
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
-  name: {{ include "platforma.fullname" . }}-ui-flavor
+  name: {{ include "platforma.kueue.clusterResourceName" . }}-ui-flavor
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 spec:
@@ -28,7 +28,7 @@ spec:
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
-  name: {{ include "platforma.fullname" . }}-batch-flavor
+  name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-flavor
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 spec:

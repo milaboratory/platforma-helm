@@ -294,9 +294,9 @@ spec:
             grpc:
               port: 6345
             initialDelaySeconds: 5
-            periodSeconds: 30
+            periodSeconds: 3
             timeoutSeconds: 5
-            failureThreshold: 60
+            failureThreshold: 600
           livenessProbe:
             grpc:
               port: 6345

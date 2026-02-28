@@ -7,7 +7,11 @@
 #   - EFS (StorageClass sets uid/gid via Access Points)
 #   - existingClaim (operator manages permissions externally)
 # =============================================================================
-{{- if or .Values.storage.workspace.fsxLustre.enabled .Values.storage.workspace.filestore.enabled .Values.storage.workspace.nfs.enabled .Values.storage.workspace.pvc.enabled }}
+{{- if or .Values.storage.workspace.fsxLustre.enabled
+          .Values.storage.workspace.filestore.enabled
+          .Values.storage.workspace.nfs.enabled
+          (and .Values.storage.workspace.pvc.enabled
+               .Values.storage.workspace.pvc.chownOnCreate) }}
 apiVersion: batch/v1
 kind: Job
 metadata:

@@ -157,6 +157,7 @@ storage:
     # -- RWX PVC via StorageClass (for CSI drivers or other provisioners)
     pvc:
       enabled: false
+      chownOnCreate: true
       size: 100Gi
       storageClass: ""
 

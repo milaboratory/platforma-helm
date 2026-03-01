@@ -288,18 +288,6 @@ kueue:
     # When multiple Helm releases share one set of ClusterQueues, all must use
     # the same value. Default: Helm release fullname.
     clusterResourceName: ""
-    # -- ProvisioningRequest integration for batch queue
-    # When enabled, Kueue asks Cluster Autoscaler to pre-provision nodes
-    # BEFORE admitting batch jobs. Benefits: quota not held during scale-up,
-    # immediate pod scheduling on warm nodes, failure surfaces before admission.
-    # Requires Cluster Autoscaler with ProvisioningRequestsEnabled=true feature gate.
-    provisioningRequest:
-      enabled: false
-      # -- Retry strategy for failed provisioning attempts
-      retryStrategy:
-        backoffLimitCount: 3
-        backoffBaseSeconds: 60
-        backoffMaxSeconds: 1800
     # -- Max simultaneous resources per queue (ClusterQueue quotas)
     # These cap total concurrent usage, not individual job limits.
     # Increase to allow more jobs to run in parallel.

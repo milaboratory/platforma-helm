@@ -51,10 +51,6 @@ metadata:
 spec:
   cohortName: {{ include "platforma.kueue.clusterResourceName" . }}
   namespaceSelector: {}
-  {{- if .Values.kueue.dedicated.provisioningRequest.enabled }}
-  admissionChecks:
-    - {{ include "platforma.kueue.clusterResourceName" . }}-batch-provisioning
-  {{- end }}
   preemption:
     reclaimWithinCohort: Never   # Jobs not retryable, never preempt
     withinClusterQueue: Never    # No preemption within batch queue

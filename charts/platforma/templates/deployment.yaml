@@ -5,8 +5,31 @@
 {{- if ne (include "platforma.workspaceConfigured" .) "true" }}
 {{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.fsxLustre.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
 {{- end }}
-{{- if not (or .Values.auth.htpasswd.secretName .Values.auth.ldap.server) }}
-{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.secretName: \"platforma-htpasswd\"  # htpasswd file auth\n  auth.ldap.server: \"ldap://ldap.example.com\"      # LDAP auth\n\nTo disable auth for development, add to app.extraArgs:\n  - \"--no-auth\"" }}
+{{- if not (or (include "platforma.htpasswdSecretName" .) .Values.auth.ldap.server) }}
+{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n\nTo disable auth for development, add to app.extraArgs:\n  - \"--no-auth\"" }}
+{{- end }}
+{{- if and .Values.auth.htpasswd.secretName (gt (len .Values.auth.htpasswd.credentials) 0) }}
+{{- fail "ERROR: Set either auth.htpasswd.secretName or auth.htpasswd.credentials, not both." }}
+{{- end }}
+{{- /* Validate main storage type vs environment */ -}}
+{{- $mainType := include "platforma.mainStorageType" . -}}
+{{- if not $mainType }}
+{{- fail "ERROR: Main storage is required.\n\nSet storage.main.type to 's3' or 'gcs'.\n  s3: AWS S3 or S3-compatible (MinIO, Ceph)\n  gcs: Google Cloud Storage (requires environment: gcp)" }}
+{{- end }}
+{{- if and (eq .Values.environment "aws") (eq $mainType "gcs") }}
+{{- fail "ERROR: GCS is not supported on AWS. Use storage.main.type: s3" }}
+{{- end }}
+{{- if and (eq .Values.environment "gcp") (eq $mainType "s3") }}
+{{- fail "ERROR: S3 is not supported on GCP. Use storage.main.type: gcs" }}
+{{- end }}
+{{- if and (ne .Values.environment "gcp") (eq $mainType "gcs") }}
+{{- fail "ERROR: GCS requires environment: gcp" }}
+{{- end }}
+{{- if and (eq $mainType "s3") (not .Values.storage.main.s3.bucket) }}
+{{- fail "ERROR: storage.main.s3.bucket is required when using S3 storage." }}
+{{- end }}
+{{- if and (eq $mainType "gcs") (not .Values.storage.main.gcs.bucket) }}
+{{- fail "ERROR: storage.main.gcs.bucket is required when using GCS storage." }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -60,7 +83,7 @@ spec:
             - "--db-dir=/data/database"
             - "--work-dir=/data/workspace/work"
             - "--packages-dir=/data/workspace/packages"
-            {{- if .Values.storage.main.s3.bucket }}
+            {{- if eq $mainType "s3" }}
             {{- if .Values.storage.main.s3.endpoint }}
             - "--primary-storage-s3={{ .Values.storage.main.s3.endpoint }}/{{ .Values.storage.main.s3.bucket }}{{ if .Values.storage.main.s3.prefix }}/{{ .Values.storage.main.s3.prefix }}{{ end }}"
             {{- else }}
@@ -69,7 +92,7 @@ spec:
             {{- if .Values.storage.main.s3.region }}
             - "--primary-storage-s3-region={{ .Values.storage.main.s3.region }}"
             {{- end }}
-            {{- else if .Values.storage.main.gcs.bucket }}
+            {{- else if eq $mainType "gcs" }}
             - "--primary-storage-gcs=gs://{{ .Values.storage.main.gcs.bucket }}{{ if .Values.storage.main.gcs.prefix }}/{{ .Values.storage.main.gcs.prefix }}{{ end }}"
             {{- if .Values.storage.main.gcs.projectId }}
             - "--primary-storage-gcs-project-id={{ .Values.storage.main.gcs.projectId }}"
@@ -109,7 +132,7 @@ spec:
             # License file (always mounted from secret)
             - "--license-file={{ include "platforma.path.license" . }}/{{ .Values.license.secretKey }}"
             # Authentication
-            {{- if .Values.auth.htpasswd.secretName }}
+            {{- if include "platforma.htpasswdSecretName" . }}
             - "--auth-htpasswd=/etc/platforma/secrets/htpasswd"
             {{- else if .Values.auth.ldap.server }}
             - "--auth-ldap-server={{ .Values.auth.ldap.server }}"
@@ -195,7 +218,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.license.secretName }}
                   key: {{ .Values.license.secretKey }}
-            {{- if .Values.storage.main.s3.secretRef.name }}
+            {{- if and (eq $mainType "s3") .Values.storage.main.s3.secretRef.name }}
             - name: PL_PRIMARY_STORAGE_S3_KEY
               valueFrom:
                 secretKeyRef:
@@ -282,7 +305,7 @@ spec:
             - name: logs
               mountPath: /var/log/platforma
             {{- end }}
-            {{- if .Values.auth.htpasswd.secretName }}
+            {{- if include "platforma.htpasswdSecretName" . }}
             - name: htpasswd
               mountPath: {{ include "platforma.path.secrets" . }}
               readOnly: true
@@ -330,10 +353,10 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.app.logging.persistence.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
         {{- end }}
-        {{- if .Values.auth.htpasswd.secretName }}
+        {{- if include "platforma.htpasswdSecretName" . }}
         - name: htpasswd
           secret:
-            secretName: {{ .Values.auth.htpasswd.secretName }}
+            secretName: {{ include "platforma.htpasswdSecretName" . }}
             items:
               - key: {{ .Values.auth.htpasswd.secretKey }}
                 path: htpasswd

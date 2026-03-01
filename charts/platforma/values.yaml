@@ -8,9 +8,9 @@
 #
 # Minimum required configuration:
 #   1. License secret (license.secretName)
-#   2. Auth — htpasswd or LDAP (users cannot log in without auth)
+#   2. Auth — htpasswd credentials/secret or LDAP (users cannot log in without auth)
 #   3. Workspace storage (RWX shared filesystem for job data)
-#   4. Main storage bucket (S3 or GCS — where Desktop App downloads results)
+#   4. Main storage (S3 or GCS — where Desktop App downloads results)
 #
 # See infrastructure/aws/ and infrastructure/gcp/ for cloud-specific examples.
 # =============================================================================
@@ -59,17 +59,24 @@ license:
 # =============================================================================
 # Authentication is mandatory — users cannot log in without it.
 # Configure exactly one method:
-#   - htpasswd: file-based, set auth.htpasswd.secretName to enable
+#   - htpasswd: file-based (inline credentials or existing secret)
 #   - LDAP: directory-based, set auth.ldap.server to enable
 # Helm fails if neither is configured.
 
 auth:
   # -- htpasswd file-based authentication
-  # Users are defined in an htpasswd-format file stored in a K8s secret.
+  # Two options:
+  #   1. Inline credentials (simplest) — set credentials list below
+  #   2. Existing secret — create a K8s secret with htpasswd content, set secretName
   htpasswd:
-    # -- Set to enable htpasswd auth. Create the secret first:
-    #   htpasswd -nB username > htpasswd
-    #   kubectl create secret generic platforma-htpasswd --from-file=htpasswd=./htpasswd
+    # -- Inline credentials (chart creates the secret automatically)
+    # Simplest way to set up auth. Passwords are stored as bcrypt hashes.
+    credentials: []
+      # - username: "admin"
+      #   password: "changeme"
+
+    # -- Or reference an existing secret with htpasswd content
+    # Create with: htpasswd -nB username > htpasswd && kubectl create secret generic platforma-htpasswd --from-file=htpasswd=./htpasswd
     secretName: ""
     # -- Key in secret containing htpasswd content
     secretKey: "htpasswd"
@@ -181,9 +188,13 @@ storage:
       ip: ""
       path: "/"
 
-  # -- Main storage — where Desktop App downloads results from
-  # Configure S3 or GCS. On AWS with IRSA, leave secretRef empty.
+  # -- Main storage — where Desktop App downloads results from (required)
+  # S3 covers both AWS S3 and S3-compatible storage (MinIO, Ceph, Wasabi).
+  # GCS is for Google Cloud Storage only (requires environment: gcp).
   main:
+    # -- Storage type (required): s3 | gcs
+    type: ""
+
     s3:
       bucket: ""
       region: ""
@@ -282,11 +293,11 @@ kueue:
     # Increase to allow more jobs to run in parallel.
     resources:
       ui:
-        cpu: 4
-        memory: 16Gi
+        cpu: 500
+        memory: 512Gi
       batch:
-        cpu: 60
-        memory: 240Gi
+        cpu: 2000
+        memory: 10240Gi
 
   # -- Shared mode configuration
   # Point at existing Kueue resources managed outside this chart.
@@ -296,7 +307,7 @@ kueue:
       ui: ""       # ClusterQueue for UI tasks
       batch: ""    # ClusterQueue for batch tasks
     # -- WorkloadPriorityClass names (must already exist in cluster)
-    priorities:
+    workloadPriorityClasses:
       uiTasks: ""
       high: ""
       normal: ""
@@ -341,11 +352,11 @@ app:
   # -- Pod resources
   resources:
     requests:
-      cpu: 2000m
-      memory: 4Gi
+      cpu: 8000m
+      memory: 16Gi
     limits:
-      cpu: 4000m
-      memory: 8Gi
+      cpu: 8000m
+      memory: 16Gi
 
   # -- Pod scheduling
   nodeSelector: {}
@@ -373,10 +384,10 @@ app:
     # - "--network-mode=proxy"
 
   # -- Debug mode
-  # Increases log verbosity and preserves job working directories for 1 hour
-  # after completion (normally cleaned up immediately). Useful for diagnosing
-  # failed workflows. The debug API is always accessible via port-forward
-  # regardless of this setting.
+  # The debug API (pprof, DB inspection) always runs on port 9091 on 'localhost'
+  # and is always accessible via port-forward.
+  # When enabled: sets log level to debug, keeps job workdirs for 1h and makes API to 
+  #               listen for external connections (0.0.0.0 instead of 'localhost')
   debug:
     enabled: false
 

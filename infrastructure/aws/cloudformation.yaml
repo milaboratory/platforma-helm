@@ -69,23 +69,12 @@ Metadata:
       - Label:
           default: 'Kueue resource quotas'
         Parameters:
-          - UiQueueCpu
-          - UiQueueMemoryGi
-          - BatchQueueCpu
-          - BatchQueueMemoryGi
+          - ComputeFamily
       - Label:
           default: Storage
         Parameters:
           - EfsPerformanceMode
           - S3BucketName
-      - Label:
-          default: 'Controller versions (advanced)'
-        Parameters:
-          - KueueVersion
-          - AppWrapperVersion
-          - ClusterAutoscalerChartVersion
-          - ExternalDnsVersion
-          - AlbControllerVersion
     ParameterLabels:
       ClusterName:
         default: Cluster name
@@ -127,14 +116,8 @@ Metadata:
         default: 'Batch 4xlarge (32 vCPU / 256 GiB)'
       BatchMaxCountPerGroup:
         default: Batch max nodes per group
-      UiQueueCpu:
-        default: 'UI queue max CPU (ClusterQueue quota)'
-      UiQueueMemoryGi:
-        default: 'UI queue max memory GiB (ClusterQueue quota)'
-      BatchQueueCpu:
-        default: 'Batch queue max CPU (ClusterQueue quota)'
-      BatchQueueMemoryGi:
-        default: 'Batch queue max memory GiB (ClusterQueue quota)'
+      ComputeFamily:
+        default: 'Compute family (max concurrent r5.8xlarge nodes)'
       DeployPlatforma:
         default: 'Deploy Platforma (false = infrastructure + controllers only)'
       LicenseKey:
@@ -151,16 +134,6 @@ Metadata:
         default: 'Domain name (e.g. platforma.example.com)'
       HostedZoneId:
         default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
-      KueueVersion:
-        default: Kueue chart version
-      AppWrapperVersion:
-        default: AppWrapper version (GitHub release tag)
-      ClusterAutoscalerChartVersion:
-        default: Cluster Autoscaler chart version
-      ExternalDnsVersion:
-        default: External DNS chart version
-      AlbControllerVersion:
-        default: ALB Controller chart version
       AuthMethod:
         default: 'Authentication method (htpasswd or ldap)'
       HtpasswdContent:
@@ -412,40 +385,18 @@ Parameters:
     Description: Maximum nodes per batch node group
 
   # --- Kueue resource quotas ---
-  # ClusterQueue quotas: max simultaneous CPU/memory admitted across all workloads per queue.
-  # These don't limit individual jobs — they cap total concurrent resource usage.
-  UiQueueCpu:
-    Type: Number
-    Default: 64
-    MinValue: 1
+  ComputeFamily:
+    Type: String
+    Default: '8'
+    AllowedValues: ['4', '8', '16', '32']
     Description: >
-      Max simultaneous CPU across all UI queue workloads (ClusterQueue quota).
-      Default (64) = batch / 4. Ensure your On-Demand vCPU quota is sufficient.
-
-  UiQueueMemoryGi:
-    Type: Number
-    Default: 256
-    MinValue: 1
-    Description: >
-      Max simultaneous memory (GiB) across all UI queue workloads.
-      Default (256) = UiQueueCpu x 4 GiB (m5 instance ratio).
-
-  BatchQueueCpu:
-    Type: Number
-    Default: 256
-    MinValue: 1
-    Description: >
-      Max simultaneous CPU across all batch queue workloads (ClusterQueue quota).
-      Default (256) matches batch ASG capacity (32 x m5.2xlarge).
-      Ensure your On-Demand vCPU quota is sufficient.
-
-  BatchQueueMemoryGi:
-    Type: Number
-    Default: 1024
-    MinValue: 1
-    Description: >
-      Max simultaneous memory (GiB) across all batch queue workloads.
-      Default (1024) = BatchQueueCpu x 4 GiB (m5 instance ratio).
+      Number of r5.8xlarge (32 vCPU / 256 GiB) nodes that can run simultaneously
+      in the batch queue. Smaller nodes fill proportionally more slots.
+      Family 4:  128 batch CPU / 1024 GiB  — request ~200 On-Demand vCPU from AWS.
+      Family 8:  256 batch CPU / 2048 GiB  — request ~400 On-Demand vCPU from AWS.
+      Family 16: 512 batch CPU / 4096 GiB  — request ~800 On-Demand vCPU from AWS.
+      Family 32: 1024 batch CPU / 8192 GiB — request ~1600 On-Demand vCPU from AWS.
+      UI queue is always batch / 4.
 
   # --- Storage ---
   EfsPerformanceMode:
@@ -492,37 +443,41 @@ Parameters:
       Domain name for the Platforma endpoint (e.g. platforma.example.com).
       An ACM certificate will be created and validated via Route53.
 
-  # --- Controller versions ---
-  KueueVersion:
-    Type: String
-    Default: '0.16.1'
-    Description: Kueue Helm chart version (oci://registry.k8s.io/kueue/charts/kueue)
+  # Controller versions are managed internally — not exposed as parameters.
 
-  AppWrapperVersion:
-    Type: String
-    Default: 'v1.2.0'
-    Description: >
-      AppWrapper controller version (GitHub release tag).
-      Applied as: kubectl apply -f https://github.com/project-codeflare/appwrapper/releases/download/<version>/install.yaml
-
-  ClusterAutoscalerChartVersion:
-    Type: String
-    Default: '9.53.0'
-    Description: >
-      Cluster Autoscaler Helm chart version. The image tag (v<KubernetesVersion>.0)
-      is derived automatically from KubernetesVersion — you only need to update
-      this chart version when upgrading Kubernetes. Chart-to-K8s mapping:
-      9.44.0 → EKS 1.31, 9.46.6 → EKS 1.32, 9.51.0 → EKS 1.33, 9.53.0 → EKS 1.34.
-
-  ExternalDnsVersion:
-    Type: String
-    Default: '1.20.0'
-    Description: External DNS Helm chart version (external-dns/external-dns)
-
-  AlbControllerVersion:
-    Type: String
-    Default: '3.0.0'
-    Description: AWS Load Balancer Controller Helm chart version (eks/aws-load-balancer-controller)
+# =============================================================================
+# Mappings
+# =============================================================================
+Mappings:
+  # Kueue queue quotas derived from ComputeFamily.
+  # Each unit = 1 x r5.8xlarge (32 vCPU / 256 GiB), the largest batch node.
+  # Equivalent node counts per family:
+  #   Family 4:  4x r5.8xlarge  | ~5x r5.6xlarge  | 16x m5.2xlarge
+  #   Family 8:  8x r5.8xlarge  | ~10x r5.6xlarge  | 32x m5.2xlarge
+  #   Family 16: 16x r5.8xlarge | ~21x r5.6xlarge  | 64x m5.2xlarge
+  #   Family 32: 32x r5.8xlarge | ~42x r5.6xlarge  | 128x m5.2xlarge
+  # Batch memory uses r5 ratio (8 GiB/vCPU). UI memory uses m5 ratio (4 GiB/vCPU).
+  ComputeFamily:
+    '4':
+      BatchCpu: '128'
+      BatchMemoryGi: '1024'
+      UiCpu: '32'
+      UiMemoryGi: '128'
+    '8':
+      BatchCpu: '256'
+      BatchMemoryGi: '2048'
+      UiCpu: '64'
+      UiMemoryGi: '256'
+    '16':
+      BatchCpu: '512'
+      BatchMemoryGi: '4096'
+      UiCpu: '128'
+      UiMemoryGi: '512'
+    '32':
+      BatchCpu: '1024'
+      BatchMemoryGi: '8192'
+      UiCpu: '256'
+      UiMemoryGi: '1024'
 
 # =============================================================================
 # Conditions
@@ -1864,23 +1819,23 @@ Resources:
           - Name: KUBERNETES_VERSION
             Value: !Ref KubernetesVersion
           - Name: KUEUE_VERSION
-            Value: !Ref KueueVersion
+            Value: '0.16.1'
           - Name: APPWRAPPER_VERSION
-            Value: !Ref AppWrapperVersion
+            Value: 'v1.2.0'
           - Name: CLUSTER_AUTOSCALER_CHART_VERSION
-            Value: !Ref ClusterAutoscalerChartVersion
+            Value: '9.53.0'
           - Name: EXTERNAL_DNS_VERSION
-            Value: !Ref ExternalDnsVersion
+            Value: '1.20.0'
           - Name: ALB_CONTROLLER_VERSION
-            Value: !Ref AlbControllerVersion
+            Value: '3.0.0'
           - Name: UI_QUEUE_CPU
-            Value: !Ref UiQueueCpu
+            Value: !FindInMap [ComputeFamily, !Ref ComputeFamily, UiCpu]
           - Name: UI_QUEUE_MEMORY_GI
-            Value: !Ref UiQueueMemoryGi
+            Value: !FindInMap [ComputeFamily, !Ref ComputeFamily, UiMemoryGi]
           - Name: BATCH_QUEUE_CPU
-            Value: !Ref BatchQueueCpu
+            Value: !FindInMap [ComputeFamily, !Ref ComputeFamily, BatchCpu]
           - Name: BATCH_QUEUE_MEMORY_GI
-            Value: !Ref BatchQueueMemoryGi
+            Value: !FindInMap [ComputeFamily, !Ref ComputeFamily, BatchMemoryGi]
           - Name: AUTH_METHOD
             Value: !Ref AuthMethod
           - Name: HTPASSWD_CONTENT
@@ -2450,15 +2405,7 @@ Resources:
       LdapSearchUser: !Ref LdapSearchUser
       LdapSearchPassword: !Ref LdapSearchPassword
       DomainName: !Ref DomainName
-      KueueVersion: !Ref KueueVersion
-      AppWrapperVersion: !Ref AppWrapperVersion
-      ClusterAutoscalerChartVersion: !Ref ClusterAutoscalerChartVersion
-      ExternalDnsVersion: !Ref ExternalDnsVersion
-      AlbControllerVersion: !Ref AlbControllerVersion
-      UiQueueCpu: !Ref UiQueueCpu
-      UiQueueMemoryGi: !Ref UiQueueMemoryGi
-      BatchQueueCpu: !Ref BatchQueueCpu
-      BatchQueueMemoryGi: !Ref BatchQueueMemoryGi
+      ComputeFamily: !Ref ComputeFamily
 
   # ---------------------------------------------------------------------------
   # 6. Storage — EFS (shared workspace)

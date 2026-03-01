@@ -265,7 +265,7 @@ Parameters:
   # --- Workload capacity ---
   ComputeFamily:
     Type: String
-    Default: medium
+    Default: small
     AllowedValues: [small, medium, large, xlarge]
     Description: >
       How many analysis jobs can run simultaneously.

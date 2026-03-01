@@ -1732,11 +1732,148 @@ Resources:
                 - aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
             build:
               commands:
-                # All install and teardown logic is in ONE shell script so that
-                # `exit 0` in the teardown path truly stops execution (each
-                # CodeBuild command item is a separate subshell — exit 0 there
-                # would otherwise only end that item, letting subsequent items run).
+                # The build phase is split into 7 numbered blocks.
+                # Each block produces a separate log section in CloudWatch — easy to
+                # see exactly which step failed.
+                # Block 0 runs teardown and exits; blocks 1-6 are the install steps.
+                # CodeBuild automatically stops on the first non-zero exit, so no
+                # explicit dependency chaining is needed between install blocks.
+
+                # ---------------------------------------------------------------
+                # Block 0: TEARDOWN
+                # Skips immediately (exit 0) when TEARDOWN=false.
+                # Runs full uninstall + cleanup when TEARDOWN=true, then exits 0
+                # so post_build reports SUCCESS to CloudFormation.
+                # ---------------------------------------------------------------
                 - |
+                  [ "${TEARDOWN:-false}" != "true" ] && exit 0
+                  # Set log retention so teardown logs persist for debugging.
+                  aws logs put-retention-policy \
+                    --log-group-name "/aws/codebuild/${CLUSTER_NAME}-helm-deployer" \
+                    --retention-in-days 30 --region $REGION 2>/dev/null || true
+                  aws logs put-retention-policy \
+                    --log-group-name "/aws/lambda/${CLUSTER_NAME}-helm-trigger" \
+                    --retention-in-days 14 --region $REGION 2>/dev/null || true
+                  echo "=== TEARDOWN MODE: uninstalling Helm releases ==="
+                  # 1. Platforma first — it owns the Ingress resources that back the ALBs.
+                  #    Longer timeout to ensure Ingress finalizers complete cleanly.
+                  helm uninstall platforma -n $NAMESPACE --ignore-not-found --wait --timeout 8m || true
+                  # 2. Wait for ALBs to be fully deleted.
+                  #    ALB Controller v2 tags with elbv2.k8s.aws/cluster (not kubernetes.io/cluster/...).
+                  #    Only after ALBs are gone is it safe to remove the controller and delete the VPC.
+                  echo "Waiting for ALBs tagged elbv2.k8s.aws/cluster=$CLUSTER_NAME to be deleted..."
+                  for i in $(seq 1 60); do
+                    COUNT=$(aws resourcegroupstaggingapi get-resources \
+                      --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
+                      --resource-type-filters "elasticloadbalancing:loadbalancer" \
+                      --query 'length(ResourceTagMappingList)' --output text --region $REGION 2>/dev/null || echo "0")
+                    [ "$COUNT" = "0" ] && echo "  All ALBs deleted." && break
+                    echo "  $COUNT ALB(s) still present, waiting... ($((i * 5))s elapsed)"
+                    sleep 5
+                  done
+                  if [ "${COUNT:-0}" != "0" ]; then
+                    echo "WARNING: $COUNT ALB(s) still present after 5 minutes. Attempting direct deletion..."
+                    for ALB_ARN in $(aws resourcegroupstaggingapi get-resources \
+                      --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
+                      --resource-type-filters "elasticloadbalancing:loadbalancer" \
+                      --query 'ResourceTagMappingList[].ResourceARN' --output text --region $REGION 2>/dev/null); do
+                      echo "  Deleting ALB: $ALB_ARN"
+                      aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN" --region $REGION || true
+                    done
+                    # Wait for ALBs to fully vanish (async — ENIs need time to release)
+                    echo "  Waiting for force-deleted ALBs to vanish..."
+                    for j in $(seq 1 24); do
+                      REMAINING=$(aws resourcegroupstaggingapi get-resources \
+                        --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
+                        --resource-type-filters "elasticloadbalancing:loadbalancer" \
+                        --query 'length(ResourceTagMappingList)' --output text --region $REGION 2>/dev/null || echo "0")
+                      [ "$REMAINING" = "0" ] && echo "  All ALBs gone." && break
+                      sleep 5
+                    done
+                  fi
+                  # 2b. Clean up ALB-created target groups and security groups.
+                  #     ALB Controller creates these outside CloudFormation.
+                  #     If not cleaned up, they block VPC and certificate deletion.
+                  #     Wait briefly for ALB listeners to fully release TGs.
+                  sleep 10
+                  echo "Cleaning up ALB target groups..."
+                  for TG_ARN in $(aws resourcegroupstaggingapi get-resources \
+                    --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
+                    --resource-type-filters "elasticloadbalancing:targetgroup" \
+                    --query 'ResourceTagMappingList[].ResourceARN' --output text --region $REGION 2>/dev/null); do
+                    echo "  Deleting target group: $TG_ARN"
+                    for t in $(seq 1 6); do
+                      aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region $REGION 2>/dev/null && break
+                      sleep 5
+                    done
+                  done
+                  echo "Cleaning up ALB security groups..."
+                  # $VPC_ID is available from CodeBuild environment variables
+                  if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+                    ALB_SGS=$(aws ec2 describe-security-groups --region $REGION \
+                      --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
+                      --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || echo "")
+                    for SG_ID in $ALB_SGS; do
+                      echo "  Cleaning up SG $SG_ID..."
+                      # Revoke rules in this SG that reference other groups
+                      for RULE_ID in $(aws ec2 describe-security-group-rules --region $REGION \
+                        --filters "Name=group-id,Values=$SG_ID" \
+                        --query "SecurityGroupRules[?ReferencedGroupInfo].SecurityGroupRuleId" \
+                        --output text 2>/dev/null); do
+                        aws ec2 revoke-security-group-ingress --region $REGION \
+                          --group-id "$SG_ID" --security-group-rule-ids "$RULE_ID" 2>/dev/null || \
+                        aws ec2 revoke-security-group-egress --region $REGION \
+                          --group-id "$SG_ID" --security-group-rule-ids "$RULE_ID" 2>/dev/null || true
+                      done
+                      # Revoke rules in OTHER SGs that reference this ALB SG
+                      for OTHER_SG in $(aws ec2 describe-security-groups --region $REGION \
+                        --filters "Name=vpc-id,Values=$VPC_ID" "Name=ip-permission.group-id,Values=$SG_ID" \
+                        --query 'SecurityGroups[].GroupId' --output text 2>/dev/null); do
+                        for RULE_ID in $(aws ec2 describe-security-group-rules --region $REGION \
+                          --filters "Name=group-id,Values=$OTHER_SG" \
+                          --query "SecurityGroupRules[?ReferencedGroupInfo.GroupId=='$SG_ID'].SecurityGroupRuleId" \
+                          --output text 2>/dev/null); do
+                          aws ec2 revoke-security-group-ingress --region $REGION \
+                            --group-id "$OTHER_SG" --security-group-rule-ids "$RULE_ID" 2>/dev/null || \
+                          aws ec2 revoke-security-group-egress --region $REGION \
+                            --group-id "$OTHER_SG" --security-group-rule-ids "$RULE_ID" 2>/dev/null || true
+                        done
+                      done
+                      # Retry SG deletion (ALB ENIs may still be releasing)
+                      for k in $(seq 1 6); do
+                        aws ec2 delete-security-group --group-id "$SG_ID" --region $REGION 2>/dev/null && echo "  Deleted $SG_ID" && break
+                        echo "  SG $SG_ID still has dependencies, retrying... ($((k * 5))s)"
+                        sleep 5
+                      done
+                    done
+                  fi
+                  # 3. Controllers — safe to remove now that ALBs and their SGs are gone.
+                  helm uninstall aws-load-balancer-controller -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                  # Wait for External DNS to sync the Ingress deletion and remove Route53 record.
+                  # External DNS default sync interval is 1 minute; 30s is usually enough since
+                  # the Ingress was deleted several minutes ago during helm uninstall + ALB wait.
+                  echo "Waiting 30s for External DNS to sync DNS record deletion..."
+                  sleep 30
+                  helm uninstall external-dns -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                  helm uninstall cluster-autoscaler -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                  helm uninstall kueue -n kueue-system --ignore-not-found --wait --timeout 3m || true
+                  # Delete AppWrapper custom resources before CRDs (finalizers would block CRD deletion)
+                  kubectl delete appwrappers --all -A --ignore-not-found || true
+                  kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml \
+                    --ignore-not-found || true
+                  # Clean up SSM parameter (created by install script, not CF)
+                  aws ssm delete-parameter \
+                    --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                    --region $REGION 2>/dev/null || true
+                  echo "Teardown complete."
+                  exit 0
+
+                # ---------------------------------------------------------------
+                # Block 1: LOG RETENTION + vCPU QUOTA CHECK
+                # ---------------------------------------------------------------
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [1/6] LOG RETENTION + vCPU QUOTA CHECK ==="
                   # Set retention on log groups auto-created by CodeBuild/Lambda.
                   # Done here (not as CF resources) so logs survive stack rollback
                   # without blocking re-deployments with the same ClusterName.
@@ -1746,131 +1883,9 @@ Resources:
                   aws logs put-retention-policy \
                     --log-group-name "/aws/lambda/${CLUSTER_NAME}-helm-trigger" \
                     --retention-in-days 14 --region $REGION 2>/dev/null || true
-
-                  # --- TEARDOWN MODE (triggered by CloudFormation Delete) ---
-                  # Uninstalls Helm releases in reverse order, waits for ALBs to
-                  # be fully deleted, then exits so post_build sends SUCCESS to CF.
-                  if [ "${TEARDOWN:-false}" = "true" ]; then
-                    echo "=== TEARDOWN MODE: uninstalling Helm releases ==="
-                    # 1. Platforma first — it owns the Ingress resources that back the ALBs.
-                    #    Longer timeout to ensure Ingress finalizers complete cleanly.
-                    helm uninstall platforma -n $NAMESPACE --ignore-not-found --wait --timeout 8m || true
-                    # 2. Wait for ALBs to be fully deleted.
-                    #    ALB Controller v2 tags with elbv2.k8s.aws/cluster (not kubernetes.io/cluster/...).
-                    #    Only after ALBs are gone is it safe to remove the controller and delete the VPC.
-                    echo "Waiting for ALBs tagged elbv2.k8s.aws/cluster=$CLUSTER_NAME to be deleted..."
-                    for i in $(seq 1 60); do
-                      COUNT=$(aws resourcegroupstaggingapi get-resources \
-                        --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
-                        --resource-type-filters "elasticloadbalancing:loadbalancer" \
-                        --query 'length(ResourceTagMappingList)' --output text --region $REGION 2>/dev/null || echo "0")
-                      [ "$COUNT" = "0" ] && echo "  All ALBs deleted." && break
-                      echo "  $COUNT ALB(s) still present, waiting... ($((i * 5))s elapsed)"
-                      sleep 5
-                    done
-                    if [ "${COUNT:-0}" != "0" ]; then
-                      echo "WARNING: $COUNT ALB(s) still present after 5 minutes. Attempting direct deletion..."
-                      for ALB_ARN in $(aws resourcegroupstaggingapi get-resources \
-                        --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
-                        --resource-type-filters "elasticloadbalancing:loadbalancer" \
-                        --query 'ResourceTagMappingList[].ResourceARN' --output text --region $REGION 2>/dev/null); do
-                        echo "  Deleting ALB: $ALB_ARN"
-                        aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN" --region $REGION || true
-                      done
-                      # Wait for ALBs to fully vanish (async — ENIs need time to release)
-                      echo "  Waiting for force-deleted ALBs to vanish..."
-                      for j in $(seq 1 24); do
-                        REMAINING=$(aws resourcegroupstaggingapi get-resources \
-                          --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
-                          --resource-type-filters "elasticloadbalancing:loadbalancer" \
-                          --query 'length(ResourceTagMappingList)' --output text --region $REGION 2>/dev/null || echo "0")
-                        [ "$REMAINING" = "0" ] && echo "  All ALBs gone." && break
-                        sleep 5
-                      done
-                    fi
-                    # 2b. Clean up ALB-created target groups and security groups.
-                    #     ALB Controller creates these outside CloudFormation.
-                    #     If not cleaned up, they block VPC and certificate deletion.
-                    #     Wait briefly for ALB listeners to fully release TGs.
-                    sleep 10
-                    echo "Cleaning up ALB target groups..."
-                    for TG_ARN in $(aws resourcegroupstaggingapi get-resources \
-                      --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
-                      --resource-type-filters "elasticloadbalancing:targetgroup" \
-                      --query 'ResourceTagMappingList[].ResourceARN' --output text --region $REGION 2>/dev/null); do
-                      echo "  Deleting target group: $TG_ARN"
-                      for t in $(seq 1 6); do
-                        aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region $REGION 2>/dev/null && break
-                        sleep 5
-                      done
-                    done
-                    echo "Cleaning up ALB security groups..."
-                    # $VPC_ID is available from CodeBuild environment variables
-                    if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
-                      ALB_SGS=$(aws ec2 describe-security-groups --region $REGION \
-                        --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
-                        --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || echo "")
-                      for SG_ID in $ALB_SGS; do
-                        echo "  Cleaning up SG $SG_ID..."
-                        # Revoke rules in this SG that reference other groups
-                        for RULE_ID in $(aws ec2 describe-security-group-rules --region $REGION \
-                          --filters "Name=group-id,Values=$SG_ID" \
-                          --query "SecurityGroupRules[?ReferencedGroupInfo].SecurityGroupRuleId" \
-                          --output text 2>/dev/null); do
-                          aws ec2 revoke-security-group-ingress --region $REGION \
-                            --group-id "$SG_ID" --security-group-rule-ids "$RULE_ID" 2>/dev/null || \
-                          aws ec2 revoke-security-group-egress --region $REGION \
-                            --group-id "$SG_ID" --security-group-rule-ids "$RULE_ID" 2>/dev/null || true
-                        done
-                        # Revoke rules in OTHER SGs that reference this ALB SG
-                        for OTHER_SG in $(aws ec2 describe-security-groups --region $REGION \
-                          --filters "Name=vpc-id,Values=$VPC_ID" "Name=ip-permission.group-id,Values=$SG_ID" \
-                          --query 'SecurityGroups[].GroupId' --output text 2>/dev/null); do
-                          for RULE_ID in $(aws ec2 describe-security-group-rules --region $REGION \
-                            --filters "Name=group-id,Values=$OTHER_SG" \
-                            --query "SecurityGroupRules[?ReferencedGroupInfo.GroupId=='$SG_ID'].SecurityGroupRuleId" \
-                            --output text 2>/dev/null); do
-                            aws ec2 revoke-security-group-ingress --region $REGION \
-                              --group-id "$OTHER_SG" --security-group-rule-ids "$RULE_ID" 2>/dev/null || \
-                            aws ec2 revoke-security-group-egress --region $REGION \
-                              --group-id "$OTHER_SG" --security-group-rule-ids "$RULE_ID" 2>/dev/null || true
-                          done
-                        done
-                        # Retry SG deletion (ALB ENIs may still be releasing)
-                        for k in $(seq 1 6); do
-                          aws ec2 delete-security-group --group-id "$SG_ID" --region $REGION 2>/dev/null && echo "  Deleted $SG_ID" && break
-                          echo "  SG $SG_ID still has dependencies, retrying... ($((k * 5))s)"
-                          sleep 5
-                        done
-                      done
-                    fi
-                    # 3. Controllers — safe to remove now that ALBs and their SGs are gone.
-                    helm uninstall aws-load-balancer-controller -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
-                    # Wait for External DNS to sync the Ingress deletion and remove Route53 record.
-                    # External DNS default sync interval is 1 minute; 30s is usually enough since
-                    # the Ingress was deleted several minutes ago during helm uninstall + ALB wait.
-                    echo "Waiting 30s for External DNS to sync DNS record deletion..."
-                    sleep 30
-                    helm uninstall external-dns -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
-                    helm uninstall cluster-autoscaler -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
-                    helm uninstall kueue -n kueue-system --ignore-not-found --wait --timeout 3m || true
-                    # Delete AppWrapper custom resources before CRDs (finalizers would block CRD deletion)
-                    kubectl delete appwrappers --all -A --ignore-not-found || true
-                    kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml \
-                      --ignore-not-found || true
-                    # Clean up SSM parameter (created by install script, not CF)
-                    aws ssm delete-parameter \
-                      --name "/${CLUSTER_NAME}/platforma/admin-password" \
-                      --region $REGION 2>/dev/null || true
-                    echo "Teardown complete."
-                    exit 0
-                  fi
-
-                  # --- INSTALL PATH ---
-
-                  # 0. Pre-flight: check AWS On-Demand vCPU quota is sufficient.
-                  #    Kueue quota is aligned to this — if the account limit is lower,
-                  #    admitted workloads will hang waiting for nodes that never provision.
+                  # Pre-flight: check AWS On-Demand vCPU quota is sufficient.
+                  # Kueue quota is aligned to this — if the account limit is lower,
+                  # admitted workloads will hang waiting for nodes that never provision.
                   echo "Checking AWS On-Demand Standard vCPU quota..."
                   VCPU_QUOTA=$(aws service-quotas get-service-quota \
                     --service-code ec2 \
@@ -1896,7 +1911,12 @@ Resources:
                     echo "vCPU quota OK: $VCPU_QUOTA_INT available, $VCPU_NEEDED needed."
                   fi
 
-                  # 1. Kueue
+                # ---------------------------------------------------------------
+                # Block 2: KUEUE + APPWRAPPER
+                # ---------------------------------------------------------------
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [2/6] KUEUE + APPWRAPPER ==="
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
                     --version $KUEUE_VERSION \
                     -n kueue-system --create-namespace \
@@ -1914,18 +1934,21 @@ Resources:
                     --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[1]=kueue-system' \
                     --set metrics.enableClusterQueueResources=true \
                     --atomic --timeout 5m
-
-                  # 2. AppWrapper controller
                   kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml
                   kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
-                  # 2b. Delete AppWrapper webhooks — they inject IAM ARN as a label, which is
-                  #     invalid in Kubernetes (colons not allowed). Kueue handles admission instead.
+                  # Delete AppWrapper webhooks — they inject IAM ARN as a label, which is
+                  # invalid in Kubernetes (colons not allowed). Kueue handles admission instead.
                   kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
                   kubectl delete mutatingwebhookconfiguration appwrapper-mutating-webhook-configuration --ignore-not-found
 
-                  # 3. Cluster Autoscaler
-                  # 3a. Tag node group ASGs for autodiscovery. CF cannot use !Sub in map keys,
-                  #     so k8s.io/cluster-autoscaler/$CLUSTER_NAME must be applied here via CLI.
+                # ---------------------------------------------------------------
+                # Block 3: ASG TAGS + CLUSTER AUTOSCALER
+                # ---------------------------------------------------------------
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [3/6] ASG TAGS + CLUSTER AUTOSCALER ==="
+                  # Tag node group ASGs for autodiscovery. CF cannot use !Sub in map keys,
+                  # so k8s.io/cluster-autoscaler/$CLUSTER_NAME must be applied here via CLI.
                   for NG in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --region $REGION \
                     --query nodegroups --output text); do
                     ASG=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG \
@@ -1940,7 +1963,6 @@ Resources:
                       "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/$CLUSTER_NAME,Value=owned,PropagateAtLaunch=false"
                     echo "Tagged ASG $ASG (nodegroup $NG)"
                   done
-
                   helm repo add autoscaler https://kubernetes.github.io/autoscaler
                   helm repo update
                   helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
@@ -1960,8 +1982,14 @@ Resources:
                     --set extraArgs.expander=least-waste \
                     --atomic --timeout 5m
 
-                  # 4. External DNS (installed before ALB Controller so its Service is created
-                  #    before the ALB mutating webhook is registered)
+                # ---------------------------------------------------------------
+                # Block 4: EXTERNAL DNS
+                # (installed before ALB Controller so its Service is created
+                # before the ALB mutating webhook is registered)
+                # ---------------------------------------------------------------
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [4/6] EXTERNAL DNS ==="
                   helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
                   helm repo update
                   helm upgrade --install external-dns external-dns/external-dns \
@@ -1976,7 +2004,12 @@ Resources:
                     --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \
                     --atomic --timeout 3m
 
-                  # 5. AWS Load Balancer Controller
+                # ---------------------------------------------------------------
+                # Block 5: ALB CONTROLLER + WEBHOOK PROBE
+                # ---------------------------------------------------------------
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [5/6] ALB CONTROLLER ==="
                   helm repo add eks https://aws.github.io/eks-charts
                   helm repo update
                   helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
@@ -1990,7 +2023,6 @@ Resources:
                     --set vpcId=$VPC_ID \
                     --set replicaCount=1 \
                     --atomic --timeout 5m
-
                   # Wait for ALB webhook to be ready. The webhook's CA bundle must be
                   # propagated to the API server before any Ingress/Service creation.
                   # `rollout status` only checks the pod — probe the webhook directly.
@@ -2029,38 +2061,44 @@ Resources:
                     sleep 5
                   done
 
-                  # 6. Platforma (optional — skipped when DEPLOY_PLATFORMA=false)
-                  if [ "$DEPLOY_PLATFORMA" = "true" ]; then
-                    kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+                # ---------------------------------------------------------------
+                # Block 6: PLATFORMA
+                # Skipped when DEPLOY_PLATFORMA=false.
+                # ---------------------------------------------------------------
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  [ "$DEPLOY_PLATFORMA" != "true" ] && exit 0
+                  echo "=== [6/6] PLATFORMA ==="
+                  kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
-                    # License secret
-                    kubectl create secret generic platforma-license \
-                      -n $NAMESPACE \
-                      --from-literal=MI_LICENSE="$LICENSE_KEY" \
-                      --dry-run=client -o yaml | kubectl apply -f -
+                  # License secret
+                  kubectl create secret generic platforma-license \
+                    -n $NAMESPACE \
+                    --from-literal=MI_LICENSE="$LICENSE_KEY" \
+                    --dry-run=client -o yaml | kubectl apply -f -
 
-                    # Auth secret (htpasswd mode only)
-                    if [ "$AUTH_METHOD" = "htpasswd" ]; then
-                      if [ -z "$HTPASSWD_CONTENT" ]; then
-                        echo "No HtpasswdContent provided — generating random admin password"
-                        ADMIN_PASSWORD=$(openssl rand -base64 12)
-                        HTPASSWD_CONTENT="admin:$(openssl passwd -apr1 "$ADMIN_PASSWORD")"
-                        aws ssm put-parameter \
-                          --name "/${CLUSTER_NAME}/platforma/admin-password" \
-                          --type SecureString \
-                          --value "$ADMIN_PASSWORD" \
-                          --overwrite \
-                          --region $REGION
-                        echo "Admin password stored in SSM: /${CLUSTER_NAME}/platforma/admin-password"
-                      fi
-                      kubectl create secret generic platforma-htpasswd \
-                        -n $NAMESPACE \
-                        --from-literal=htpasswd="$HTPASSWD_CONTENT" \
-                        --dry-run=client -o yaml | kubectl apply -f -
+                  # Auth secret (htpasswd mode only)
+                  if [ "$AUTH_METHOD" = "htpasswd" ]; then
+                    if [ -z "$HTPASSWD_CONTENT" ]; then
+                      echo "No HtpasswdContent provided — generating random admin password"
+                      ADMIN_PASSWORD=$(openssl rand -base64 12)
+                      HTPASSWD_CONTENT="admin:$(openssl passwd -apr1 "$ADMIN_PASSWORD")"
+                      aws ssm put-parameter \
+                        --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                        --type SecureString \
+                        --value "$ADMIN_PASSWORD" \
+                        --overwrite \
+                        --region $REGION
+                      echo "Admin password stored in SSM: /${CLUSTER_NAME}/platforma/admin-password"
                     fi
+                    kubectl create secret generic platforma-htpasswd \
+                      -n $NAMESPACE \
+                      --from-literal=htpasswd="$HTPASSWD_CONTENT" \
+                      --dry-run=client -o yaml | kubectl apply -f -
+                  fi
 
-                    # Base values
-                    cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
+                  # Base values
+                  cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
                   environment: aws
                   storage:
                     database:
@@ -2125,55 +2163,54 @@ Resources:
                       node.kubernetes.io/pool: system
                   PLATFORMA_VALUES
 
-                    # Append auth configuration
-                    # LDAP values use --set-string to avoid YAML-special characters
-                    # (colons, hashes, braces in bind DNs) breaking the values file.
-                    HELM_ARGS=""
-                    if [ "$AUTH_METHOD" = "htpasswd" ]; then
-                      cat >> /tmp/platforma-values.yaml << AUTH_VALUES
+                  # Append auth configuration
+                  # LDAP values use --set-string to avoid YAML-special characters
+                  # (colons, hashes, braces in bind DNs) breaking the values file.
+                  HELM_ARGS=""
+                  if [ "$AUTH_METHOD" = "htpasswd" ]; then
+                    cat >> /tmp/platforma-values.yaml << AUTH_VALUES
                   auth:
                     htpasswd:
                       secretName: platforma-htpasswd
                   AUTH_VALUES
-                    elif [ "$AUTH_METHOD" = "ldap" ]; then
-                      HELM_ARGS="$HELM_ARGS --set auth.ldap.server=$LDAP_SERVER"
-                      HELM_ARGS="$HELM_ARGS --set auth.ldap.startTLS=$LDAP_START_TLS"
-                      if [ -n "$LDAP_BIND_DN" ]; then
-                        HELM_ARGS="$HELM_ARGS --set-string auth.ldap.bindDN=$LDAP_BIND_DN"
-                      fi
-                      if [ -n "$LDAP_SEARCH_USER" ]; then
-                        HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchUser=$LDAP_SEARCH_USER"
-                        HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchPassword=$LDAP_SEARCH_PASSWORD"
-                      fi
-                      if [ -n "$LDAP_SEARCH_RULES" ]; then
-                        i=0
-                        OLD_IFS="$IFS"
-                        IFS=","
-                        for rule in $LDAP_SEARCH_RULES; do
-                          IFS="$OLD_IFS"
-                          rule=$(echo "$rule" | xargs)
-                          [ -z "$rule" ] && { IFS=","; continue; }
-                          HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchRules[$i]=$rule"
-                          i=$((i + 1))
-                          IFS=","
-                        done
+                  elif [ "$AUTH_METHOD" = "ldap" ]; then
+                    HELM_ARGS="$HELM_ARGS --set auth.ldap.server=$LDAP_SERVER"
+                    HELM_ARGS="$HELM_ARGS --set auth.ldap.startTLS=$LDAP_START_TLS"
+                    if [ -n "$LDAP_BIND_DN" ]; then
+                      HELM_ARGS="$HELM_ARGS --set-string auth.ldap.bindDN=$LDAP_BIND_DN"
+                    fi
+                    if [ -n "$LDAP_SEARCH_USER" ]; then
+                      HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchUser=$LDAP_SEARCH_USER"
+                      HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchPassword=$LDAP_SEARCH_PASSWORD"
+                    fi
+                    if [ -n "$LDAP_SEARCH_RULES" ]; then
+                      i=0
+                      OLD_IFS="$IFS"
+                      IFS=","
+                      for rule in $LDAP_SEARCH_RULES; do
                         IFS="$OLD_IFS"
-                      fi
+                        rule=$(echo "$rule" | xargs)
+                        [ -z "$rule" ] && { IFS=","; continue; }
+                        HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchRules[$i]=$rule"
+                        i=$((i + 1))
+                        IFS=","
+                      done
+                      IFS="$OLD_IFS"
                     fi
-
-                    if [ -n "$PLATFORMA_IMAGE" ]; then
-                      IMG_REPO=$(echo "$PLATFORMA_IMAGE" | sed 's/:.*//')
-                      IMG_TAG=$(echo "$PLATFORMA_IMAGE" | sed 's/.*://')
-                      HELM_ARGS="$HELM_ARGS --set image.repository=$IMG_REPO --set image.tag=$IMG_TAG"
-                    fi
-
-                    helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-                      --version $PLATFORMA_VERSION \
-                      -n $NAMESPACE \
-                      -f /tmp/platforma-values.yaml \
-                      $HELM_ARGS \
-                      --atomic --timeout 10m
                   fi
+
+                  if [ -n "$PLATFORMA_IMAGE" ]; then
+                    IMG_REPO=$(echo "$PLATFORMA_IMAGE" | sed 's/:.*//')
+                    IMG_TAG=$(echo "$PLATFORMA_IMAGE" | sed 's/.*://')
+                    HELM_ARGS="$HELM_ARGS --set image.repository=$IMG_REPO --set image.tag=$IMG_TAG"
+                  fi
+
+                  helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
+                    --version $PLATFORMA_VERSION \
+                    -n $NAMESPACE \
+                    -f /tmp/platforma-values.yaml \
+                    $HELM_ARGS \
+                    --atomic --timeout 10m
             post_build:
               commands:
                 - |

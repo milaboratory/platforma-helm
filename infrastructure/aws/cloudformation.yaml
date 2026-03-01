@@ -48,7 +48,7 @@ Metadata:
           - LdapSearchUser
           - LdapSearchPassword
       - Label:
-          default: 'Kueue resource quotas'
+          default: 'Workload capacity'
         Parameters:
           - ComputeFamily
       - Label:
@@ -72,7 +72,7 @@ Metadata:
       VpcCidr:
         default: VPC CIDR (new VPC only)
       ComputeFamily:
-        default: 'Compute family (small / medium / large / xlarge)'
+        default: 'How many jobs run simultaneously'
       DeployPlatforma:
         default: 'Deploy Platforma (false = infrastructure + controllers only)'
       LicenseKey:
@@ -262,18 +262,19 @@ Parameters:
     Description: CIDR block for new VPC (ignored if VpcId is provided)
 
   # --- Node groups ---
-  # --- Kueue resource quotas ---
+  # --- Workload capacity ---
   ComputeFamily:
     Type: String
     Default: medium
     AllowedValues: [small, medium, large, xlarge]
     Description: >
-      Max concurrent batch capacity, expressed as equivalent r5.8xlarge (32 vCPU / 256 GiB) nodes.
-      small:  4 large | 8 medium | 16 small nodes  — request ~200 On-Demand vCPU from AWS.
-      medium: 8 large | 16 medium | 32 small nodes  — request ~400 On-Demand vCPU from AWS.
-      large:  16 large | 32 medium | 64 small nodes  — request ~800 On-Demand vCPU from AWS.
-      xlarge: 32 large | 64 medium | 128 small nodes — request ~1600 On-Demand vCPU from AWS.
-      UI queue is always batch / 4.
+      How many analysis jobs can run simultaneously.
+      small:  4 large jobs, or 8 medium, or 16 small — for small teams or testing.
+      medium: 8 large jobs, or 16 medium, or 32 small — for mid-sized research groups.
+      large:  16 large jobs, or 32 medium, or 64 small — for large research groups.
+      xlarge: 32 large jobs, or 64 medium, or 128 small — for enterprise deployments.
+      Before deploying, request the corresponding AWS On-Demand vCPU quota:
+      small ~200 vCPU, medium ~400 vCPU, large ~800 vCPU, xlarge ~1600 vCPU.
 
   # --- Storage ---
   EfsPerformanceMode:
@@ -350,6 +351,35 @@ Mappings:
       BatchMemoryGi: '8192'
       UiCpu: '256'
       UiMemoryGi: '1024'
+
+# =============================================================================
+# Mappings
+# =============================================================================
+Mappings:
+  # Kueue ClusterQueue quotas per workload capacity family.
+  # Quota is aligned to the AWS On-Demand vCPU quota you request for each tier.
+  # UI quota is fixed at 16 x t3.xlarge = 64 vCPU / 256 GiB regardless of family.
+  ComputeFamily:
+    small:
+      BatchCpu: '128'
+      BatchMemoryGi: '1024'
+      UiCpu: '64'
+      UiMemoryGi: '256'
+    medium:
+      BatchCpu: '256'
+      BatchMemoryGi: '2048'
+      UiCpu: '64'
+      UiMemoryGi: '256'
+    large:
+      BatchCpu: '512'
+      BatchMemoryGi: '4096'
+      UiCpu: '64'
+      UiMemoryGi: '256'
+    xlarge:
+      BatchCpu: '1024'
+      BatchMemoryGi: '8192'
+      UiCpu: '64'
+      UiMemoryGi: '256'
 
 # =============================================================================
 # Conditions

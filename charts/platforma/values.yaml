@@ -31,7 +31,7 @@ imagePullSecrets: []
 # =============================================================================
 # ENVIRONMENT
 # =============================================================================
-# Cloud environment hint. Controls automatic StorageClass creation:
+# Cloud environment hint. Controls defaults applied to values and resources to be created:
 #   aws: creates gp3 (EBS) and efs-platforma (EFS) StorageClasses
 #   gcp: no auto-created resources (GKE ships with required StorageClasses)
 #   "": vanilla K8s — no cloud-specific resources created

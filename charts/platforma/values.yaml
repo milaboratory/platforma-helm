@@ -87,6 +87,9 @@ auth:
 
     # -- Direct bind: DN template where %u is replaced with the username
     # Example: "cn=%u,ou=users,dc=example,dc=com"
+    # When user authenticates, main platforma pod puts user's login in 
+    # place of %u and calls LDAP.Bina method using password user provided.
+    # If LDAP replies OK, the user is allowed to login into Desktop App.
     bindDN: ""
 
     # -- Search bind: rules to find user entries

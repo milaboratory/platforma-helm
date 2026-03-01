@@ -286,6 +286,22 @@
           "properties": {
             "createClusterResources": { "type": "boolean", "default": true },
             "clusterResourceName": { "type": "string" },
+            "provisioningRequest": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean", "default": false },
+                "retryStrategy": {
+                  "type": "object",
+                  "properties": {
+                    "backoffLimitCount": { "type": "integer" },
+                    "backoffBaseSeconds": { "type": "integer" },
+                    "backoffMaxSeconds": { "type": "integer" }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
             "resources": {
               "type": "object",
               "properties": {

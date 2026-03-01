@@ -1,0 +1,41 @@
+{{- if and (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources .Values.kueue.dedicated.provisioningRequest.enabled }}
+# =============================================================================
+# ProvisioningRequest integration for batch queue
+# =============================================================================
+# Kueue creates ProvisioningRequest CRs before admitting batch jobs.
+# Cluster Autoscaler pre-provisions nodes, then Kueue admits the job.
+# Benefit: quota not consumed during scale-up, immediate pod scheduling.
+#
+# Requires:
+#   - Cluster Autoscaler with --feature-gates=ProvisioningRequestsEnabled=true
+#   - ProvisioningRequest CRD (installed by CA chart automatically)
+# =============================================================================
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ProvisioningRequestConfig
+metadata:
+  name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-pr-config
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  provisioningClassName: queued-provisioning
+  {{- with .Values.kueue.dedicated.provisioningRequest.retryStrategy }}
+  retryStrategy:
+    backoffLimitCount: {{ .backoffLimitCount }}
+    backoffBaseSeconds: {{ .backoffBaseSeconds }}
+    backoffMaxSeconds: {{ .backoffMaxSeconds }}
+  {{- end }}
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: AdmissionCheck
+metadata:
+  name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-provisioning
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  controllerName: kueue.x-k8s.io/provisioning-request
+  parameters:
+    apiGroup: kueue.x-k8s.io
+    kind: ProvisioningRequestConfig
+    name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-pr-config
+{{- end }}

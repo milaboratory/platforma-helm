@@ -1700,6 +1700,8 @@ Resources:
             Value: '1.20.0'
           - Name: ALB_CONTROLLER_VERSION
             Value: '3.0.0'
+          - Name: COMPUTE_FAMILY
+            Value: !Ref ComputeFamily
           - Name: UI_QUEUE_CPU
             Value: !FindInMap [ComputeFamily, !Ref ComputeFamily, UiCpu]
           - Name: UI_QUEUE_MEMORY_GI
@@ -1868,6 +1870,30 @@ Resources:
                   fi
 
                   # --- INSTALL PATH ---
+
+                  # 0. Pre-flight: check AWS On-Demand vCPU quota is sufficient.
+                  #    Kueue quota is aligned to this — if the account limit is lower,
+                  #    admitted workloads will hang waiting for nodes that never provision.
+                  echo "Checking AWS On-Demand Standard vCPU quota..."
+                  VCPU_QUOTA=$(aws service-quotas get-service-quota \
+                    --service-code ec2 \
+                    --quota-code L-1216C47A \
+                    --region $REGION \
+                    --query 'Quota.Value' --output text 2>/dev/null || echo "0")
+                  VCPU_QUOTA_INT=${VCPU_QUOTA%.*}
+                  VCPU_NEEDED=$((BATCH_QUEUE_CPU + UI_QUEUE_CPU))
+                  if [ "$VCPU_QUOTA_INT" -lt "$VCPU_NEEDED" ]; then
+                    echo "ERROR: AWS On-Demand Standard vCPU quota ($VCPU_QUOTA_INT) is less than"
+                    echo "  required for ComputeFamily=$COMPUTE_FAMILY ($VCPU_NEEDED vCPU needed:"
+                    echo "  batch=$BATCH_QUEUE_CPU + ui=$UI_QUEUE_CPU)."
+                    echo ""
+                    echo "  Request a quota increase at:"
+                    echo "  https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A"
+                    echo ""
+                    echo "  Or select a smaller ComputeFamily in the CloudFormation stack parameters."
+                    exit 1
+                  fi
+                  echo "vCPU quota OK: $VCPU_QUOTA_INT available, $VCPU_NEEDED needed."
 
                   # 1. Kueue
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \

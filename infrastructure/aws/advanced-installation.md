@@ -13,6 +13,33 @@ For the recommended CloudFormation setup (all infrastructure and controllers man
 - Python 3 (used in Step 7 for ACM certificate validation record extraction)
 - A Route53 hosted zone with a registered domain
 
+### AWS On-Demand vCPU quota
+
+The node groups can scale up to 32 nodes per batch group. At full capacity the cluster needs ~400 On-Demand Standard vCPU (m5/r5 instances). The AWS default quota for a fresh account is 32 vCPU — request an increase before deploying.
+
+Check your current quota:
+
+```bash
+aws service-quotas get-service-quota \
+  --service-code ec2 \
+  --quota-code L-1216C47A \
+  --region $AWS_REGION \
+  --query 'Quota.Value' --output text
+```
+
+If the value is below your target capacity, open a quota increase request:
+[Service Quotas console → EC2 → Running On-Demand Standard instances](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A)
+
+Recommended minimums by workload size:
+
+| Workload | vCPU needed | Approx. concurrent jobs |
+|----------|-------------|-------------------------|
+| Small team / testing | 200 | 4 large or 16 small |
+| Mid-sized group | 400 | 8 large or 32 small |
+| Large group | 800 | 16 large or 64 small |
+
+Quota increases are typically approved within minutes to a few hours.
+
 ## Configuration
 
 Set these variables before running any commands. Every step references them.

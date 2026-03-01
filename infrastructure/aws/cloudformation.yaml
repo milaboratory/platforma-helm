@@ -2006,10 +2006,11 @@ Resources:
                   # Wait for ALB webhook to be ready. The webhook's CA bundle must be
                   # propagated to the API server before any Ingress/Service creation.
                   # `rollout status` only checks the pod — probe the webhook directly.
+                  # Note: probe YAML is written to a file before the loop to avoid a
+                  # dash (sh) bug where a heredoc inside a for loop causes
+                  # "Syntax error: redirection unexpected" after break.
                   kubectl rollout status deployment/aws-load-balancer-controller -n $NAMESPACE --timeout=120s
-                  echo "Waiting for ALB webhook to become ready..."
-                  for i in $(seq 1 30); do
-                    if kubectl create -f - --dry-run=server <<'PROBE' 2>/dev/null; then
+                  cat > /tmp/alb-probe.yaml << 'PROBE'
                   apiVersion: networking.k8s.io/v1
                   kind: Ingress
                   metadata:
@@ -2030,6 +2031,9 @@ Resources:
                                   port:
                                     number: 80
                   PROBE
+                  echo "Waiting for ALB webhook to become ready..."
+                  for i in $(seq 1 30); do
+                    if kubectl create -f /tmp/alb-probe.yaml --dry-run=server 2>/dev/null; then
                       echo "  ALB webhook ready."
                       break
                     fi
@@ -2155,12 +2159,17 @@ Resources:
                       fi
                       if [ -n "$LDAP_SEARCH_RULES" ]; then
                         i=0
-                        IFS=',' read -ra RULES <<< "$LDAP_SEARCH_RULES"
-                        for rule in "${RULES[@]}"; do
+                        OLD_IFS="$IFS"
+                        IFS=","
+                        for rule in $LDAP_SEARCH_RULES; do
+                          IFS="$OLD_IFS"
                           rule=$(echo "$rule" | xargs)
+                          [ -z "$rule" ] && { IFS=","; continue; }
                           HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchRules[$i]=$rule"
                           i=$((i + 1))
+                          IFS=","
                         done
+                        IFS="$OLD_IFS"
                       fi
                     fi
 

@@ -416,37 +416,36 @@ Parameters:
   # These don't limit individual jobs — they cap total concurrent resource usage.
   UiQueueCpu:
     Type: Number
-    Default: 8
+    Default: 64
     MinValue: 1
     Description: >
       Max simultaneous CPU across all UI queue workloads (ClusterQueue quota).
-      Default (8) fits within the eu-central-1 On-Demand vCPU quota (64).
-      For production workloads, request a quota increase and raise this value.
+      Default (64) = batch / 4. Ensure your On-Demand vCPU quota is sufficient.
 
   UiQueueMemoryGi:
     Type: Number
-    Default: 32
+    Default: 256
     MinValue: 1
     Description: >
       Max simultaneous memory (GiB) across all UI queue workloads.
-      Default (32) = UiQueueCpu x 4 GiB (m5 instance ratio).
+      Default (256) = UiQueueCpu x 4 GiB (m5 instance ratio).
 
   BatchQueueCpu:
     Type: Number
-    Default: 32
+    Default: 256
     MinValue: 1
     Description: >
       Max simultaneous CPU across all batch queue workloads (ClusterQueue quota).
-      Default (32) fits within the eu-central-1 On-Demand vCPU quota (64).
-      For production workloads, request a quota increase and raise this value.
+      Default (256) matches batch ASG capacity (32 x m5.2xlarge).
+      Ensure your On-Demand vCPU quota is sufficient.
 
   BatchQueueMemoryGi:
     Type: Number
-    Default: 128
+    Default: 1024
     MinValue: 1
     Description: >
       Max simultaneous memory (GiB) across all batch queue workloads.
-      Default (128) = BatchQueueCpu x 4 GiB (m5 instance ratio).
+      Default (1024) = BatchQueueCpu x 4 GiB (m5 instance ratio).
 
   # --- Storage ---
   EfsPerformanceMode:

@@ -6,26 +6,9 @@
 # =============================================================================
 
 {{- if .Values.storage.workspace.efs.enabled }}
-# -- AWS EFS PV + PVC
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: {{ include "platforma.workspacePvName" . }}
-  labels:
-    {{- include "platforma.labels" . | nindent 4 }}
-    app.kubernetes.io/component: workspace
-spec:
-  capacity:
-    storage: 1Pi  # EFS is elastic
-  volumeMode: Filesystem
-  accessModes:
-    - ReadWriteMany
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
-  csi:
-    driver: efs.csi.aws.com
-    volumeHandle: {{ .Values.storage.workspace.efs.fileSystemId }}:{{ .Values.storage.workspace.efs.path | default "/" }}
+# -- AWS EFS PVC (dynamic provisioning via efs-platforma StorageClass)
+# The StorageClass (created in storageclasses.yaml) uses EFS Access Points
+# with uid=1010/gid=1010, so no chown init job is needed.
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -40,8 +23,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteMany
-  storageClassName: ""
-  volumeName: {{ include "platforma.workspacePvName" . }}
+  storageClassName: efs-platforma
   resources:
     requests:
       storage: 1Pi

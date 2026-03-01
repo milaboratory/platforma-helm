@@ -291,18 +291,18 @@ kueue:
     # -- Max simultaneous resources per queue (ClusterQueue quotas)
     # These cap total concurrent usage, not individual job limits.
     #
-    # WARNING: Defaults match the AWS eu-central-1 On-Demand vCPU quota (64 vCPUs)
-    # minus system overhead. For production workloads, you MUST:
-    #   1. Request an AWS/GCP quota increase for your region
-    #   2. Increase these values to match your actual capacity
-    # See: https://docs.aws.amazon.com/servicequotas/latest/userguide/request-quota-increase.html
+    # Defaults match batch ASG capacity (32 x m5.2xlarge).
+    # Your cloud provider's vCPU quota must be sufficient to provision
+    # this many resources. If not, request a quota increase:
+    # AWS: https://docs.aws.amazon.com/servicequotas/latest/userguide/request-quota-increase.html
+    # GCP: https://cloud.google.com/compute/docs/resource-quotas
     resources:
       ui:
-        cpu: 8
-        memory: 32Gi
+        cpu: 64
+        memory: 256Gi
       batch:
-        cpu: 32
-        memory: 128Gi
+        cpu: 256
+        memory: 1024Gi
 
   # -- Shared mode configuration
   # Point at existing Kueue resources managed outside this chart.

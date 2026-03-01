@@ -87,17 +87,16 @@ Kueue Resources Created:
 - LocalQueue: {{ include "platforma.kueue.uiQueueName" . }}
 - LocalQueue: {{ include "platforma.kueue.batchQueueName" . }}
 
-  ⚠️  RESOURCE QUOTA WARNING
+  ⚠️  RESOURCE QUOTA CHECK
   Current limits (ClusterQueue quotas):
     UI:    {{ .Values.kueue.dedicated.resources.ui.cpu }} CPU, {{ .Values.kueue.dedicated.resources.ui.memory }} memory
     Batch: {{ .Values.kueue.dedicated.resources.batch.cpu }} CPU, {{ .Values.kueue.dedicated.resources.batch.memory }} memory
 
-  Defaults are based on the AWS eu-central-1 On-Demand vCPU quota (64 vCPUs).
-  For production bioinformatics workloads, these limits are NOT enough.
-  To increase:
-    1. Request a quota increase from your cloud provider
-    2. Set kueue.dedicated.resources.batch.cpu / memory to match your capacity
-    3. Set kueue.dedicated.resources.ui.cpu / memory (recommended: batch / 4)
+  Ensure your cloud provider vCPU quota can provision this many resources.
+  Jobs exceeding the quota will queue until capacity is available.
+  To adjust:
+    kueue.dedicated.resources.batch.cpu / memory
+    kueue.dedicated.resources.ui.cpu / memory (recommended: batch / 4)
 {{- end }}
 
 =============================================================================

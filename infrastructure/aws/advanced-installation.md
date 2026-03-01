@@ -253,11 +253,8 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
   --set extraArgs.scale-down-delay-after-add=10m \
   --set extraArgs.scale-down-unneeded-time=10m \
   --set extraArgs.scale-down-utilization-threshold=0.5 \
-  --set extraArgs.expander=least-waste \
-  --set "extraArgs.feature-gates=ProvisioningRequestsEnabled=true"
+  --set extraArgs.expander=least-waste
 ```
-
-The `ProvisioningRequestsEnabled` feature gate allows Kueue to pre-provision nodes before admitting batch jobs (see Step 10).
 
 ### Configuration options
 

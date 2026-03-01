@@ -548,6 +548,13 @@ Rules:
     Assertions:
       - Assert: !Not [!Equals [!Ref LdapServer, '']]
         AssertDescription: LdapServer is required when AuthMethod is ldap
+  ExistingVpcRequiresSubnets:
+    RuleCondition: !Not [!Equals [!Ref VpcId, '']]
+    Assertions:
+      - Assert: !Not [!Contains [!Ref PrivateSubnetIds, '']]
+        AssertDescription: >
+          PrivateSubnetIds requires exactly 3 subnet IDs when using an existing VPC.
+          Provide 3 comma-separated private subnet IDs (one per AZ).
 
 # =============================================================================
 # Resources

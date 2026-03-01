@@ -1457,7 +1457,7 @@ Resources:
       NodegroupName: batch-2xlarge
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - r5.6xlarge
+        - r5.4xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0

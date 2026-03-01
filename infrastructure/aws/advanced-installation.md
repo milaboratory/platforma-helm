@@ -101,7 +101,7 @@ This creates:
 - **Batch-medium** node group: 0-32x m5.2xlarge (8 vCPU / 32 GiB, tainted `dedicated=batch`)
 - **Batch-large** node group: 0-32x m5.4xlarge (16 vCPU / 64 GiB, tainted `dedicated=batch`)
 - **Batch-xlarge** node group: 0-32x m5.8xlarge (32 vCPU / 128 GiB, tainted `dedicated=batch`)
-- **Batch-2xlarge** node group: 0-32x r5.6xlarge (24 vCPU / 192 GiB, tainted `dedicated=batch`)
+- **Batch-2xlarge** node group: 0-32x r5.4xlarge (16 vCPU / 128 GiB, tainted `dedicated=batch`)
 - **Batch-4xlarge** node group: 0-32x r5.8xlarge (32 vCPU / 256 GiB, tainted `dedicated=batch`)
 - EBS CSI driver addon (for gp3 PVCs)
 - EFS CSI driver addon (for shared workspace)

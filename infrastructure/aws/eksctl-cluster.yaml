@@ -130,9 +130,9 @@ managedNodeGroups:
       k8s.io/cluster-autoscaler/platforma-cluster: "owned"
 
   # Batch nodes - memory-intensive workloads (scales from 0)
-  # r5.6xlarge: 24 vCPU / 192 GiB
+  # r5.4xlarge: 16 vCPU / 128 GiB
   - name: batch-2xlarge
-    instanceType: r5.6xlarge
+    instanceType: r5.4xlarge
     desiredCapacity: 0
     minSize: 0
     maxSize: 32

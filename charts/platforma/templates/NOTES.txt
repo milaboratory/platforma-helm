@@ -92,9 +92,20 @@ Kueue Resources Created:
     UI:    {{ .Values.kueue.dedicated.resources.ui.cpu }} CPU, {{ .Values.kueue.dedicated.resources.ui.memory }} memory
     Batch: {{ .Values.kueue.dedicated.resources.batch.cpu }} CPU, {{ .Values.kueue.dedicated.resources.batch.memory }} memory
 
-  Ensure your cloud provider vCPU quota can provision this many resources.
-  Jobs exceeding the quota will queue until capacity is available.
-  To adjust:
+  If your cloud provider vCPU quota is lower than these limits, Kueue will
+  admit jobs but nodes will never provision — workloads will hang silently.
+{{- if eq .Values.environment "aws" }}
+
+  Check your AWS On-Demand Standard vCPU quota:
+    aws service-quotas get-service-quota \
+      --service-code ec2 --quota-code L-1216C47A \
+      --region <your-region> --query 'Quota.Value'
+
+  Request increase:
+    https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A
+{{- end }}
+
+  To adjust quotas:
     kueue.dedicated.resources.batch.cpu / memory
     kueue.dedicated.resources.ui.cpu / memory (recommended: batch / 4)
 {{- end }}

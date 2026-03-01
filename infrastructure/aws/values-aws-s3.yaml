@@ -19,16 +19,19 @@ storage:
   main:
     # S3 bucket for results — Desktop App downloads data from here.
     # IRSA handles authentication (no access keys needed).
+    type: s3
     s3:
       bucket: ""    # --set storage.main.s3.bucket=<S3BucketName>
       region: ""    # --set storage.main.s3.region=<Region>
 
 # Authentication — configure exactly one method.
-# htpasswd: create a K8s secret first, then reference it.
+# Inline credentials (simplest): chart auto-generates the htpasswd secret.
+# Existing secret: create a K8s secret first, then set secretName.
 # LDAP: uncomment and provide server + bind/search configuration.
 auth:
   htpasswd:
-    secretName: ""  # --set auth.htpasswd.secretName=platforma-htpasswd
+    credentials: []  # --set auth.htpasswd.credentials[0].username=admin --set auth.htpasswd.credentials[0].password=<password>
+    # secretName: ""  # alternative: reference an existing htpasswd secret
   # ldap:
   #   server: ""            # --set auth.ldap.server=ldap://ldap.example.com:389
   #   startTLS: false

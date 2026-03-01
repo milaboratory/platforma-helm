@@ -2103,6 +2103,7 @@ Resources:
                     --set extraArgs.scale-down-unneeded-time=10m \
                     --set extraArgs.scale-down-utilization-threshold=0.5 \
                     --set extraArgs.expander=least-waste \
+                    --set "extraArgs.feature-gates=ProvisioningRequestsEnabled=true" \
                     --atomic --timeout 5m
 
                   # 4. External DNS (installed before ALB Controller so its Service is created
@@ -2254,6 +2255,8 @@ Resources:
                             value: batch
                             effect: NoSchedule
                     dedicated:
+                      provisioningRequest:
+                        enabled: true
                       resources:
                         ui:
                           cpu: $UI_QUEUE_CPU

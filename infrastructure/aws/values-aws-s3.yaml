@@ -76,6 +76,10 @@ kueue:
           value: batch
           effect: NoSchedule
   dedicated:
+    # Pre-provision nodes before admitting batch jobs.
+    # Requires Cluster Autoscaler with ProvisioningRequestsEnabled=true feature gate.
+    provisioningRequest:
+      enabled: true
     # Max simultaneous resources per queue. Increase to allow more parallel jobs.
     # UI default (4 CPU / 16Gi) ≈ 1 × t3.xlarge.
     # Batch default (60 CPU / 240Gi) ≈ 7 × m5.2xlarge.

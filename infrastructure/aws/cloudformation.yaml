@@ -631,7 +631,7 @@ Resources:
   EksClusterRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-cluster-role'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-cluster-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -738,7 +738,7 @@ Resources:
   NodeGroupRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-node-role'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-node-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -760,7 +760,7 @@ Resources:
   EbsCsiDriverRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-ebs-csi-irsa'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-ebs-csi-irsa'
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -789,7 +789,7 @@ Resources:
   EfsCsiDriverRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-efs-csi-irsa'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-efs-csi-irsa'
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -818,7 +818,7 @@ Resources:
   PlatformaIrsaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-platforma-irsa'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-platforma-irsa'
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -867,7 +867,7 @@ Resources:
   PlatformaJobsIrsaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-platforma-jobs-irsa'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-platforma-jobs-irsa'
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -916,7 +916,7 @@ Resources:
   AutoscalerIrsaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-autoscaler-irsa'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-autoscaler-irsa'
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -984,7 +984,7 @@ Resources:
   ALBControllerPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      ManagedPolicyName: !Sub '${ClusterName}-alb-controller-policy'
+      ManagedPolicyName: !Sub '${ClusterName}-${AWS::Region}-alb-controller-policy'
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -1164,7 +1164,7 @@ Resources:
   ALBControllerRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-alb-controller-irsa'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-alb-controller-irsa'
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -1194,7 +1194,7 @@ Resources:
   ExternalDNSPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      ManagedPolicyName: !Sub '${ClusterName}-external-dns-policy'
+      ManagedPolicyName: !Sub '${ClusterName}-${AWS::Region}-external-dns-policy'
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -1214,7 +1214,7 @@ Resources:
   ExternalDNSRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-external-dns-irsa'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-external-dns-irsa'
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -1552,7 +1552,7 @@ Resources:
   HelmDeployerRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-helm-deployer'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-helm-deployer'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -2184,7 +2184,7 @@ Resources:
   TriggerHelmDeployRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-helm-trigger'
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-helm-trigger'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

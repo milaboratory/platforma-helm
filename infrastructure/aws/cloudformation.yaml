@@ -656,6 +656,9 @@ Resources:
 
   HelmDeployerLogGroup:
     Type: AWS::Logs::LogGroup
+    # Retain on rollback so build logs survive for debugging.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub '/aws/codebuild/${ClusterName}-helm-deployer'
       RetentionInDays: 30
@@ -665,6 +668,8 @@ Resources:
 
   HelmTriggerLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub '/aws/lambda/${ClusterName}-helm-trigger'
       RetentionInDays: 14

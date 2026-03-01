@@ -654,28 +654,6 @@ Resources:
         - Key: platforma
           Value: !Ref ClusterName
 
-  HelmDeployerLogGroup:
-    Type: AWS::Logs::LogGroup
-    # Retain on rollback so build logs survive for debugging.
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      LogGroupName: !Sub '/aws/codebuild/${ClusterName}-helm-deployer'
-      RetentionInDays: 30
-      Tags:
-        - Key: platforma
-          Value: !Ref ClusterName
-
-  HelmTriggerLogGroup:
-    Type: AWS::Logs::LogGroup
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      LogGroupName: !Sub '/aws/lambda/${ClusterName}-helm-trigger'
-      RetentionInDays: 14
-      Tags:
-        - Key: platforma
-          Value: !Ref ClusterName
 
   EksCluster:
     Type: AWS::EKS::Cluster
@@ -1579,6 +1557,7 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+                  - logs:PutRetentionPolicy
                 Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-helm-deployer:*'
               # Needed to tag node group ASGs for cluster-autoscaler autodiscovery
               - Effect: Allow
@@ -1644,7 +1623,6 @@ Resources:
   # to this project (security group, subnets, NAT Gateway route).
   HelmDeployerProject:
     Type: AWS::CodeBuild::Project
-    DependsOn: HelmDeployerLogGroup
     Properties:
       Name: !Sub '${ClusterName}-helm-deployer'
       ServiceRole: !GetAtt HelmDeployerRole.Arn
@@ -1759,6 +1737,16 @@ Resources:
                 # CodeBuild command item is a separate subshell — exit 0 there
                 # would otherwise only end that item, letting subsequent items run).
                 - |
+                  # Set retention on log groups auto-created by CodeBuild/Lambda.
+                  # Done here (not as CF resources) so logs survive stack rollback
+                  # without blocking re-deployments with the same ClusterName.
+                  aws logs put-retention-policy \
+                    --log-group-name "/aws/codebuild/${CLUSTER_NAME}-helm-deployer" \
+                    --retention-in-days 30 --region $REGION 2>/dev/null || true
+                  aws logs put-retention-policy \
+                    --log-group-name "/aws/lambda/${CLUSTER_NAME}-helm-trigger" \
+                    --retention-in-days 14 --region $REGION 2>/dev/null || true
+
                   # --- TEARDOWN MODE (triggered by CloudFormation Delete) ---
                   # Uninstalls Helm releases in reverse order, waits for ALBs to
                   # be fully deleted, then exits so post_build sends SUCCESS to CF.
@@ -2231,9 +2219,7 @@ Resources:
 
   TriggerHelmDeployFunction:
     Type: AWS::Lambda::Function
-    DependsOn:
-      - HelmDeployerProject
-      - HelmTriggerLogGroup
+    DependsOn: HelmDeployerProject
     Properties:
       FunctionName: !Sub '${ClusterName}-helm-trigger'
       Runtime: python3.12

@@ -117,7 +117,7 @@ Metadata:
       BatchMaxCountPerGroup:
         default: Batch max nodes per group
       ComputeFamily:
-        default: 'Compute family (max concurrent r5.8xlarge nodes)'
+        default: 'Compute family (small / medium / large / xlarge)'
       DeployPlatforma:
         default: 'Deploy Platforma (false = infrastructure + controllers only)'
       LicenseKey:
@@ -387,15 +387,14 @@ Parameters:
   # --- Kueue resource quotas ---
   ComputeFamily:
     Type: String
-    Default: '8'
-    AllowedValues: ['4', '8', '16', '32']
+    Default: medium
+    AllowedValues: [small, medium, large, xlarge]
     Description: >
-      Number of r5.8xlarge (32 vCPU / 256 GiB) nodes that can run simultaneously
-      in the batch queue. Smaller nodes fill proportionally more slots.
-      Family 4:  128 batch CPU / 1024 GiB  — request ~200 On-Demand vCPU from AWS.
-      Family 8:  256 batch CPU / 2048 GiB  — request ~400 On-Demand vCPU from AWS.
-      Family 16: 512 batch CPU / 4096 GiB  — request ~800 On-Demand vCPU from AWS.
-      Family 32: 1024 batch CPU / 8192 GiB — request ~1600 On-Demand vCPU from AWS.
+      Max concurrent batch capacity, expressed as equivalent r5.8xlarge (32 vCPU / 256 GiB) nodes.
+      small:  4 large | 8 medium | 16 small nodes  — request ~200 On-Demand vCPU from AWS.
+      medium: 8 large | 16 medium | 32 small nodes  — request ~400 On-Demand vCPU from AWS.
+      large:  16 large | 32 medium | 64 small nodes  — request ~800 On-Demand vCPU from AWS.
+      xlarge: 32 large | 64 medium | 128 small nodes — request ~1600 On-Demand vCPU from AWS.
       UI queue is always batch / 4.
 
   # --- Storage ---
@@ -450,30 +449,25 @@ Parameters:
 # =============================================================================
 Mappings:
   # Kueue queue quotas derived from ComputeFamily.
-  # Each unit = 1 x r5.8xlarge (32 vCPU / 256 GiB), the largest batch node.
-  # Equivalent node counts per family:
-  #   Family 4:  4x r5.8xlarge  | ~5x r5.6xlarge  | 16x m5.2xlarge
-  #   Family 8:  8x r5.8xlarge  | ~10x r5.6xlarge  | 32x m5.2xlarge
-  #   Family 16: 16x r5.8xlarge | ~21x r5.6xlarge  | 64x m5.2xlarge
-  #   Family 32: 32x r5.8xlarge | ~42x r5.6xlarge  | 128x m5.2xlarge
+  # Anchored to r5.8xlarge (32 vCPU / 256 GiB) — the largest batch node.
   # Batch memory uses r5 ratio (8 GiB/vCPU). UI memory uses m5 ratio (4 GiB/vCPU).
   ComputeFamily:
-    '4':
+    small:
       BatchCpu: '128'
       BatchMemoryGi: '1024'
       UiCpu: '32'
       UiMemoryGi: '128'
-    '8':
+    medium:
       BatchCpu: '256'
       BatchMemoryGi: '2048'
       UiCpu: '64'
       UiMemoryGi: '256'
-    '16':
+    large:
       BatchCpu: '512'
       BatchMemoryGi: '4096'
       UiCpu: '128'
       UiMemoryGi: '512'
-    '32':
+    xlarge:
       BatchCpu: '1024'
       BatchMemoryGi: '8192'
       UiCpu: '256'

@@ -63,6 +63,8 @@ Metadata:
           - BatchMediumInstanceType
           - BatchLargeInstanceType
           - BatchXlargeInstanceType
+          - Batch2xlargeInstanceType
+          - Batch4xlargeInstanceType
           - BatchMaxCountPerGroup
       - Label:
           default: 'Kueue resource quotas'
@@ -100,11 +102,11 @@ Metadata:
       VpcCidr:
         default: VPC CIDR (new VPC only)
       SystemNodeInstanceType:
-        default: System instance type
+        default: 'System instance type (8 vCPU / 32 GiB)'
       SystemNodeCount:
         default: System node count
       SystemLargeNodeInstanceType:
-        default: 'System-large instance type (4 vCPU / 16 GiB)'
+        default: 'System-large instance type (16 vCPU / 64 GiB)'
       SystemLargeNodeMaxCount:
         default: System-large max node count
       UiNodeInstanceType:
@@ -119,6 +121,10 @@ Metadata:
         default: 'Batch large (16 vCPU / 64 GiB)'
       BatchXlargeInstanceType:
         default: 'Batch xlarge (32 vCPU / 128 GiB)'
+      Batch2xlargeInstanceType:
+        default: 'Batch 2xlarge (24 vCPU / 192 GiB)'
+      Batch4xlargeInstanceType:
+        default: 'Batch 4xlarge (32 vCPU / 256 GiB)'
       BatchMaxCountPerGroup:
         default: Batch max nodes per group
       UiQueueCpu:
@@ -330,8 +336,8 @@ Parameters:
   # --- Node groups ---
   SystemNodeInstanceType:
     Type: String
-    Default: t3.large
-    Description: 'System node group instance type (Platforma server, Kueue, controllers)'
+    Default: m5.2xlarge
+    Description: 'System node group instance type (Platforma server, Kueue, controllers). Must fit 8 vCPU / 16 GiB for Platforma.'
 
   SystemNodeCount:
     Type: Number
@@ -342,7 +348,7 @@ Parameters:
 
   SystemLargeNodeInstanceType:
     Type: String
-    Default: t3.xlarge
+    Default: m5.4xlarge
     Description: 'System-large node group instance type (Platforma server on large datasets)'
 
   SystemLargeNodeMaxCount:
@@ -359,7 +365,7 @@ Parameters:
 
   UiNodeMaxCount:
     Type: Number
-    Default: 4
+    Default: 16
     MinValue: 1
     MaxValue: 50
     Description: UI node group maximum autoscaling count
@@ -388,9 +394,19 @@ Parameters:
     Default: m5.8xlarge
     Description: 'Batch xlarge node group (32 vCPU / 128 GiB) — large compute jobs'
 
+  Batch2xlargeInstanceType:
+    Type: String
+    Default: r5.6xlarge
+    Description: 'Batch 2xlarge node group (24 vCPU / 192 GiB) — memory-intensive jobs'
+
+  Batch4xlargeInstanceType:
+    Type: String
+    Default: r5.8xlarge
+    Description: 'Batch 4xlarge node group (32 vCPU / 256 GiB) — largest memory-intensive jobs'
+
   BatchMaxCountPerGroup:
     Type: Number
-    Default: 16
+    Default: 32
     MinValue: 1
     MaxValue: 100
     Description: Maximum nodes per batch node group
@@ -1599,6 +1615,70 @@ Resources:
         k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
+  Batch2xlargeNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: batch-2xlarge
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - !Ref Batch2xlargeInstanceType
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !Ref BatchMaxCountPerGroup
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: batch
+      Taints:
+        - Key: dedicated
+          Value: batch
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: batch
+        k8s.io/cluster-autoscaler/enabled: 'true'
+        platforma: !Sub "${ClusterName}"
+
+  Batch4xlargeNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: batch-4xlarge
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - !Ref Batch4xlargeInstanceType
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !Ref BatchMaxCountPerGroup
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref NodeGroupLaunchTemplate
+        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: batch
+      Taints:
+        - Key: dedicated
+          Value: batch
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: batch
+        k8s.io/cluster-autoscaler/enabled: 'true'
+        platforma: !Sub "${ClusterName}"
+
   # ---------------------------------------------------------------------------
   # 5. EKS addons — CSI drivers (DependsOn: SystemNodeGroup for running pods)
   # ---------------------------------------------------------------------------
@@ -2125,6 +2205,7 @@ Resources:
                         enabled: true
                         fileSystemId: $EFS_FILE_SYSTEM_ID
                     main:
+                      type: s3
                       s3:
                         bucket: $S3_BUCKET
                         region: $REGION

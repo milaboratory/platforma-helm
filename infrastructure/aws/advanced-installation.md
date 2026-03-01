@@ -52,7 +52,7 @@ echo "Zone root:  $DOMAIN_FILTER"
 
 | File | Description |
 |------|-------------|
-| `eksctl-cluster.yaml` | EKS cluster template (5 node groups, CSI drivers). Uses `platforma-cluster` / `eu-central-1` as defaults. |
+| `eksctl-cluster.yaml` | EKS cluster template (7 node groups, CSI drivers). Uses `platforma-cluster` / `eu-central-1` as defaults. |
 | `kueue-values.yaml` | Kueue Helm values with AppWrapper enabled |
 | `values-aws-s3.yaml` | Platforma Helm values for AWS with S3 primary storage |
 
@@ -69,16 +69,18 @@ sed "s/platforma-cluster/${CLUSTER_NAME}/g; s/eu-central-1/${AWS_REGION}/g" \
 
 This creates:
 - EKS 1.34 cluster with OIDC enabled
-- **System** node group: 2x t3.large (Platforma server, Kueue, controllers)
-- **UI** node group: 0-4x t3.xlarge (interactive tasks, tainted `dedicated=ui`)
-- **Batch-medium** node group: 0-16x m5.2xlarge (8 vCPU, tainted `dedicated=batch`)
-- **Batch-large** node group: 0-16x m5.4xlarge (16 vCPU, tainted `dedicated=batch`)
-- **Batch-xlarge** node group: 0-16x m5.8xlarge (32 vCPU, tainted `dedicated=batch`)
+- **System** node group: 2x m5.2xlarge (8 vCPU / 32 GiB — Platforma server, Kueue, controllers)
+- **UI** node group: 0-16x t3.xlarge (interactive tasks, tainted `dedicated=ui`)
+- **Batch-medium** node group: 0-32x m5.2xlarge (8 vCPU / 32 GiB, tainted `dedicated=batch`)
+- **Batch-large** node group: 0-32x m5.4xlarge (16 vCPU / 64 GiB, tainted `dedicated=batch`)
+- **Batch-xlarge** node group: 0-32x m5.8xlarge (32 vCPU / 128 GiB, tainted `dedicated=batch`)
+- **Batch-2xlarge** node group: 0-32x r5.6xlarge (24 vCPU / 192 GiB, tainted `dedicated=batch`)
+- **Batch-4xlarge** node group: 0-32x r5.8xlarge (32 vCPU / 256 GiB, tainted `dedicated=batch`)
 - EBS CSI driver addon (for gp3 PVCs)
 - EFS CSI driver addon (for shared workspace)
 - Autoscaler autodiscovery tags on all node groups
 
-All three batch groups share label `node.kubernetes.io/pool=batch` and taint `dedicated=batch:NoSchedule`. Cluster Autoscaler with `--expander=least-waste` selects the smallest group that fits each pending pod.
+All five batch groups share label `node.kubernetes.io/pool=batch` and taint `dedicated=batch:NoSchedule`. Cluster Autoscaler with `--expander=least-waste` selects the smallest group that fits each pending pod. The r5 groups (2xlarge, 4xlarge) provide higher memory-to-CPU ratio for memory-intensive bioinformatics workloads.
 
 Takes ~15 minutes. Verify:
 
@@ -598,7 +600,9 @@ kubectl create secret generic platforma-license \
 
 ## Step 10: Install Platforma
 
-The `values-aws-s3.yaml` file is designed for the CloudFormation path. When installing manually, you've already created infrastructure in previous steps. The chart creates the `platforma` and `platforma-jobs` service accounts — pass the IRSA role ARNs from Step 6:
+The `values-aws-s3.yaml` file provides the base configuration. The chart creates `platforma` and `platforma-jobs` service accounts — pass IRSA role ARNs from Step 6, EFS ID from Step 2, S3 bucket from Step 6, and cert ARN from Step 7.
+
+Authentication: the simplest option is inline credentials. The chart auto-generates a bcrypt-hashed htpasswd secret from the username/password pairs. Alternatively, create a K8s secret yourself and set `auth.htpasswd.secretName`, or use LDAP.
 
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
@@ -608,6 +612,8 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set storage.workspace.efs.fileSystemId=$EFS_ID \
   --set storage.main.s3.bucket=$S3_BUCKET \
   --set storage.main.s3.region=$AWS_REGION \
+  --set auth.htpasswd.credentials[0].username=admin \
+  --set auth.htpasswd.credentials[0].password=changeme \
   --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_ROLE_ARN" \
   --set "jobServiceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_JOBS_ROLE_ARN" \
   --set ingress.enabled=true \

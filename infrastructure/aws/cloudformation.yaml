@@ -1613,6 +1613,10 @@ Resources:
                   - ec2:RevokeSecurityGroupIngress
                   - ec2:RevokeSecurityGroupEgress
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - servicequotas:GetServiceQuota
+                Resource: '*'
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -1879,21 +1883,25 @@ Resources:
                     --service-code ec2 \
                     --quota-code L-1216C47A \
                     --region $REGION \
-                    --query 'Quota.Value' --output text 2>/dev/null || echo "0")
-                  VCPU_QUOTA_INT=${VCPU_QUOTA%.*}
-                  VCPU_NEEDED=$((BATCH_QUEUE_CPU + UI_QUEUE_CPU))
-                  if [ "$VCPU_QUOTA_INT" -lt "$VCPU_NEEDED" ]; then
-                    echo "ERROR: AWS On-Demand Standard vCPU quota ($VCPU_QUOTA_INT) is less than"
-                    echo "  required for ComputeFamily=$COMPUTE_FAMILY ($VCPU_NEEDED vCPU needed:"
-                    echo "  batch=$BATCH_QUEUE_CPU + ui=$UI_QUEUE_CPU)."
-                    echo ""
-                    echo "  Request a quota increase at:"
-                    echo "  https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A"
-                    echo ""
-                    echo "  Or select a smaller ComputeFamily in the CloudFormation stack parameters."
-                    exit 1
+                    --query 'Quota.Value' --output text 2>/dev/null)
+                  if [ -z "$VCPU_QUOTA" ]; then
+                    echo "WARNING: Could not retrieve vCPU quota (check servicequotas:GetServiceQuota permission). Skipping check."
+                  else
+                    VCPU_QUOTA_INT=${VCPU_QUOTA%.*}
+                    VCPU_NEEDED=$((BATCH_QUEUE_CPU + UI_QUEUE_CPU))
+                    if [ "$VCPU_QUOTA_INT" -lt "$VCPU_NEEDED" ]; then
+                      echo "ERROR: AWS On-Demand Standard vCPU quota ($VCPU_QUOTA_INT) is less than"
+                      echo "  required for ComputeFamily=$COMPUTE_FAMILY ($VCPU_NEEDED vCPU needed:"
+                      echo "  batch=$BATCH_QUEUE_CPU + ui=$UI_QUEUE_CPU)."
+                      echo ""
+                      echo "  Request a quota increase at:"
+                      echo "  https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A"
+                      echo ""
+                      echo "  Or select a smaller ComputeFamily in the CloudFormation stack parameters."
+                      exit 1
+                    fi
+                    echo "vCPU quota OK: $VCPU_QUOTA_INT available, $VCPU_NEEDED needed."
                   fi
-                  echo "vCPU quota OK: $VCPU_QUOTA_INT available, $VCPU_NEEDED needed."
 
                   # 1. Kueue
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \

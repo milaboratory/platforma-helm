@@ -327,35 +327,6 @@ Parameters:
 # Mappings
 # =============================================================================
 Mappings:
-  # Kueue queue quotas derived from ComputeFamily.
-  # Anchored to r5.8xlarge (32 vCPU / 256 GiB) — the largest batch node.
-  # Batch memory uses r5 ratio (8 GiB/vCPU). UI memory uses m5 ratio (4 GiB/vCPU).
-  ComputeFamily:
-    small:
-      BatchCpu: '128'
-      BatchMemoryGi: '1024'
-      UiCpu: '32'
-      UiMemoryGi: '128'
-    medium:
-      BatchCpu: '256'
-      BatchMemoryGi: '2048'
-      UiCpu: '64'
-      UiMemoryGi: '256'
-    large:
-      BatchCpu: '512'
-      BatchMemoryGi: '4096'
-      UiCpu: '128'
-      UiMemoryGi: '512'
-    xlarge:
-      BatchCpu: '1024'
-      BatchMemoryGi: '8192'
-      UiCpu: '256'
-      UiMemoryGi: '1024'
-
-# =============================================================================
-# Mappings
-# =============================================================================
-Mappings:
   # Kueue ClusterQueue quotas per workload capacity family.
   # Quota is aligned to the AWS On-Demand vCPU quota you request for each tier.
   # UI quota is fixed at 16 x t3.xlarge = 64 vCPU / 256 GiB regardless of family.

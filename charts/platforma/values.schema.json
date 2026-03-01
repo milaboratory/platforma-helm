@@ -43,6 +43,17 @@
         "htpasswd": {
           "type": "object",
           "properties": {
+            "credentials": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "username": { "type": "string" },
+                  "password": { "type": "string" }
+                },
+                "required": ["username", "password"]
+              }
+            },
             "secretName": { "type": "string" },
             "secretKey": { "type": "string" }
           },
@@ -166,6 +177,7 @@
         "main": {
           "type": "object",
           "properties": {
+            "type": { "type": "string", "enum": ["", "s3", "gcs"] },
             "s3": {
               "type": "object",
               "properties": {
@@ -308,7 +320,7 @@
               },
               "additionalProperties": false
             },
-            "priorities": {
+            "workloadPriorityClasses": {
               "type": "object",
               "properties": {
                 "uiTasks": { "type": "string" },

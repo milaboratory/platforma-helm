@@ -161,7 +161,7 @@ Kueue WorkloadPriorityClass names — mode-aware
 */}}
 {{- define "platforma.kueue.priorityClassName.ui" -}}
 {{- if eq .Values.kueue.mode "shared" -}}
-{{- required "kueue.shared.priorities.uiTasks is required in shared mode" .Values.kueue.shared.priorities.uiTasks -}}
+{{- required "kueue.shared.workloadPriorityClasses.uiTasks is required in shared mode" .Values.kueue.shared.workloadPriorityClasses.uiTasks -}}
 {{- else -}}
 {{- printf "%s-ui" (include "platforma.kueue.clusterResourceName" .) -}}
 {{- end -}}
@@ -169,7 +169,7 @@ Kueue WorkloadPriorityClass names — mode-aware
 
 {{- define "platforma.kueue.priorityClassName.high" -}}
 {{- if eq .Values.kueue.mode "shared" -}}
-{{- required "kueue.shared.priorities.high is required in shared mode" .Values.kueue.shared.priorities.high -}}
+{{- required "kueue.shared.workloadPriorityClasses.high is required in shared mode" .Values.kueue.shared.workloadPriorityClasses.high -}}
 {{- else -}}
 {{- printf "%s-high" (include "platforma.kueue.clusterResourceName" .) -}}
 {{- end -}}
@@ -177,7 +177,7 @@ Kueue WorkloadPriorityClass names — mode-aware
 
 {{- define "platforma.kueue.priorityClassName.normal" -}}
 {{- if eq .Values.kueue.mode "shared" -}}
-{{- required "kueue.shared.priorities.normal is required in shared mode" .Values.kueue.shared.priorities.normal -}}
+{{- required "kueue.shared.workloadPriorityClasses.normal is required in shared mode" .Values.kueue.shared.workloadPriorityClasses.normal -}}
 {{- else -}}
 {{- printf "%s-normal" (include "platforma.kueue.clusterResourceName" .) -}}
 {{- end -}}
@@ -185,10 +185,40 @@ Kueue WorkloadPriorityClass names — mode-aware
 
 {{- define "platforma.kueue.priorityClassName.low" -}}
 {{- if eq .Values.kueue.mode "shared" -}}
-{{- required "kueue.shared.priorities.low is required in shared mode" .Values.kueue.shared.priorities.low -}}
+{{- required "kueue.shared.workloadPriorityClasses.low is required in shared mode" .Values.kueue.shared.workloadPriorityClasses.low -}}
 {{- else -}}
 {{- printf "%s-low" (include "platforma.kueue.clusterResourceName" .) -}}
 {{- end -}}
+{{- end }}
+
+{{/*
+Main storage type — required, no auto-detection
+*/}}
+{{- define "platforma.mainStorageType" -}}
+{{- .Values.storage.main.type -}}
+{{- end }}
+
+{{/*
+htpasswd secret name — resolves to existing secret or chart-generated secret.
+Returns empty string if htpasswd is not configured.
+*/}}
+{{- define "platforma.htpasswdSecretName" -}}
+{{- if .Values.auth.htpasswd.secretName -}}
+  {{- .Values.auth.htpasswd.secretName -}}
+{{- else if and .Values.auth.htpasswd.credentials (gt (len .Values.auth.htpasswd.credentials) 0) -}}
+  {{- printf "%s-htpasswd" (include "platforma.fullname" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Generate htpasswd file content from inline credentials
+*/}}
+{{- define "platforma.htpasswdFileContent" -}}
+{{- $result := "" -}}
+{{- range .Values.auth.htpasswd.credentials -}}
+{{- $result = printf "%s%s\n" $result (htpasswd .username .password) -}}
+{{- end -}}
+{{- $result -}}
 {{- end }}
 
 {{/*

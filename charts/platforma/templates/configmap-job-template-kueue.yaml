@@ -39,7 +39,7 @@ data:
         kueue.x-k8s.io/priority-class: "{{ include "platforma.kueue.priorityClassName.low" . }}"
         <<- end >>
       annotations:
-        workload.codeflare.dev.appwrapper/warmupGracePeriodDuration: "2m"
+        workload.codeflare.dev.appwrapper/warmupGracePeriodDuration: "30m"
         workload.codeflare.dev.appwrapper/failureGracePeriodDuration: "30s"
         workload.codeflare.dev.appwrapper/retryPausePeriodDuration: "45s"
         workload.codeflare.dev.appwrapper/retryLimit: "0"

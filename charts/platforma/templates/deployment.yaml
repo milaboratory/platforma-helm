@@ -172,10 +172,12 @@ spec:
             {{- if .s3.region }}
             - "--data-library-s3-region={{ .name }}={{ .s3.region }}"
             {{- end }}
+            {{- if .s3.secretRef }}
             {{- if .s3.secretRef.name }}
             {{- $envPrefix := .name | upper | replace "-" "_" | replace "." "_" }}
             - "--data-library-s3-key={{ .name }}=$(PL_DATASOURCE_S3_KEY_{{ $envPrefix }})"
             - "--data-library-s3-secret={{ .name }}=$(PL_DATASOURCE_S3_SECRET_{{ $envPrefix }})"
+            {{- end }}
             {{- end }}
             {{- if .s3.externalEndpoint }}
             - "--data-library-s3-external-endpoint={{ .name }}={{ .s3.externalEndpoint }}"
@@ -242,7 +244,7 @@ spec:
                   key: {{ .Values.storage.main.s3.secretRef.secretKeyField }}
             {{- end }}
             {{- range .Values.dataSources }}
-            {{- if and (eq .type "s3") .s3.secretRef.name }}
+            {{- if and (eq .type "s3") (and .s3.secretRef .s3.secretRef.name) }}
             {{- $envPrefix := .name | upper | replace "-" "_" | replace "." "_" }}
             - name: PL_DATASOURCE_S3_KEY_{{ $envPrefix }}
               valueFrom:

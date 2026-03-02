@@ -405,12 +405,11 @@ app:
   # -- Logging
   logging:
     # -- Persistent log storage
-    # By default, logs go to container stderr and are collected by your cluster's
-    # log driver (CloudWatch, Stackdriver, etc.). Enable persistence to write
-    # logs to a dedicated PVC with rotation — useful when cluster logging is
-    # not configured or you need logs to survive pod restarts.
+    # Logs are written to a dedicated PVC with rotation so they survive pod
+    # restarts. Set enabled=false to use only container stderr (collected by
+    # your cluster's log driver: CloudWatch, Stackdriver, etc.).
     persistence:
-      enabled: false
+      enabled: true
       size: 10Gi
       storageClass: ""      # "" = cluster default
       existingClaim: ""     # Use pre-created PVC instead of creating one

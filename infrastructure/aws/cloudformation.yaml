@@ -429,7 +429,8 @@ Parameters:
     Default: ''
     Description: >
       S3 bucket name for primary storage. Leave empty to auto-generate
-      as platforma-storage-<AccountId>-<Region>.
+      as platforma-<ClusterName>-<AccountId> (unique per stack, allows
+      multiple Platforma stacks in the same region).
 
   # --- IAM / IRSA roles ---
   # Always created (required for Platforma):
@@ -2654,7 +2655,7 @@ Resources:
     Properties:
       BucketName: !If
         - AutoGenerateS3Name
-        - !Sub 'platforma-storage-${AWS::AccountId}-${AWS::Region}'
+        - !Sub 'platforma-${ClusterName}-${AWS::AccountId}'
         - !Ref S3BucketName
       BucketEncryption:
         ServerSideEncryptionConfiguration:

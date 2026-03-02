@@ -195,7 +195,7 @@ Parameters:
 
   PlatformaVersion:
     Type: String
-    Default: '3.0.0-rc.13'
+    Default: '3.0.0-rc.15'
     Description: Platforma Helm chart version (oci://ghcr.io/milaboratory/platforma-helm/platforma)
 
   PlatformaImage:
@@ -1761,11 +1761,15 @@ Resources:
           Value: !Ref ClusterName
 
   # ---------------------------------------------------------------------------
-  # 5b. Helm deployer — CodeBuild custom resource
-  #     Deploys: Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
-  #              External DNS, and Platforma via a single CodeBuild build.
-  #     The Lambda starts the build and exits immediately; the CodeBuild
-  #     post_build phase sends the CloudFormation response via curl.
+  # 5b. Helm deployer — two CodeBuild projects + shared Lambda trigger
+  #     HelmDeployerProject:          infra controllers (Kueue, AppWrapper,
+  #                                   Autoscaler, ExternalDNS, ALB). Keeps
+  #                                   the existing project name for in-place
+  #                                   update on existing stacks.
+  #     PlatformaDeployerProject:     Platforma only.
+  #     One shared Lambda reads CodeBuildProject from event ResourceProperties
+  #     to know which project to start. One shared IAM role for both projects.
+  #     TriggerPlatformaDeploy DependsOn TriggerHelmDeploy (infra first).
   # ---------------------------------------------------------------------------
 
   HelmDeployerRole:
@@ -1794,7 +1798,9 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                   - logs:PutRetentionPolicy
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-helm-deployer:*'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-helm-deployer:*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-platforma-deployer:*'
               # Needed to tag node group ASGs for cluster-autoscaler autodiscovery
               - Effect: Allow
                 Action:
@@ -1876,17 +1882,6 @@ Resources:
             Value: !Ref AWS::Region
           - Name: NAMESPACE
             Value: !Ref PlatformaNamespace
-          # NOTE: Secrets below are visible in CodeBuild console/API.
-          # The auto-generated admin password uses SSM SecureString (see buildspec).
-          # For user-provided secrets, restrict codebuild:BatchGetBuilds/BatchGetProjects
-          # IAM permissions to trusted roles only.
-          - Name: LICENSE_KEY
-            Value: !Ref LicenseKey
-            Type: PLAINTEXT
-          - Name: DOMAIN_NAME
-            Value: !Ref DomainName
-          - Name: CERTIFICATE_ARN
-            Value: !Ref Certificate
           - Name: AUTOSCALER_ROLE_ARN
             Value: !GetAtt AutoscalerIrsaRole.Arn
           - Name: VPC_ID
@@ -1895,20 +1890,6 @@ Resources:
             Value: !GetAtt ALBControllerRole.Arn
           - Name: EXTERNALDNS_ROLE_ARN
             Value: !GetAtt ExternalDNSRole.Arn
-          - Name: PLATFORMA_ROLE_ARN
-            Value: !GetAtt PlatformaIrsaRole.Arn
-          - Name: PLATFORMA_JOBS_ROLE_ARN
-            Value: !GetAtt PlatformaJobsIrsaRole.Arn
-          - Name: EFS_FILE_SYSTEM_ID
-            Value: !Ref EfsFileSystem
-          - Name: S3_BUCKET
-            Value: !Ref S3Bucket
-          - Name: PLATFORMA_VERSION
-            Value: !Ref PlatformaVersion
-          - Name: PLATFORMA_IMAGE
-            Value: !Ref PlatformaImage
-          - Name: DEPLOY_PLATFORMA
-            Value: !Ref DeployPlatforma
           - Name: HOSTED_ZONE_ID
             Value: !Ref HostedZoneId
           - Name: KUBERNETES_VERSION
@@ -1923,6 +1904,245 @@ Resources:
             Value: '1.20.0'
           - Name: ALB_CONTROLLER_VERSION
             Value: '3.0.0'
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                # Install kubectl
+                - curl -sLO "https://dl.k8s.io/release/v${KUBERNETES_VERSION}.0/bin/linux/amd64/kubectl"
+                - chmod +x kubectl && mv kubectl /usr/local/bin/
+                # Install Helm
+                - curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+                # Configure kubeconfig
+                - aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
+            build:
+              commands:
+                # Build phase: 6 blocks, each with its own CloudWatch log section.
+                # Block 0 = teardown; blocks 1-5 = install steps.
+                # CodeBuild stops automatically on the first block that fails.
+
+                # --- Block 0: TEARDOWN (exits 0 immediately when TEARDOWN=false) ---
+                - |
+                  [ "${TEARDOWN:-false}" != "true" ] && exit 0
+                  echo "=== INFRA TEARDOWN ==="
+                  helm uninstall aws-load-balancer-controller -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                  echo "Waiting 30s for External DNS to sync DNS record deletion..."
+                  sleep 30
+                  helm uninstall external-dns -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                  helm uninstall cluster-autoscaler -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
+                  helm uninstall kueue -n kueue-system --ignore-not-found --wait --timeout 3m || true
+                  kubectl delete appwrappers --all -A --ignore-not-found || true
+                  kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml \
+                    --ignore-not-found || true
+                  echo "Infra teardown complete."
+                  exit 0
+
+                # --- Block 1: LOG RETENTION ---
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [1/5] LOG RETENTION ==="
+                  aws logs put-retention-policy --log-group-name "/aws/codebuild/${CLUSTER_NAME}-helm-deployer" --retention-in-days 30 --region $REGION 2>/dev/null || true
+                  aws logs put-retention-policy --log-group-name "/aws/codebuild/${CLUSTER_NAME}-platforma-deployer" --retention-in-days 30 --region $REGION 2>/dev/null || true
+                  aws logs put-retention-policy --log-group-name "/aws/lambda/${CLUSTER_NAME}-helm-trigger" --retention-in-days 14 --region $REGION 2>/dev/null || true
+
+                # --- Block 2: KUEUE + APPWRAPPER ---
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [2/5] KUEUE + APPWRAPPER ==="
+                  helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
+                    --version $KUEUE_VERSION \
+                    -n kueue-system --create-namespace \
+                    --set controllerManager.manager.resources.limits.cpu=500m \
+                    --set controllerManager.manager.resources.limits.memory=512Mi \
+                    --set controllerManager.manager.resources.requests.cpu=100m \
+                    --set controllerManager.manager.resources.requests.memory=256Mi \
+                    --set featureGates.AppWrapper=true \
+                    --set 'integrations.frameworks[0]=batch/job' \
+                    --set 'integrations.frameworks[1]=jobset.x-k8s.io/jobset' \
+                    --set 'integrations.frameworks[2]=workload.codeflare.dev/appwrapper' \
+                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].key=kubernetes.io/metadata.name' \
+                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].operator=NotIn' \
+                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[0]=kube-system' \
+                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[1]=kueue-system' \
+                    --set metrics.enableClusterQueueResources=true \
+                    --atomic --timeout 5m
+                  kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml
+                  kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
+                  kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
+                  kubectl delete mutatingwebhookconfiguration appwrapper-mutating-webhook-configuration --ignore-not-found
+
+                # --- Block 3: ASG TAGS + CLUSTER AUTOSCALER ---
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [3/5] ASG TAGS + CLUSTER AUTOSCALER ==="
+                  for NG in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --region $REGION \
+                    --query nodegroups --output text); do
+                    ASG=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG \
+                      --region $REGION --query 'nodegroup.resources.autoScalingGroups[0].name' --output text)
+                    if [ -z "$ASG" ] || [ "$ASG" = "None" ]; then
+                      echo "ERROR: could not get ASG name for nodegroup $NG"
+                      exit 1
+                    fi
+                    aws autoscaling create-or-update-tags \
+                      --tags \
+                      "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/enabled,Value=true,PropagateAtLaunch=false" \
+                      "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/$CLUSTER_NAME,Value=owned,PropagateAtLaunch=false"
+                    echo "Tagged ASG $ASG (nodegroup $NG)"
+                  done
+                  helm repo add autoscaler https://kubernetes.github.io/autoscaler
+                  helm repo update
+                  helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
+                    --version $CLUSTER_AUTOSCALER_CHART_VERSION \
+                    --set image.tag=v$KUBERNETES_VERSION.0 \
+                    -n $NAMESPACE --create-namespace \
+                    --set autoDiscovery.clusterName=$CLUSTER_NAME \
+                    --set awsRegion=$REGION \
+                    --set rbac.serviceAccount.create=true \
+                    --set rbac.serviceAccount.name=cluster-autoscaler \
+                    --set "rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$AUTOSCALER_ROLE_ARN" \
+                    --set 'autoDiscovery.tags[0]=k8s.io/cluster-autoscaler/enabled' \
+                    --set "autoDiscovery.tags[1]=k8s.io/cluster-autoscaler/$CLUSTER_NAME" \
+                    --set extraArgs.scale-down-delay-after-add=10m \
+                    --set extraArgs.scale-down-unneeded-time=10m \
+                    --set extraArgs.scale-down-utilization-threshold=0.5 \
+                    --set extraArgs.expander=least-waste \
+                    --atomic --timeout 5m
+
+                # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [4/5] EXTERNAL DNS ==="
+                  helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
+                  helm repo update
+                  helm upgrade --install external-dns external-dns/external-dns \
+                    --version $EXTERNAL_DNS_VERSION \
+                    -n $NAMESPACE --create-namespace \
+                    --set policy=sync \
+                    --set registry=txt \
+                    --set txtOwnerId=$CLUSTER_NAME \
+                    --set "zoneIdFilters[0]=$HOSTED_ZONE_ID" \
+                    --set serviceAccount.create=true \
+                    --set serviceAccount.name=external-dns \
+                    --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \
+                    --atomic --timeout 3m
+
+                # --- Block 5: ALB CONTROLLER + WEBHOOK PROBE ---
+                - |
+                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
+                  echo "=== [5/5] ALB CONTROLLER ==="
+                  helm repo add eks https://aws.github.io/eks-charts
+                  helm repo update
+                  helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+                    --version $ALB_CONTROLLER_VERSION \
+                    -n $NAMESPACE --create-namespace \
+                    --set clusterName=$CLUSTER_NAME \
+                    --set region=$REGION \
+                    --set serviceAccount.create=true \
+                    --set serviceAccount.name=aws-load-balancer-controller \
+                    --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
+                    --set vpcId=$VPC_ID \
+                    --set replicaCount=1 \
+                    --atomic --timeout 5m
+                  kubectl rollout status deployment/aws-load-balancer-controller -n $NAMESPACE --timeout=120s
+                  cat > /tmp/alb-probe.yaml << 'PROBE'
+                  apiVersion: networking.k8s.io/v1
+                  kind: Ingress
+                  metadata:
+                    name: alb-webhook-probe
+                    namespace: default
+                    annotations:
+                      alb.ingress.kubernetes.io/scheme: internal
+                  spec:
+                    ingressClassName: alb
+                    rules:
+                      - http:
+                          paths:
+                            - path: /
+                              pathType: Prefix
+                              backend:
+                                service:
+                                  name: probe
+                                  port:
+                                    number: 80
+                  PROBE
+                  echo "Waiting for ALB webhook to become ready..."
+                  for i in $(seq 1 30); do
+                    if kubectl create -f /tmp/alb-probe.yaml --dry-run=server 2>/dev/null; then
+                      echo "  ALB webhook ready."
+                      break
+                    fi
+                    echo "  Webhook not ready, retrying... ($((i * 5))s elapsed)"
+                    sleep 5
+                  done
+            post_build:
+              commands:
+                - |
+                  if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then
+                    STATUS="SUCCESS"
+                    REASON="Infra controllers deployed successfully"
+                  else
+                    STATUS="FAILED"
+                    REASON="Infra deployment failed. Check CodeBuild logs: $CODEBUILD_BUILD_ID"
+                  fi
+                  PHYSICAL_ID="${CLUSTER_NAME}-helm-deployer"
+                  curl -s -X PUT -H "Content-Type: " \
+                    -d "{\"Status\":\"$STATUS\",\"Reason\":\"$REASON\",\"PhysicalResourceId\":\"$PHYSICAL_ID\",\"StackId\":\"$CFN_STACK_ID\",\"RequestId\":\"$CFN_REQUEST_ID\",\"LogicalResourceId\":\"$CFN_LOGICAL_ID\",\"Data\":{}}" \
+                    "$CFN_RESPONSE_URL"
+
+  PlatformaDeployerProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ClusterName}-platforma-deployer'
+      ServiceRole: !GetAtt HelmDeployerRole.Arn
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: CLUSTER_NAME
+            Value: !Ref ClusterName
+          - Name: REGION
+            Value: !Ref AWS::Region
+          - Name: NAMESPACE
+            Value: !Ref PlatformaNamespace
+          - Name: KUBERNETES_VERSION
+            Value: !Ref KubernetesVersion
+          # NOTE: Secrets below are visible in CodeBuild console/API.
+          # The auto-generated admin password uses SSM SecureString (see buildspec).
+          # For user-provided secrets, restrict codebuild:BatchGetBuilds/BatchGetProjects
+          # IAM permissions to trusted roles only.
+          - Name: LICENSE_KEY
+            Value: !Ref LicenseKey
+            Type: PLAINTEXT
+          - Name: PLATFORMA_VERSION
+            Value: !Ref PlatformaVersion
+          - Name: PLATFORMA_IMAGE
+            Value: !Ref PlatformaImage
+          - Name: DEPLOY_PLATFORMA
+            Value: !Ref DeployPlatforma
+          - Name: DOMAIN_NAME
+            Value: !Ref DomainName
+          - Name: CERTIFICATE_ARN
+            Value: !Ref Certificate
+          - Name: EFS_FILE_SYSTEM_ID
+            Value: !Ref EfsFileSystem
+          - Name: S3_BUCKET
+            Value: !Ref S3Bucket
+          - Name: PLATFORMA_ROLE_ARN
+            Value: !GetAtt PlatformaIrsaRole.Arn
+          - Name: PLATFORMA_JOBS_ROLE_ARN
+            Value: !GetAtt PlatformaJobsIrsaRole.Arn
+          - Name: VPC_ID
+            Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
           - Name: COMPUTE_FAMILY
             Value: !Ref ComputeFamily
           - Name: UI_QUEUE_CPU
@@ -1998,16 +2218,13 @@ Resources:
                 - aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
             build:
               commands:
-                # Build phase: 7 blocks, each with its own CloudWatch log section.
-                # Block 0 = teardown; blocks 1-6 = install steps.
+                # Block 0 = teardown; block 1 = deploy Platforma.
                 # CodeBuild stops automatically on the first block that fails.
 
-                # --- Block 0: TEARDOWN (exits 0 immediately when TEARDOWN=false) ---
+                # --- Block 0: PLATFORMA TEARDOWN (exits 0 immediately when TEARDOWN=false) ---
                 - |
                   [ "${TEARDOWN:-false}" != "true" ] && exit 0
-                  aws logs put-retention-policy --log-group-name "/aws/codebuild/${CLUSTER_NAME}-helm-deployer" --retention-in-days 30 --region $REGION 2>/dev/null || true
-                  aws logs put-retention-policy --log-group-name "/aws/lambda/${CLUSTER_NAME}-helm-trigger" --retention-in-days 14 --region $REGION 2>/dev/null || true
-                  echo "=== TEARDOWN ==="
+                  echo "=== PLATFORMA TEARDOWN ==="
                   helm uninstall platforma -n $NAMESPACE --ignore-not-found --wait --timeout 8m || true
                   echo "Waiting for ALBs (elbv2.k8s.aws/cluster=$CLUSTER_NAME) to be deleted..."
                   for i in $(seq 1 60); do
@@ -2028,7 +2245,6 @@ Resources:
                       echo "  Deleting ALB: $ALB_ARN"
                       aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN" --region $REGION || true
                     done
-                    # Wait for ALBs to fully vanish (async — ENIs need time to release)
                     echo "  Waiting for force-deleted ALBs to vanish..."
                     for j in $(seq 1 24); do
                       REMAINING=$(aws resourcegroupstaggingapi get-resources \
@@ -2087,28 +2303,18 @@ Resources:
                       done
                     done
                   fi
-                  helm uninstall aws-load-balancer-controller -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
-                  echo "Waiting 30s for External DNS to sync DNS record deletion..."
-                  sleep 30
-                  helm uninstall external-dns -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
-                  helm uninstall cluster-autoscaler -n $NAMESPACE --ignore-not-found --wait --timeout 3m || true
-                  helm uninstall kueue -n kueue-system --ignore-not-found --wait --timeout 3m || true
-                  kubectl delete appwrappers --all -A --ignore-not-found || true
-                  kubectl delete -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml \
-                    --ignore-not-found || true
                   # Clean up SSM parameter (created by install script, not CF)
                   aws ssm delete-parameter \
                     --name "/${CLUSTER_NAME}/platforma/admin-password" \
                     --region $REGION 2>/dev/null || true
-                  echo "Teardown complete."
+                  echo "Platforma teardown complete."
                   exit 0
 
-                # --- Block 1: LOG RETENTION + vCPU QUOTA CHECK ---
+                # --- Block 1: vCPU QUOTA CHECK + DEPLOY PLATFORMA ---
                 - |
                   [ "${TEARDOWN:-false}" = "true" ] && exit 0
-                  echo "=== [1/6] LOG RETENTION + vCPU QUOTA CHECK ==="
-                  aws logs put-retention-policy --log-group-name "/aws/codebuild/${CLUSTER_NAME}-helm-deployer" --retention-in-days 30 --region $REGION 2>/dev/null || true
-                  aws logs put-retention-policy --log-group-name "/aws/lambda/${CLUSTER_NAME}-helm-trigger" --retention-in-days 14 --region $REGION 2>/dev/null || true
+                  [ "$DEPLOY_PLATFORMA" != "true" ] && exit 0
+                  echo "=== [1/1] PLATFORMA ==="
                   echo "Checking AWS On-Demand Standard vCPU quota..."
                   VCPU_QUOTA=$(aws service-quotas get-service-quota \
                     --service-code ec2 \
@@ -2127,142 +2333,6 @@ Resources:
                     fi
                     echo "vCPU quota OK: $VCPU_QUOTA_INT available, $VCPU_NEEDED needed."
                   fi
-
-                # --- Block 2: KUEUE + APPWRAPPER ---
-                - |
-                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
-                  echo "=== [2/6] KUEUE + APPWRAPPER ==="
-                  helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
-                    --version $KUEUE_VERSION \
-                    -n kueue-system --create-namespace \
-                    --set controllerManager.manager.resources.limits.cpu=500m \
-                    --set controllerManager.manager.resources.limits.memory=512Mi \
-                    --set controllerManager.manager.resources.requests.cpu=100m \
-                    --set controllerManager.manager.resources.requests.memory=256Mi \
-                    --set featureGates.AppWrapper=true \
-                    --set 'integrations.frameworks[0]=batch/job' \
-                    --set 'integrations.frameworks[1]=jobset.x-k8s.io/jobset' \
-                    --set 'integrations.frameworks[2]=workload.codeflare.dev/appwrapper' \
-                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].key=kubernetes.io/metadata.name' \
-                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].operator=NotIn' \
-                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[0]=kube-system' \
-                    --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[1]=kueue-system' \
-                    --set metrics.enableClusterQueueResources=true \
-                    --atomic --timeout 5m
-                  kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml
-                  kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
-                  kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
-                  kubectl delete mutatingwebhookconfiguration appwrapper-mutating-webhook-configuration --ignore-not-found
-
-                # --- Block 3: ASG TAGS + CLUSTER AUTOSCALER ---
-                - |
-                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
-                  echo "=== [3/6] ASG TAGS + CLUSTER AUTOSCALER ==="
-                  for NG in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --region $REGION \
-                    --query nodegroups --output text); do
-                    ASG=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG \
-                      --region $REGION --query 'nodegroup.resources.autoScalingGroups[0].name' --output text)
-                    if [ -z "$ASG" ] || [ "$ASG" = "None" ]; then
-                      echo "ERROR: could not get ASG name for nodegroup $NG"
-                      exit 1
-                    fi
-                    aws autoscaling create-or-update-tags \
-                      --tags \
-                      "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/enabled,Value=true,PropagateAtLaunch=false" \
-                      "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/$CLUSTER_NAME,Value=owned,PropagateAtLaunch=false"
-                    echo "Tagged ASG $ASG (nodegroup $NG)"
-                  done
-                  helm repo add autoscaler https://kubernetes.github.io/autoscaler
-                  helm repo update
-                  helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
-                    --version $CLUSTER_AUTOSCALER_CHART_VERSION \
-                    --set image.tag=v$KUBERNETES_VERSION.0 \
-                    -n $NAMESPACE --create-namespace \
-                    --set autoDiscovery.clusterName=$CLUSTER_NAME \
-                    --set awsRegion=$REGION \
-                    --set rbac.serviceAccount.create=true \
-                    --set rbac.serviceAccount.name=cluster-autoscaler \
-                    --set "rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$AUTOSCALER_ROLE_ARN" \
-                    --set 'autoDiscovery.tags[0]=k8s.io/cluster-autoscaler/enabled' \
-                    --set "autoDiscovery.tags[1]=k8s.io/cluster-autoscaler/$CLUSTER_NAME" \
-                    --set extraArgs.scale-down-delay-after-add=10m \
-                    --set extraArgs.scale-down-unneeded-time=10m \
-                    --set extraArgs.scale-down-utilization-threshold=0.5 \
-                    --set extraArgs.expander=least-waste \
-                    --atomic --timeout 5m
-
-                # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---
-                - |
-                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
-                  echo "=== [4/6] EXTERNAL DNS ==="
-                  helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
-                  helm repo update
-                  helm upgrade --install external-dns external-dns/external-dns \
-                    --version $EXTERNAL_DNS_VERSION \
-                    -n $NAMESPACE --create-namespace \
-                    --set policy=sync \
-                    --set registry=txt \
-                    --set txtOwnerId=$CLUSTER_NAME \
-                    --set "zoneIdFilters[0]=$HOSTED_ZONE_ID" \
-                    --set serviceAccount.create=true \
-                    --set serviceAccount.name=external-dns \
-                    --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \
-                    --atomic --timeout 3m
-
-                # --- Block 5: ALB CONTROLLER + WEBHOOK PROBE ---
-                - |
-                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
-                  echo "=== [5/6] ALB CONTROLLER ==="
-                  helm repo add eks https://aws.github.io/eks-charts
-                  helm repo update
-                  helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-                    --version $ALB_CONTROLLER_VERSION \
-                    -n $NAMESPACE --create-namespace \
-                    --set clusterName=$CLUSTER_NAME \
-                    --set region=$REGION \
-                    --set serviceAccount.create=true \
-                    --set serviceAccount.name=aws-load-balancer-controller \
-                    --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$ALB_ROLE_ARN" \
-                    --set vpcId=$VPC_ID \
-                    --set replicaCount=1 \
-                    --atomic --timeout 5m
-                  kubectl rollout status deployment/aws-load-balancer-controller -n $NAMESPACE --timeout=120s
-                  cat > /tmp/alb-probe.yaml << 'PROBE'
-                  apiVersion: networking.k8s.io/v1
-                  kind: Ingress
-                  metadata:
-                    name: alb-webhook-probe
-                    namespace: default
-                    annotations:
-                      alb.ingress.kubernetes.io/scheme: internal
-                  spec:
-                    ingressClassName: alb
-                    rules:
-                      - http:
-                          paths:
-                            - path: /
-                              pathType: Prefix
-                              backend:
-                                service:
-                                  name: probe
-                                  port:
-                                    number: 80
-                  PROBE
-                  echo "Waiting for ALB webhook to become ready..."
-                  for i in $(seq 1 30); do
-                    if kubectl create -f /tmp/alb-probe.yaml --dry-run=server 2>/dev/null; then
-                      echo "  ALB webhook ready."
-                      break
-                    fi
-                    echo "  Webhook not ready, retrying... ($((i * 5))s elapsed)"
-                    sleep 5
-                  done
-
-                # --- Block 6: PLATFORMA (skipped when DEPLOY_PLATFORMA=false) ---
-                - |
-                  [ "${TEARDOWN:-false}" = "true" ] && exit 0
-                  [ "$DEPLOY_PLATFORMA" != "true" ] && exit 0
-                  echo "=== [6/6] PLATFORMA ==="
                   kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
                   kubectl create secret generic platforma-license \
                     -n $NAMESPACE \
@@ -2437,14 +2507,12 @@ Resources:
                 - |
                   if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then
                     STATUS="SUCCESS"
-                    REASON="Helm deployment completed successfully"
+                    REASON="Platforma deployment completed successfully"
                   else
                     STATUS="FAILED"
-                    REASON="Helm deployment failed. Check CodeBuild logs: $CODEBUILD_BUILD_ID"
+                    REASON="Platforma deployment failed. Check CodeBuild logs: $CODEBUILD_BUILD_ID"
                   fi
-                  # Use a stable PhysicalResourceId so CF doesn't trigger cleanup
-                  # deletes (which run teardown) on every update.
-                  PHYSICAL_ID="${CLUSTER_NAME}-helm-deployer"
+                  PHYSICAL_ID="${CLUSTER_NAME}-platforma-deployer"
                   curl -s -X PUT -H "Content-Type: " \
                     -d "{\"Status\":\"$STATUS\",\"Reason\":\"$REASON\",\"PhysicalResourceId\":\"$PHYSICAL_ID\",\"StackId\":\"$CFN_STACK_ID\",\"RequestId\":\"$CFN_REQUEST_ID\",\"LogicalResourceId\":\"$CFN_LOGICAL_ID\",\"Data\":{}}" \
                     "$CFN_RESPONSE_URL"
@@ -2470,14 +2538,18 @@ Resources:
               - Effect: Allow
                 Action:
                   - codebuild:StartBuild
-                Resource: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ClusterName}-helm-deployer'
+                Resource:
+                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ClusterName}-helm-deployer'
+                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ClusterName}-platforma-deployer'
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
 
   TriggerHelmDeployFunction:
     Type: AWS::Lambda::Function
-    DependsOn: HelmDeployerProject
+    DependsOn:
+      - HelmDeployerProject
+      - PlatformaDeployerProject
     Properties:
       FunctionName: !Sub '${ClusterName}-helm-trigger'
       Runtime: python3.12
@@ -2494,7 +2566,10 @@ Resources:
         ZipFile: |
           import boto3, json, os, urllib.request
           def handler(event, context):
-            project = os.environ['CODEBUILD_PROJECT']
+            # Read project name from custom resource properties (allows one Lambda
+            # to serve both infra and platforma triggers). Falls back to env var.
+            props = event.get('ResourceProperties', {})
+            project = props.get('CodeBuildProject', os.environ['CODEBUILD_PROJECT'])
             # Stable physical resource ID prevents CF cleanup deletes from
             # triggering teardown on every update.
             stable_id = project
@@ -2545,6 +2620,18 @@ Resources:
       - HelmDeployerAccessEntry
       - EbsCsiAddon
       - EfsCsiAddon
+    Properties:
+      ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
+      CodeBuildProject: !Sub '${ClusterName}-helm-deployer'
+      # Properties below trigger re-deployment when changed during stack update.
+      # The Lambda reads CodeBuildProject; the rest exist only so CloudFormation
+      # detects property changes and sends an UPDATE event.
+      ForceUpdateInfra: "1"  # Bump to force infra re-deployment
+
+  TriggerPlatformaDeploy:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - TriggerHelmDeploy
       - EfsMountTarget1
       - EfsMountTarget2
       - EfsMountTarget3
@@ -2552,10 +2639,9 @@ Resources:
       - Certificate
     Properties:
       ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
+      CodeBuildProject: !Sub '${ClusterName}-platforma-deployer'
       # Properties below trigger re-deployment when changed during stack update.
-      # The Lambda does not read these — they exist only so CloudFormation
-      # detects property changes and sends an UPDATE event.
-      ForceUpdate: "4"  # Bump to force re-deployment
+      ForceUpdatePlatforma: "1"  # Bump to force Platforma re-deployment
       PlatformaVersion: !Ref PlatformaVersion
       PlatformaImage: !Ref PlatformaImage
       DeployPlatforma: !Ref DeployPlatforma
@@ -2812,13 +2898,18 @@ Outputs:
 
   HelmDeployerBuildProject:
     Description: >
-      CodeBuild project that deploys Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
-      External DNS, and Platforma. Check its logs if the stack creation fails after ~20 minutes.
+      CodeBuild project that deploys infra controllers (Kueue, AppWrapper, Cluster Autoscaler,
+      ALB Controller, External DNS). Check its logs if the stack creation fails.
     Value: !Sub 'https://console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ClusterName}-helm-deployer/history'
+
+  PlatformaDeployerBuildProject:
+    Description: >
+      CodeBuild project that deploys Platforma. Check its logs if Platforma deployment fails.
+    Value: !Sub 'https://console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ClusterName}-platforma-deployer/history'
 
   PostDeploySteps:
     Description: See infrastructure/aws/README.md for full instructions
     Value: >-
       Stack deploys everything automatically. Once complete: connect Desktop App to your domain on port 443.
-      If deployment fails, check the CodeBuild project logs (see HelmDeployerBuildProject output).
-      See infrastructure/aws/README.md for details.
+      If deployment fails, check the CodeBuild project logs (see HelmDeployerBuildProject and
+      PlatformaDeployerBuildProject outputs). See infrastructure/aws/README.md for details.

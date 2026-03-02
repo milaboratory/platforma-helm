@@ -56,6 +56,24 @@ Metadata:
         Parameters:
           - EfsPerformanceMode
           - S3BucketName
+      - Label:
+          default: 'Data libraries (optional, up to 3 external read-only S3 buckets)'
+        Parameters:
+          - DataLibrary1Name
+          - DataLibrary1Bucket
+          - DataLibrary1Region
+          - DataLibrary1AccessKey
+          - DataLibrary1SecretKey
+          - DataLibrary2Name
+          - DataLibrary2Bucket
+          - DataLibrary2Region
+          - DataLibrary2AccessKey
+          - DataLibrary2SecretKey
+          - DataLibrary3Name
+          - DataLibrary3Bucket
+          - DataLibrary3Region
+          - DataLibrary3AccessKey
+          - DataLibrary3SecretKey
     ParameterLabels:
       ClusterName:
         default: Cluster name
@@ -91,6 +109,36 @@ Metadata:
         default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
       AuthMethod:
         default: 'Authentication method (htpasswd or ldap)'
+      DataLibrary1Name:
+        default: 'Library 1 name (shown in Desktop App)'
+      DataLibrary1Bucket:
+        default: 'Library 1 S3 bucket name'
+      DataLibrary1Region:
+        default: 'Library 1 S3 region (leave empty = cluster region)'
+      DataLibrary1AccessKey:
+        default: 'Library 1 access key (leave empty for IRSA)'
+      DataLibrary1SecretKey:
+        default: 'Library 1 secret key'
+      DataLibrary2Name:
+        default: 'Library 2 name (shown in Desktop App)'
+      DataLibrary2Bucket:
+        default: 'Library 2 S3 bucket name'
+      DataLibrary2Region:
+        default: 'Library 2 S3 region (leave empty = cluster region)'
+      DataLibrary2AccessKey:
+        default: 'Library 2 access key (leave empty for IRSA)'
+      DataLibrary2SecretKey:
+        default: 'Library 2 secret key'
+      DataLibrary3Name:
+        default: 'Library 3 name (shown in Desktop App)'
+      DataLibrary3Bucket:
+        default: 'Library 3 S3 bucket name'
+      DataLibrary3Region:
+        default: 'Library 3 S3 region (leave empty = cluster region)'
+      DataLibrary3AccessKey:
+        default: 'Library 3 access key (leave empty for IRSA)'
+      DataLibrary3SecretKey:
+        default: 'Library 3 secret key'
       HtpasswdContent:
         default: 'htpasswd file content (htpasswd mode only)'
       LdapServer:
@@ -219,6 +267,97 @@ Parameters:
     Default: ''
     NoEcho: true
     Description: Password for the LDAP search user. Required when LdapSearchUser is set.
+
+  # --- Data libraries ---
+  DataLibrary1Name:
+    Type: String
+    Default: ''
+    Description: Name for data library 1 (shown in Desktop App). Leave empty to disable.
+
+  DataLibrary1Bucket:
+    Type: String
+    Default: ''
+    Description: >
+      S3 bucket name for data library 1 (e.g. my-reference-data).
+      Leave empty to disable.
+
+  DataLibrary1Region:
+    Type: String
+    Default: ''
+    Description: >
+      AWS region for data library 1 bucket. Leave empty to use the cluster region.
+
+  DataLibrary1AccessKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >
+      S3 access key for data library 1. Leave empty to use IRSA
+      (bucket must be in the same AWS account).
+
+  DataLibrary1SecretKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: S3 secret key for data library 1. Required when AccessKey is set.
+
+  DataLibrary2Name:
+    Type: String
+    Default: ''
+    Description: Name for data library 2 (shown in Desktop App). Leave empty to disable.
+
+  DataLibrary2Bucket:
+    Type: String
+    Default: ''
+    Description: S3 bucket name for data library 2. Leave empty to disable.
+
+  DataLibrary2Region:
+    Type: String
+    Default: ''
+    Description: AWS region for data library 2 bucket. Leave empty to use the cluster region.
+
+  DataLibrary2AccessKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >
+      S3 access key for data library 2. Leave empty to use IRSA
+      (bucket must be in the same AWS account).
+
+  DataLibrary2SecretKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: S3 secret key for data library 2. Required when AccessKey is set.
+
+  DataLibrary3Name:
+    Type: String
+    Default: ''
+    Description: Name for data library 3 (shown in Desktop App). Leave empty to disable.
+
+  DataLibrary3Bucket:
+    Type: String
+    Default: ''
+    Description: S3 bucket name for data library 3. Leave empty to disable.
+
+  DataLibrary3Region:
+    Type: String
+    Default: ''
+    Description: AWS region for data library 3 bucket. Leave empty to use the cluster region.
+
+  DataLibrary3AccessKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >
+      S3 access key for data library 3. Leave empty to use IRSA
+      (bucket must be in the same AWS account).
+
+  DataLibrary3SecretKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: S3 secret key for data library 3. Required when AccessKey is set.
 
   # --- Networking ---
   # CloudFormation cannot query subnets from a VPC — you must provide them.
@@ -359,6 +498,18 @@ Conditions:
   CreateNewVpc: !Equals [!Ref VpcId, '']
   AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
   HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
+  HasLibrary1: !Not [!Equals [!Ref DataLibrary1Bucket, '']]
+  HasLibrary1Irsa: !And
+    - !Not [!Equals [!Ref DataLibrary1Bucket, '']]
+    - !Equals [!Ref DataLibrary1AccessKey, '']
+  HasLibrary2: !Not [!Equals [!Ref DataLibrary2Bucket, '']]
+  HasLibrary2Irsa: !And
+    - !Not [!Equals [!Ref DataLibrary2Bucket, '']]
+    - !Equals [!Ref DataLibrary2AccessKey, '']
+  HasLibrary3: !Not [!Equals [!Ref DataLibrary3Bucket, '']]
+  HasLibrary3Irsa: !And
+    - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
+    - !Equals [!Ref DataLibrary3AccessKey, '']
 
 # =============================================================================
 # Rules — fail fast on invalid parameter combinations
@@ -843,6 +994,48 @@ Resources:
                   - s3:AbortMultipartUpload
                   - s3:ListMultipartUploadParts
                 Resource: !Sub '${S3Bucket.Arn}/*'
+              - !If
+                - HasLibrary1Irsa
+                - Sid: Library1ListBucket
+                  Effect: Allow
+                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary1Bucket}'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary1Irsa
+                - Sid: Library1GetObjects
+                  Effect: Allow
+                  Action: [s3:GetObject, s3:GetObjectAttributes]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary1Bucket}/*'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary2Irsa
+                - Sid: Library2ListBucket
+                  Effect: Allow
+                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary2Bucket}'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary2Irsa
+                - Sid: Library2GetObjects
+                  Effect: Allow
+                  Action: [s3:GetObject, s3:GetObjectAttributes]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary2Bucket}/*'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary3Irsa
+                - Sid: Library3ListBucket
+                  Effect: Allow
+                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary3Bucket}'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary3Irsa
+                - Sid: Library3GetObjects
+                  Effect: Allow
+                  Action: [s3:GetObject, s3:GetObjectAttributes]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary3Bucket}/*'
+                - !Ref AWS::NoValue
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -892,6 +1085,48 @@ Resources:
                   - s3:AbortMultipartUpload
                   - s3:ListMultipartUploadParts
                 Resource: !Sub '${S3Bucket.Arn}/*'
+              - !If
+                - HasLibrary1Irsa
+                - Sid: Library1ListBucket
+                  Effect: Allow
+                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary1Bucket}'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary1Irsa
+                - Sid: Library1GetObjects
+                  Effect: Allow
+                  Action: [s3:GetObject, s3:GetObjectAttributes]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary1Bucket}/*'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary2Irsa
+                - Sid: Library2ListBucket
+                  Effect: Allow
+                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary2Bucket}'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary2Irsa
+                - Sid: Library2GetObjects
+                  Effect: Allow
+                  Action: [s3:GetObject, s3:GetObjectAttributes]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary2Bucket}/*'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary3Irsa
+                - Sid: Library3ListBucket
+                  Effect: Allow
+                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary3Bucket}'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLibrary3Irsa
+                - Sid: Library3GetObjects
+                  Effect: Allow
+                  Action: [s3:GetObject, s3:GetObjectAttributes]
+                  Resource: !Sub 'arn:aws:s3:::${DataLibrary3Bucket}/*'
+                - !Ref AWS::NoValue
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -1713,6 +1948,36 @@ Resources:
             Value: !Ref LdapSearchUser
           - Name: LDAP_SEARCH_PASSWORD
             Value: !Ref LdapSearchPassword
+          - Name: DATA_LIBRARY_1_NAME
+            Value: !Ref DataLibrary1Name
+          - Name: DATA_LIBRARY_1_BUCKET
+            Value: !Ref DataLibrary1Bucket
+          - Name: DATA_LIBRARY_1_REGION
+            Value: !Ref DataLibrary1Region
+          - Name: DATA_LIBRARY_1_ACCESS_KEY
+            Value: !Ref DataLibrary1AccessKey
+          - Name: DATA_LIBRARY_1_SECRET_KEY
+            Value: !Ref DataLibrary1SecretKey
+          - Name: DATA_LIBRARY_2_NAME
+            Value: !Ref DataLibrary2Name
+          - Name: DATA_LIBRARY_2_BUCKET
+            Value: !Ref DataLibrary2Bucket
+          - Name: DATA_LIBRARY_2_REGION
+            Value: !Ref DataLibrary2Region
+          - Name: DATA_LIBRARY_2_ACCESS_KEY
+            Value: !Ref DataLibrary2AccessKey
+          - Name: DATA_LIBRARY_2_SECRET_KEY
+            Value: !Ref DataLibrary2SecretKey
+          - Name: DATA_LIBRARY_3_NAME
+            Value: !Ref DataLibrary3Name
+          - Name: DATA_LIBRARY_3_BUCKET
+            Value: !Ref DataLibrary3Bucket
+          - Name: DATA_LIBRARY_3_REGION
+            Value: !Ref DataLibrary3Region
+          - Name: DATA_LIBRARY_3_ACCESS_KEY
+            Value: !Ref DataLibrary3AccessKey
+          - Name: DATA_LIBRARY_3_SECRET_KEY
+            Value: !Ref DataLibrary3SecretKey
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2021,6 +2286,40 @@ Resources:
                       --from-literal=htpasswd="$HTPASSWD_CONTENT" \
                       --dry-run=client -o yaml | kubectl apply -f -
                   fi
+                  # Build dataSources for configured data libraries
+                  DATASOURCES_YAML=""
+                  for LIB_NUM in 1 2 3; do
+                    eval "LIB_NAME=\${DATA_LIBRARY_${LIB_NUM}_NAME:-}"
+                    eval "LIB_BUCKET=\${DATA_LIBRARY_${LIB_NUM}_BUCKET:-}"
+                    eval "LIB_REGION=\${DATA_LIBRARY_${LIB_NUM}_REGION:-$REGION}"
+                    eval "LIB_KEY=\${DATA_LIBRARY_${LIB_NUM}_ACCESS_KEY:-}"
+                    eval "LIB_SECRET=\${DATA_LIBRARY_${LIB_NUM}_SECRET_KEY:-}"
+                    [ -z "$LIB_BUCKET" ] && continue
+                    [ -z "$LIB_NAME" ] && LIB_NAME="library-${LIB_NUM}"
+                    if [ -n "$LIB_KEY" ]; then
+                      kubectl create secret generic "platforma-library-${LIB_NUM}-creds" \
+                        -n $NAMESPACE \
+                        --from-literal=access-key="$LIB_KEY" \
+                        --from-literal=secret-key="$LIB_SECRET" \
+                        --dry-run=client -o yaml | kubectl apply -f -
+                      DATASOURCES_YAML="${DATASOURCES_YAML}
+                  - name: ${LIB_NAME}
+                    type: s3
+                    s3:
+                      bucket: ${LIB_BUCKET}
+                      region: ${LIB_REGION}
+                      secretRef:
+                        name: platforma-library-${LIB_NUM}-creds"
+                    else
+                      DATASOURCES_YAML="${DATASOURCES_YAML}
+                  - name: ${LIB_NAME}
+                    type: s3
+                    s3:
+                      bucket: ${LIB_BUCKET}
+                      region: ${LIB_REGION}"
+                    fi
+                  done
+
                   cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
                   environment: aws
                   storage:
@@ -2084,6 +2383,7 @@ Resources:
                   app:
                     nodeSelector:
                       node.kubernetes.io/pool: system
+                  dataSources: ${DATASOURCES_YAML:-[]}
                   PLATFORMA_VALUES
 
                   HELM_ARGS=""
@@ -2269,6 +2569,21 @@ Resources:
       LdapSearchPassword: !Ref LdapSearchPassword
       DomainName: !Ref DomainName
       ComputeFamily: !Ref ComputeFamily
+      DataLibrary1Name: !Ref DataLibrary1Name
+      DataLibrary1Bucket: !Ref DataLibrary1Bucket
+      DataLibrary1Region: !Ref DataLibrary1Region
+      DataLibrary1AccessKey: !Ref DataLibrary1AccessKey
+      DataLibrary1SecretKey: !Ref DataLibrary1SecretKey
+      DataLibrary2Name: !Ref DataLibrary2Name
+      DataLibrary2Bucket: !Ref DataLibrary2Bucket
+      DataLibrary2Region: !Ref DataLibrary2Region
+      DataLibrary2AccessKey: !Ref DataLibrary2AccessKey
+      DataLibrary2SecretKey: !Ref DataLibrary2SecretKey
+      DataLibrary3Name: !Ref DataLibrary3Name
+      DataLibrary3Bucket: !Ref DataLibrary3Bucket
+      DataLibrary3Region: !Ref DataLibrary3Region
+      DataLibrary3AccessKey: !Ref DataLibrary3AccessKey
+      DataLibrary3SecretKey: !Ref DataLibrary3SecretKey
 
   # ---------------------------------------------------------------------------
   # 6. Storage — EFS (shared workspace)

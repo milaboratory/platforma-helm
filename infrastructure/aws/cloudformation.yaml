@@ -2007,7 +2007,7 @@ Resources:
                     if [ -z "$HTPASSWD_CONTENT" ]; then
                       echo "No HtpasswdContent provided — generating random admin password"
                       ADMIN_PASSWORD=$(openssl rand -base64 12)
-                      HTPASSWD_CONTENT="admin:$(openssl passwd -apr1 "$ADMIN_PASSWORD")"
+                      HTPASSWD_CONTENT="platforma:$(openssl passwd -apr1 "$ADMIN_PASSWORD")"
                       aws ssm put-parameter \
                         --name "/${CLUSTER_NAME}/platforma/admin-password" \
                         --type SecureString \

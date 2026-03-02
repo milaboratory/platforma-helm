@@ -177,6 +177,12 @@ spec:
             - "--data-library-s3-key={{ .name }}=$(PL_DATASOURCE_S3_KEY_{{ $envPrefix }})"
             - "--data-library-s3-secret={{ .name }}=$(PL_DATASOURCE_S3_SECRET_{{ $envPrefix }})"
             {{- end }}
+            {{- if .s3.externalEndpoint }}
+            - "--data-library-s3-external-endpoint={{ .name }}={{ .s3.externalEndpoint }}"
+            {{- end }}
+            {{- if .s3.noDataIntegrity }}
+            - "--data-library-s3-no-data-integrity={{ .name }}=true"
+            {{- end }}
             {{- else if eq .type "gcs" }}
             - "--data-library-gcs={{ .name }}=gs://{{ .gcs.bucket }}{{ if .gcs.prefix }}/{{ .gcs.prefix }}{{ end }}"
             {{- if .gcs.projectId }}

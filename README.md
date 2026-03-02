@@ -492,15 +492,62 @@ Priority within the batch queue: heavy > medium > light.
 
 ### Data sources (data library)
 
-Mount external read-only data (reference genomes, sequencing archives) accessible to Platforma:
+Mount external read-only data (reference genomes, sequencing archives) accessible to Platforma.
+
+**AWS S3 with IRSA** (no credentials needed — IAM role on service account):
 
 ```yaml
 dataSources:
-  - name: "reference-genomes"
+  - name: "sequencing-archive"
     type: s3
     s3:
-      bucket: "company-references"
+      bucket: "company-sequencing"
       region: "eu-central-1"
+```
+
+**S3 with explicit credentials** (non-AWS or non-IRSA):
+
+```yaml
+dataSources:
+  - name: "sequencing-archive"
+    type: s3
+    s3:
+      bucket: "company-sequencing"
+      region: "eu-central-1"
+      secretRef:
+        name: "sequencing-archive-creds"   # K8s Secret name
+        accessKeyField: "access-key"        # default
+        secretKeyField: "secret-key"        # default
+```
+
+Create the Secret:
+
+```bash
+kubectl create secret generic sequencing-archive-creds \
+  --from-literal=access-key=AKIAIOSFODNN7EXAMPLE \
+  --from-literal=secret-key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
+  -n platforma
+```
+
+**S3-compatible storage** (MinIO, Ceph, Wasabi):
+
+```yaml
+dataSources:
+  - name: "minio-library"
+    type: s3
+    s3:
+      bucket: "references"
+      region: "us-east-1"
+      secretRef:
+        name: "minio-creds"
+      externalEndpoint: "https://minio.example.com"  # URL for Desktop App direct access
+      noDataIntegrity: true  # Required for Ceph, old MinIO, and GCS
+```
+
+**PVC** (local cluster storage):
+
+```yaml
+dataSources:
   - name: "local-data"
     type: pvc
     pvc:

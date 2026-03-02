@@ -414,6 +414,12 @@
                     "default": "secret-key"
                   }
                 }
+              },
+              "externalEndpoint": {
+                "type": "string"
+              },
+              "noDataIntegrity": {
+                "type": "boolean"
               }
             },
             "required": [

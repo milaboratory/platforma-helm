@@ -225,6 +225,8 @@ dataSources: []
   #       name: "my-s3-creds"
   #       accessKeyField: "access-key"   # default: "access-key"
   #       secretKeyField: "secret-key"   # default: "secret-key"
+  #     externalEndpoint: "" # S3 URL for Desktop App if it differs from backend's (S3-compatible only)
+  #     noDataIntegrity: false # Disable SHA256 integrity checks (GCS, Ceph, old MinIO)
   # - name: "reference-genomes"
   #   type: gcs
   #   gcs:

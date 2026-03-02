@@ -221,6 +221,10 @@ dataSources: []
   #     bucket: "company-sequencing"
   #     region: "us-east-1"
   #     prefix: ""
+  #     secretRef:           # Optional: omit for IRSA/workload-identity
+  #       name: "my-s3-creds"
+  #       accessKeyField: "access-key"   # default: "access-key"
+  #       secretKeyField: "secret-key"   # default: "secret-key"
   # - name: "reference-genomes"
   #   type: gcs
   #   gcs:

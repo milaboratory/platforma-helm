@@ -172,6 +172,11 @@ spec:
             {{- if .s3.region }}
             - "--data-library-s3-region={{ .name }}={{ .s3.region }}"
             {{- end }}
+            {{- if .s3.secretRef.name }}
+            {{- $envPrefix := .name | upper | replace "-" "_" | replace "." "_" }}
+            - "--data-library-s3-key={{ .name }}=$(PL_DATASOURCE_S3_KEY_{{ $envPrefix }})"
+            - "--data-library-s3-secret={{ .name }}=$(PL_DATASOURCE_S3_SECRET_{{ $envPrefix }})"
+            {{- end }}
             {{- else if eq .type "gcs" }}
             - "--data-library-gcs={{ .name }}=gs://{{ .gcs.bucket }}{{ if .gcs.prefix }}/{{ .gcs.prefix }}{{ end }}"
             {{- if .gcs.projectId }}
@@ -229,6 +234,21 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.storage.main.s3.secretRef.name }}
                   key: {{ .Values.storage.main.s3.secretRef.secretKeyField }}
+            {{- end }}
+            {{- range .Values.dataSources }}
+            {{- if and (eq .type "s3") .s3.secretRef.name }}
+            {{- $envPrefix := .name | upper | replace "-" "_" | replace "." "_" }}
+            - name: PL_DATASOURCE_S3_KEY_{{ $envPrefix }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .s3.secretRef.name }}
+                  key: {{ .s3.secretRef.accessKeyField | default "access-key" }}
+            - name: PL_DATASOURCE_S3_SECRET_{{ $envPrefix }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .s3.secretRef.name }}
+                  key: {{ .s3.secretRef.secretKeyField | default "secret-key" }}
+            {{- end }}
             {{- end }}
             {{- if .Values.auth.ldap.server }}
             {{- if .Values.auth.ldap.searchPassword }}

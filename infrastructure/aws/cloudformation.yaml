@@ -195,7 +195,7 @@ Parameters:
 
   PlatformaVersion:
     Type: String
-    Default: '3.0.0-rc.15'
+    Default: '3.0.0-rc.16'
     Description: Platforma Helm chart version (oci://ghcr.io/milaboratory/platforma-helm/platforma)
 
   PlatformaImage:

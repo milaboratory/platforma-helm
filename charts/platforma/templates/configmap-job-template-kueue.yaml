@@ -58,6 +58,8 @@ data:
               ttlSecondsAfterFinished: 3600
               template:
                 metadata:
+                  annotations:
+                    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
                   labels:
                     platforma.bio/job-id: << .JobID >>
                     app.kubernetes.io/managed-by: platforma

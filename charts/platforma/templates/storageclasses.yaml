@@ -13,6 +13,8 @@ metadata:
   name: gp3
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
 provisioner: ebs.csi.aws.com
 parameters:
   type: gp3

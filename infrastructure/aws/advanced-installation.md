@@ -282,7 +282,10 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
   --set extraArgs.scale-down-delay-after-add=10m \
   --set extraArgs.scale-down-unneeded-time=10m \
   --set extraArgs.scale-down-utilization-threshold=0.5 \
-  --set extraArgs.expander=least-waste
+  --set extraArgs.expander=least-waste \
+  --set extraArgs.max-node-provision-time=5m \
+  --set extraArgs.initial-node-group-backoff-duration=1m \
+  --set extraArgs.max-node-group-backoff-duration=5m
 ```
 
 ### Configuration options
@@ -293,6 +296,9 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
 | `scale-down-unneeded-time` | 10m | 2m | Time node must be unneeded before removal |
 | `scale-down-utilization-threshold` | 0.5 | 0.5 | Scale down if utilization below this |
 | `expander` | least-waste | least-waste | Strategy for choosing node group to scale |
+| `max-node-provision-time` | 5m | 5m | Max time to wait for a node to become ready (default 15m is too long for EKS) |
+| `initial-node-group-backoff-duration` | 1m | 1m | Initial backoff after failed scale-up (default 5m) |
+| `max-node-group-backoff-duration` | 5m | 5m | Max backoff after repeated failures (default 30m) |
 
 Verify:
 

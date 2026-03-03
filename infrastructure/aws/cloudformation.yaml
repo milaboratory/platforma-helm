@@ -2834,98 +2834,28 @@ Outputs:
 
   ClusterName:
     Description: >
-      EKS cluster name. Run: aws eks update-kubeconfig --name <ClusterName> --region <Region>
+      EKS cluster name. To access the cluster:
+      aws eks update-kubeconfig --name <ClusterName> --region <Region>
     Value: !Ref EksCluster
 
-  ClusterEndpoint:
-    Description: EKS API server endpoint
-    Value: !GetAtt EksCluster.Endpoint
-
   Region:
-    Description: >
-      AWS region. Use: --set storage.main.s3.region=<value>
+    Description: AWS region where the cluster is deployed
     Value: !Ref AWS::Region
-
-  OidcProviderArn:
-    Description: OIDC provider ARN for IRSA
-    Value: !Ref OidcProvider
-
-  EfsFileSystemId:
-    Description: >
-      EFS filesystem ID for Platforma workspace.
-      Use: --set storage.workspace.efs.fileSystemId=<value>
-    Value: !Ref EfsFileSystem
-
-  S3BucketName:
-    Description: >
-      S3 bucket for primary storage.
-      Use: --set storage.main.s3.bucket=<value>
-    Value: !Ref S3Bucket
-
-  PlatformaRoleArn:
-    Description: >
-      IRSA role ARN for Platforma server service account.
-      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
-    Value: !GetAtt PlatformaIrsaRole.Arn
-
-  PlatformaJobsRoleArn:
-    Description: >
-      IRSA role ARN for Platforma jobs service account.
-      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
-    Value: !GetAtt PlatformaJobsIrsaRole.Arn
-
-  AutoscalerRoleArn:
-    Description: >
-      IRSA role ARN for Cluster Autoscaler service account.
-      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
-    Value: !GetAtt AutoscalerIrsaRole.Arn
-
-  ALBControllerRoleArn:
-    Description: >
-      IRSA role ARN for AWS Load Balancer Controller.
-      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
-    Value: !GetAtt ALBControllerRole.Arn
-
-  ExternalDNSRoleArn:
-    Description: >
-      IRSA role ARN for External DNS.
-      Annotate the K8s SA: eks.amazonaws.com/role-arn=<value>
-    Value: !GetAtt ExternalDNSRole.Arn
-
-  PlatformaNamespace:
-    Description: >
-      Kubernetes namespace for Platforma (reference only — created via kubectl in Step 4,
-      not by this stack). Used in IRSA trust policies for all service accounts.
-    Value: !Ref PlatformaNamespace
-
-  CertificateArn:
-    Description: >
-      ACM certificate ARN for TLS termination on ALB.
-      Use in ALB Ingress annotation: alb.ingress.kubernetes.io/certificate-arn=<value>
-    Value: !Ref Certificate
-
-  VpcId:
-    Description: VPC ID (created or provided)
-    Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
-
-  NodeGroupRoleArn:
-    Description: IAM role ARN shared by all node groups
-    Value: !GetAtt NodeGroupRole.Arn
 
   HelmDeployerBuildProject:
     Description: >
-      CodeBuild project that deploys infra controllers (Kueue, AppWrapper, Cluster Autoscaler,
-      ALB Controller, External DNS). Check its logs if the stack creation fails.
-    Value: !Sub 'https://console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ClusterName}-helm-deployer/history'
+      CodeBuild project that deploys infrastructure controllers (Kueue, AppWrapper,
+      Cluster Autoscaler, ALB Controller, External DNS). Check logs here if the stack fails.
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ClusterName}-helm-deployer/history?region=${AWS::Region}'
 
   PlatformaDeployerBuildProject:
     Description: >
-      CodeBuild project that deploys Platforma. Check its logs if Platforma deployment fails.
-    Value: !Sub 'https://console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ClusterName}-platforma-deployer/history'
+      CodeBuild project that deploys Platforma. Check logs here if Platforma deployment fails.
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ClusterName}-platforma-deployer/history?region=${AWS::Region}'
 
   PostDeploySteps:
-    Description: See infrastructure/aws/README.md for full instructions
+    Description: What to do after the stack completes
     Value: >-
-      Stack deploys everything automatically. Once complete: connect Desktop App to your domain on port 443.
-      If deployment fails, check the CodeBuild project logs (see HelmDeployerBuildProject and
-      PlatformaDeployerBuildProject outputs). See infrastructure/aws/README.md for details.
+      Stack deploys everything automatically. Once complete, connect the Platforma
+      Desktop App to your domain on port 443. If deployment fails, check the CodeBuild
+      project logs (see HelmDeployerBuildProject and PlatformaDeployerBuildProject outputs).

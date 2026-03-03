@@ -174,6 +174,8 @@ Parameters:
   PlatformaNamespace:
     Type: String
     Default: platforma
+    AllowedPattern: '^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+    ConstraintDescription: 'Must be a valid Kubernetes namespace (lowercase, digits, hyphens, starts with letter, max 63 chars)'
     Description: >
       Kubernetes namespace for Platforma. Used in IRSA trust policies.
       The namespace is NOT created by this template — create it before Helm install.
@@ -196,6 +198,8 @@ Parameters:
   PlatformaVersion:
     Type: String
     Default: '3.0.0-rc.16'
+    AllowedPattern: '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'
+    ConstraintDescription: 'Must be a valid semver version (e.g. 3.0.0-rc.17 or 3.0.0-rc.17-rc.1)'
     Description: Platforma Helm chart version (oci://ghcr.io/milaboratory/platforma-helm/platforma)
 
   PlatformaImage:
@@ -1813,9 +1817,10 @@ Resources:
                 Action:
                   - autoscaling:CreateOrUpdateTags
                 Resource: '*'
-              # Store auto-generated admin password in SSM Parameter Store
+              # Store/retrieve auto-generated admin password in SSM Parameter Store
               - Effect: Allow
                 Action:
+                  - ssm:GetParameter
                   - ssm:PutParameter
                   - ssm:DeleteParameter
                 Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ClusterName}/platforma/*'
@@ -2341,16 +2346,24 @@ Resources:
 
                   if [ "$AUTH_METHOD" = "htpasswd" ]; then
                     if [ -z "$HTPASSWD_CONTENT" ]; then
-                      echo "No HtpasswdContent provided — generating random admin password"
-                      ADMIN_PASSWORD=$(openssl rand -base64 12)
-                      HTPASSWD_CONTENT="platforma:$(openssl passwd -apr1 "$ADMIN_PASSWORD")"
-                      aws ssm put-parameter \
+                      EXISTING=$(aws ssm get-parameter \
                         --name "/${CLUSTER_NAME}/platforma/admin-password" \
-                        --type SecureString \
-                        --value "$ADMIN_PASSWORD" \
-                        --overwrite \
-                        --region $REGION
-                      echo "Admin password stored in SSM: /${CLUSTER_NAME}/platforma/admin-password"
+                        --with-decryption --query Parameter.Value --output text \
+                        --region $REGION 2>/dev/null) || true
+                      if [ -n "$EXISTING" ]; then
+                        echo "Using existing admin password from SSM: /${CLUSTER_NAME}/platforma/admin-password"
+                        ADMIN_PASSWORD="$EXISTING"
+                      else
+                        echo "No HtpasswdContent provided — generating random admin password"
+                        ADMIN_PASSWORD=$(openssl rand -base64 12)
+                        aws ssm put-parameter \
+                          --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                          --type SecureString \
+                          --value "$ADMIN_PASSWORD" \
+                          --region $REGION
+                        echo "Admin password stored in SSM: /${CLUSTER_NAME}/platforma/admin-password"
+                      fi
+                      HTPASSWD_CONTENT="platforma:$(openssl passwd -apr1 "$ADMIN_PASSWORD")"
                     fi
                     kubectl create secret generic platforma-htpasswd \
                       -n $NAMESPACE \
@@ -2366,6 +2379,14 @@ Resources:
                     eval "LIB_KEY=\${DATA_LIBRARY_${LIB_NUM}_ACCESS_KEY:-}"
                     eval "LIB_SECRET=\${DATA_LIBRARY_${LIB_NUM}_SECRET_KEY:-}"
                     [ -z "$LIB_BUCKET" ] && continue
+                    if [ -n "$LIB_KEY" ] && [ -z "$LIB_SECRET" ]; then
+                      echo "ERROR: DataLibrary${LIB_NUM}AccessKey is set but DataLibrary${LIB_NUM}SecretKey is empty."
+                      exit 1
+                    fi
+                    if [ -z "$LIB_KEY" ] && [ -n "$LIB_SECRET" ]; then
+                      echo "ERROR: DataLibrary${LIB_NUM}SecretKey is set but DataLibrary${LIB_NUM}AccessKey is empty."
+                      exit 1
+                    fi
                     [ -z "$LIB_NAME" ] && LIB_NAME="library-${LIB_NUM}"
                     if [ -n "$LIB_KEY" ]; then
                       kubectl create secret generic "platforma-library-${LIB_NUM}-creds" \

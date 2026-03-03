@@ -295,6 +295,7 @@ spec:
           startupProbe:
             grpc:
               port: 6345
+              service: ""
             initialDelaySeconds: 5
             periodSeconds: 3
             timeoutSeconds: 5
@@ -302,15 +303,17 @@ spec:
           livenessProbe:
             grpc:
               port: 6345
-            initialDelaySeconds: 30
+              service: "GRPC"
             periodSeconds: 10
             timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             grpc:
               port: 6345
-            initialDelaySeconds: 10
+              service: ""
             periodSeconds: 5
-            timeoutSeconds: 3
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             {{- toYaml .Values.app.resources | nindent 12 }}
           volumeMounts:

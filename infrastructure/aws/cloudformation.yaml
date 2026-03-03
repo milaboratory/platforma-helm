@@ -2821,7 +2821,7 @@ Resources:
 # Outputs
 # =============================================================================
 Outputs:
-  PlatformaURL:
+  PlatformaUrl:
     Description: Open this URL in your browser to access Platforma
     Value: !Sub 'https://${DomainName}'
 

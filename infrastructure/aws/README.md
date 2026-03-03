@@ -17,8 +17,8 @@ graph TD
     subgraph EKS["EKS Cluster"]
         dns --> platforma["Platforma Server"]
         platforma --> kueue["Kueue + AppWrapper"]
-        kueue --> ui["UI pool: t3.xlarge, 0-4 nodes"]
-        kueue --> batch["Batch pool: m5.2xl / m5.4xl / m5.8xl, 0-16 each"]
+        kueue --> ui["UI pool: t3.xlarge, 0-16 nodes"]
+        kueue --> batch["Batch pool: m5.2xl–m5.8xl + r5.4xl–r5.8xl, 0-32 each"]
         platforma --- ebs[("EBS gp3: database")]
     end
 
@@ -78,32 +78,44 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 | Public subnet IDs | *(leave as-is)* | 3 public subnets — required for ALB when using existing VPC. Same `,,` workaround applies. |
 | VPC CIDR | `10.0.0.0/16` | CIDR for the new VPC (ignored with existing VPC) |
 
-### Node groups
-
-Default values work for most deployments. Adjust batch instance types and max counts for your workload.
+### Workload capacity
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| System instance type | `t3.large` | Platforma server, Kueue, controllers |
-| System node count | `2` | Fixed count |
-| System-large instance type | `t3.xlarge` | Platforma server on large datasets (4 vCPU / 16 GiB) |
-| System-large max nodes | `4` | Autoscales from 0; set to 0 to disable |
-| UI instance type | `t3.xlarge` | Interactive tasks |
-| UI max nodes | `4` | Autoscales from 0 |
-| UI always-on node | `false` | Keep 1 UI node running at all times (~$200/month, eliminates cold start) |
-| Batch medium | `m5.2xlarge` | 8 vCPU / 32 GiB |
-| Batch large | `m5.4xlarge` | 16 vCPU / 64 GiB |
-| Batch xlarge | `m5.8xlarge` | 32 vCPU / 128 GiB |
-| Batch max per group | `16` | Each batch tier scales 0 to this |
+| Compute family | `small` | How many jobs run simultaneously. See table below. |
 
-**UI node cold start:** When all UI nodes are at zero, the first task waits ~2-3 minutes for a t3.xlarge to launch and join the cluster. Setting **UI always-on node** to `true` keeps one node running permanently — tasks start instantly, but adds ~$200/month to your AWS bill.
+| Family | Concurrent large jobs | Concurrent medium jobs | Concurrent small jobs | Recommended vCPU quota |
+|--------|----------------------|----------------------|---------------------|----------------------|
+| `small` | 4 | 8 | 16 | ~200 |
+| `medium` | 8 | 16 | 32 | ~400 |
+| `large` | 16 | 32 | 64 | ~800 |
+| `xlarge` | 32 | 64 | 128 | ~1600 |
+
+Before deploying, check that your AWS On-Demand vCPU quota meets the recommended minimum. Request an increase at [Service Quotas console](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A) if needed. The stack checks the quota during deployment and fails with an error if it is too low.
+
+### Node groups (fixed topology, not configurable)
+
+Instance types and node counts are not exposed as parameters. The stack creates:
+
+| Group | Instance | Scaling | Purpose |
+|-------|----------|---------|---------|
+| system | m5.2xlarge | 2 fixed (1-4) | Platforma server, Kueue, controllers |
+| system-large | m5.4xlarge | 0-4 | Large-dataset processing |
+| ui | t3.xlarge | 0-16 | Interactive tasks |
+| batch-medium | m5.2xlarge | 0-32 | 8 vCPU / 32 GiB compute |
+| batch-large | m5.4xlarge | 0-32 | 16 vCPU / 64 GiB compute |
+| batch-xlarge | m5.8xlarge | 0-32 | 32 vCPU / 128 GiB compute |
+| batch-2xlarge | r5.4xlarge | 0-32 | 16 vCPU / 128 GiB (high memory) |
+| batch-4xlarge | r5.8xlarge | 0-32 | 32 vCPU / 256 GiB (high memory) |
+
+Cluster Autoscaler with `least-waste` expander picks the smallest group that fits each job. Batch and UI nodes scale to zero when idle (after 10 min cooldown).
 
 ### Storage
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | EFS performance mode | `generalPurpose` | `maxIO` for very high throughput |
-| S3 bucket name | *(auto-generated)* | Auto-generates as `platforma-storage-<account>-<region>` |
+| S3 bucket name | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<AccountId>` |
 
 EFS throughput mode is hardcoded to `elastic` (pay-per-use, no burst credits to exhaust). This is not configurable.
 

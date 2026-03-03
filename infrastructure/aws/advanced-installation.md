@@ -272,9 +272,11 @@ helm repo add autoscaler https://kubernetes.github.io/autoscaler
 helm repo update
 
 helm install cluster-autoscaler autoscaler/cluster-autoscaler \
+  --version 9.53.0 \
   --namespace kube-system \
   --set autoDiscovery.clusterName=$CLUSTER_NAME \
   --set awsRegion=$AWS_REGION \
+  --set image.tag=v1.34.0 \
   --set rbac.serviceAccount.create=false \
   --set rbac.serviceAccount.name=cluster-autoscaler \
   --set extraArgs.scale-down-delay-after-add=10m \
@@ -329,6 +331,7 @@ helm repo add eks https://aws.github.io/eks-charts
 helm repo update
 
 helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  --version 3.0.0 \
   -n kube-system \
   --set clusterName=$CLUSTER_NAME \
   --set serviceAccount.create=false \
@@ -393,6 +396,7 @@ helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
 helm repo update
 
 helm install external-dns external-dns/external-dns \
+  --version 1.20.0 \
   -n kube-system \
   --set serviceAccount.create=false \
   --set serviceAccount.name=external-dns \
@@ -603,6 +607,13 @@ kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/r
 
 kubectl wait --for=condition=Available deployment/appwrapper-controller-manager \
   -n appwrapper-system --timeout=120s
+```
+
+Delete the AppWrapper webhooks — the mutating webhook injects IAM ARN as a label value, and the `:` in the ARN is invalid in Kubernetes labels:
+
+```bash
+kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
+kubectl delete mutatingwebhookconfiguration appwrapper-mutating-webhook-configuration --ignore-not-found
 ```
 
 Verify:

@@ -5,7 +5,9 @@
 {{- if ne (include "platforma.workspaceConfigured" .) "true" }}
 {{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.fsxLustre.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
 {{- end }}
-{{- if not (or (include "platforma.htpasswdSecretName" .) .Values.auth.ldap.server) }}
+{{- if not (or (include "platforma.htpasswdSecretName" .)
+               (has "--no-auth" .Values.app.extraArgs)
+               .Values.auth.ldap.server ) }}
 {{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n\nTo disable auth for development, add to app.extraArgs:\n  - \"--no-auth\"" }}
 {{- end }}
 {{- if and .Values.auth.htpasswd.secretName (gt (len .Values.auth.htpasswd.credentials) 0) }}

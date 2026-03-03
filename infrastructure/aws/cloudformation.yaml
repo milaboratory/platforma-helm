@@ -2822,14 +2822,9 @@ Resources:
 # =============================================================================
 Outputs:
   PlatformaUrl:
-    Description: Open this URL in your browser to access Platforma
-    Value: !Sub 'https://${DomainName}'
-
-  ConnectionEndpoint:
     Description: >
-      Platforma Desktop App connection endpoint.
-      Open the Desktop App and connect to this address.
-    Value: !Sub '${DomainName}:443'
+      Platforma URL. Connect to this address using the Platforma Desktop App.
+    Value: !Sub 'https://${DomainName}'
 
   UsersPasswordSSMPath:
     Description: >

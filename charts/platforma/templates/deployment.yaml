@@ -200,7 +200,7 @@ spec:
             {{- if .Values.app.debug.enabled }}
             - "--debug-ip=0.0.0.0"
             - "--log-level=debug"
-            - "--keep-workdirs=1h"
+            - "--keep-workdirs=24h"
             {{- else }}
             - "--debug-ip=127.0.0.1"
             {{- end }}

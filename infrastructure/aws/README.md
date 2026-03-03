@@ -42,17 +42,6 @@ No CLI steps required. The stack handles everything: infrastructure, Helm instal
 - **Platforma license key**
 - **Platforma Desktop App** — download from [platforma.bio](https://platforma.bio)
 
-## Files in this directory
-
-| File | Description |
-|------|-------------|
-| `cloudformation.yaml` | CloudFormation template — creates everything |
-| `permissions.md` | AWS permissions reference |
-| `advanced-installation.md` | Manual CLI setup guide (without CloudFormation) |
-| `domain-guide.md` | How to register a domain in AWS and set up Route53 |
-
----
-
 ## Step 1: Deploy CloudFormation stack
 
 Open the AWS Console and navigate to **CloudFormation → Create Stack → With new resources**.
@@ -93,31 +82,12 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 
 Before deploying, check that your AWS On-Demand vCPU quota meets the recommended minimum. Request an increase at [Service Quotas console](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A) if needed. The stack checks the quota during deployment and fails with an error if it is too low.
 
-### Node groups (fixed topology, not configurable)
-
-Instance types and node counts are not exposed as parameters. The stack creates:
-
-| Group | Instance | Scaling | Purpose |
-|-------|----------|---------|---------|
-| system | m5.2xlarge | 2 fixed (1-4) | Platforma server, Kueue, controllers |
-| system-large | m5.4xlarge | 0-4 | Large-dataset processing |
-| ui | t3.xlarge | 0-16 | Interactive tasks |
-| batch-medium | m5.2xlarge | 0-32 | 8 vCPU / 32 GiB compute |
-| batch-large | m5.4xlarge | 0-32 | 16 vCPU / 64 GiB compute |
-| batch-xlarge | m5.8xlarge | 0-32 | 32 vCPU / 128 GiB compute |
-| batch-2xlarge | r5.4xlarge | 0-32 | 16 vCPU / 128 GiB (high memory) |
-| batch-4xlarge | r5.8xlarge | 0-32 | 32 vCPU / 256 GiB (high memory) |
-
-Cluster Autoscaler with `least-waste` expander picks the smallest group that fits each job. Batch and UI nodes scale to zero when idle (after 10 min cooldown).
-
 ### Storage
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | EFS performance mode | `generalPurpose` | `maxIO` for very high throughput |
 | S3 bucket name | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<AccountId>` |
-
-EFS throughput mode is hardcoded to `elastic` (pay-per-use, no burst credits to exhaust). This is not configurable.
 
 ### Platforma deployment
 
@@ -222,49 +192,6 @@ ALB provisioning and DNS propagation may take 1-3 minutes after the stack comple
 To update the Platforma version, change the `PlatformaVersion` parameter in the CloudFormation Console and update the stack. Only the Platforma deployer CodeBuild project runs — infrastructure is not affected.
 
 The auto-generated password is preserved across updates. It is read from SSM on each deploy, not regenerated.
-
----
-
-## How it works
-
-```mermaid
-sequenceDiagram
-    participant User as Desktop App
-    participant P as Platforma
-    participant K as Kueue
-    participant CA as Cluster Autoscaler
-    participant EC2 as AWS EC2
-    participant Pod as Job Pod
-
-    User->>P: Submit analysis
-    P->>K: Create Job in AppWrapper,<br/>assign to LocalQueue
-
-    K->>K: Evaluate ClusterQueue quota
-    K->>Pod: Admit workload, create Pod (Pending)
-
-    Note over CA: 10s scan cycle
-    CA->>CA: Detect unschedulable pod
-    CA->>EC2: Scale up smallest fitting<br/>node group (least-waste)
-
-    Note over EC2: ~60s total
-    EC2->>EC2: Launch instance,<br/>join cluster
-
-    Pod->>Pod: Scheduled, Running
-    Note over Pod: Reads/writes EFS<br/>shared workspace
-
-    Pod->>P: Job complete
-    P->>User: Results available
-
-    Note over CA: After 10 min idle
-    CA->>EC2: Scale down unused node
-```
-
-### Scaling performance
-
-| Operation | Duration | Notes |
-|-----------|----------|-------|
-| Scale-up (0 to 1 node) | ~60 seconds | Kueue admission + autoscaler detection + EC2 launch + node ready |
-| Scale-down | 6-10 minutes | Configurable via cooldown settings |
 
 ---
 

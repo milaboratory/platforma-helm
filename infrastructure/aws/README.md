@@ -185,18 +185,22 @@ Once complete, go to the **Outputs** tab:
 
 ## Step 2: Retrieve the password
 
-If you left `HtpasswdContent` empty, the stack generated a random password and stored it in SSM Parameter Store. Retrieve it:
+If you left `HtpasswdContent` empty, the stack generated a random password and stored it in SSM Parameter Store.
+
+**Via AWS Console:** Go to **Systems Manager → Parameter Store**, find the parameter shown in the `UsersPasswordSSMPath` output, click **Show** to reveal the value.
+
+**Via CLI:**
 
 ```bash
 aws ssm get-parameter \
-  --name /<ClusterName>/platforma/users-password \
+  --name "<UsersPasswordSSMPath>" \
   --with-decryption \
   --query Parameter.Value \
   --output text \
   --region <Region>
 ```
 
-Replace `<ClusterName>` and `<Region>` with the values from the Outputs tab. The SSM path is also shown in the `UsersPasswordSSMPath` output.
+Replace `<UsersPasswordSSMPath>` and `<Region>` with the values from the Outputs tab.
 
 The username is `platforma`. The password persists across stack updates — it is only generated once and reused on subsequent deploys.
 
@@ -206,22 +210,10 @@ The username is `platforma`. The password persists across stack updates — it i
 
 1. **Open** the Platforma Desktop App (download from [platforma.bio](https://platforma.bio) if needed)
 2. **Add** a new connection
-3. **Enter** your endpoint: the URL from the `PlatformaUrl` output (e.g. `https://platforma.example.com`)
+3. **Enter** the `PlatformaUrl` from the Outputs tab (e.g. `https://platforma.example.com`)
 4. **Log in** with username `platforma` and the password from Step 2
 
 ALB provisioning and DNS propagation may take 1-3 minutes after the stack completes. If the connection fails immediately after deployment, wait and retry.
-
----
-
-## Accessing the cluster (optional)
-
-To inspect the cluster directly with `kubectl`:
-
-```bash
-aws eks update-kubeconfig --name <ClusterName> --region <Region>
-kubectl get nodes
-kubectl get pods -n platforma
-```
 
 ---
 
@@ -282,9 +274,9 @@ sequenceDiagram
 
 The most common cause is ACM certificate validation failure. The stack creates an ACM certificate and validates it by writing a DNS record to your Route53 hosted zone. This fails silently if the hosted zone ID is wrong or if the domain's NS records are not pointing at Route53.
 
-Check certificate status in the AWS Console → Certificate Manager → your domain. If the certificate shows `PENDING_VALIDATION` after 5+ minutes, verify:
+Check certificate status in the AWS Console → **Certificate Manager** → your domain. If the certificate shows `PENDING_VALIDATION` after 5+ minutes, verify:
 1. The **Route53 hosted zone ID** parameter matches the actual zone that controls your domain's DNS
-2. Your domain's NS records are delegated to Route53 (check with `nslookup -type=NS <domain>`)
+2. Your domain's NS records are delegated to Route53
 
 ### CodeBuild deployment failed
 
@@ -294,72 +286,13 @@ Check the CodeBuild project logs — links are in the Outputs tab (`HelmDeployer
 - **Helm chart version not found** — verify the `PlatformaVersion` parameter matches a published chart version
 - **vCPU quota exceeded** — the stack checks your AWS On-Demand vCPU quota before deploying. If it's too low, request an increase at [Service Quotas console](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A)
 
-### Pods stuck in Pending
-
-```bash
-# Check if Kueue admitted the workload
-kubectl get workloads -A
-
-# Check Cluster Autoscaler logs
-kubectl logs -n platforma -l app.kubernetes.io/name=aws-cluster-autoscaler --tail=50
-
-# Check node group scaling activity
-aws autoscaling describe-scaling-activities --auto-scaling-group-name <asg-name> --max-items 5
-```
-
-### PVC stuck in Pending
-
-```bash
-# Verify gp3 StorageClass exists
-kubectl get sc gp3
-
-# Verify EBS CSI driver is running
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
-```
-
-### EFS mount failures
-
-```bash
-# Verify mount targets exist
-aws efs describe-mount-targets --file-system-id <EfsFileSystemId>
-
-# Verify EFS CSI driver is running
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-efs-csi-driver
-```
-
 ---
 
 ## Cleanup
 
-Delete the CloudFormation stack from the AWS Console or CLI. The stack's teardown CodeBuild project automatically:
-
-1. Uninstalls all Helm releases (Platforma, ALB Controller, External DNS, Cluster Autoscaler, Kueue)
-2. Waits for ALB deprovisioning
-3. Cleans up DNS records
-
-```bash
-STACK_NAME=<your stack name>
-aws cloudformation delete-stack --stack-name $STACK_NAME
-aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME
-```
+Delete the CloudFormation stack from the AWS Console: **CloudFormation → Stacks → select your stack → Delete**. The stack automatically uninstalls all Helm releases, waits for ALB deprovisioning, and cleans up DNS records before deleting the infrastructure.
 
 **S3 and EFS are retained** after stack deletion (data safety). Delete them manually when you are certain the data is no longer needed:
 
-```bash
-# WARNING: permanently destroys all Platforma data. There is no undo.
-S3_BUCKET=<bucket name from AWS Console>
-EFS_ID=<EFS filesystem ID from AWS Console>
-
-aws s3 rm s3://$S3_BUCKET --recursive
-aws s3 rb s3://$S3_BUCKET
-aws efs delete-file-system --file-system-id $EFS_ID
-```
-
-CloudWatch log groups are also retained:
-
-```bash
-CLUSTER_NAME=<cluster name>
-aws logs delete-log-group --log-group-name /aws/eks/$CLUSTER_NAME/cluster 2>/dev/null || true
-aws logs delete-log-group --log-group-name /aws/codebuild/${CLUSTER_NAME}-helm-deployer 2>/dev/null || true
-aws logs delete-log-group --log-group-name /aws/codebuild/${CLUSTER_NAME}-platforma-deployer 2>/dev/null || true
-```
+1. **S3 bucket** — go to **S3** in the Console, find the bucket (named `platforma-<ClusterName>-<AccountId>`), empty it, then delete it
+2. **EFS filesystem** — go to **EFS** in the Console, find the filesystem (tagged with the cluster name), delete it

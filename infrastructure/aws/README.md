@@ -17,8 +17,8 @@ graph TD
     subgraph EKS["EKS Cluster"]
         dns --> platforma["Platforma Server"]
         platforma --> kueue["Kueue + AppWrapper"]
-        kueue --> ui["UI pool: t3.xlarge, 0-16 nodes"]
-        kueue --> batch["Batch pool: m5.2xl–m5.8xl + r5.4xl–r5.8xl, 0-32 each"]
+        kueue --> ui["UI pool: t3.xlarge, scale-from-zero"]
+        kueue --> batch["Batch pools: m6a.4xl–16xl + r6a.8xl–16xl, scale-from-zero"]
         platforma --- ebs[("EBS gp3: database")]
     end
 
@@ -67,18 +67,18 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 | Public subnet IDs | *(leave as-is)* | 3 public subnets — required for ALB when using existing VPC. Same `,,` workaround applies. |
 | VPC CIDR | `10.0.0.0/16` | CIDR for the new VPC (ignored with existing VPC) |
 
-### Workload capacity
+### Cluster sizing
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| Compute family | `small` | How many jobs run simultaneously. See table below. |
+| Deployment size | `small` | Controls node group scaling limits and Kueue quotas. All sizes support the same max single-job size (62 vCPU / 500 GiB). |
 
-| Family | Concurrent large jobs | Concurrent medium jobs | Concurrent small jobs | Recommended vCPU quota |
-|--------|----------------------|----------------------|---------------------|----------------------|
-| `small` | 4 | 8 | 16 | ~200 |
-| `medium` | 8 | 16 | 32 | ~400 |
-| `large` | 16 | 32 | 64 | ~800 |
-| `xlarge` | 32 | 64 | 128 | ~1600 |
+| Size | Max single-job | Approximate parallelism | Recommended vCPU quota |
+|------|---------------|------------------------|----------------------|
+| `small` | 62 vCPU / 500 GiB | ~4 large or ~16 small jobs | ~400 |
+| `medium` | 62 vCPU / 500 GiB | ~8 large or ~32 small jobs | ~700 |
+| `large` | 62 vCPU / 500 GiB | ~16 large or ~64 small jobs | ~1400 |
+| `xlarge` | 62 vCPU / 500 GiB | ~32 large or ~128 small jobs | ~2700 |
 
 Before deploying, check that your AWS On-Demand vCPU quota meets the recommended minimum. Request an increase at [Service Quotas console](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A) if needed. The stack checks the quota during deployment and fails with an error if it is too low.
 

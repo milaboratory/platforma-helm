@@ -48,9 +48,9 @@ Metadata:
           - LdapSearchUser
           - LdapSearchPassword
       - Label:
-          default: 'Workload capacity'
+          default: 'Cluster sizing'
         Parameters:
-          - ComputeFamily
+          - DeploymentSize
       - Label:
           default: Storage
         Parameters:
@@ -89,8 +89,8 @@ Metadata:
         default: Public subnet IDs (3, one per AZ)
       VpcCidr:
         default: VPC CIDR (new VPC only)
-      ComputeFamily:
-        default: 'How many jobs run simultaneously'
+      DeploymentSize:
+        default: 'Deployment size (controls parallelism)'
       DeployPlatforma:
         default: 'Deploy Platforma (false = infrastructure + controllers only)'
       LicenseKey:
@@ -404,20 +404,19 @@ Parameters:
     AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
     Description: CIDR block for new VPC (ignored if VpcId is provided)
 
-  # --- Node groups ---
-  # --- Workload capacity ---
-  ComputeFamily:
+  # --- Cluster sizing ---
+  DeploymentSize:
     Type: String
     Default: small
     AllowedValues: [small, medium, large, xlarge]
     Description: >
-      How many analysis jobs can run simultaneously.
-      small:  4 large jobs, or 8 medium, or 16 small — for small teams or testing.
-      medium: 8 large jobs, or 16 medium, or 32 small — for mid-sized research groups.
-      large:  16 large jobs, or 32 medium, or 64 small — for large research groups.
-      xlarge: 32 large jobs, or 64 medium, or 128 small — for enterprise deployments.
-      Before deploying, request the corresponding AWS On-Demand vCPU quota:
-      small ~200 vCPU, medium ~400 vCPU, large ~800 vCPU, xlarge ~1600 vCPU.
+      Cluster sizing profile. Controls node group scaling limits and Kueue quotas.
+      All deployment sizes support the same maximum single-job size (62 vCPU / 500Gi).
+      Larger sizes allow more jobs to run simultaneously.
+      small:  ~4 large jobs, or 16 small — for small teams or testing (~400 vCPU quota).
+      medium: ~8 large jobs, or 32 small — for mid-sized research groups (~700 vCPU quota).
+      large:  ~16 large jobs, or 64 small — for large research groups (~1400 vCPU quota).
+      xlarge: ~32 large jobs, or 128 small — for enterprise deployments (~2700 vCPU quota).
 
   # --- Storage ---
   EfsPerformanceMode:
@@ -471,30 +470,60 @@ Parameters:
 # Mappings
 # =============================================================================
 Mappings:
-  # Kueue ClusterQueue quotas per workload capacity family.
-  # Quota is aligned to the AWS On-Demand vCPU quota you request for each tier.
-  # UI quota is fixed at 16 x t3.xlarge = 64 vCPU / 256 GiB regardless of family.
-  ComputeFamily:
+  # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
+  # Quotas are derived from pool sizes (worst case: all jobs are max size).
+  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r6a.16xl count) x 500Gi.
+  # UI quota is fixed at 64 vCPU / 256 GiB regardless of size.
+  DeploymentSize:
     small:
-      BatchCpu: '128'
-      BatchMemoryGi: '1024'
+      # Kueue quotas (derived: 2x63=126 CPU, 1x500=500Gi)
+      BatchCpu: '126'
+      BatchMemoryGi: '500'
       UiCpu: '64'
       UiMemoryGi: '256'
+      # Node group MaxSize per pool
+      MaxBatch16c64g: '4'
+      MaxBatch32c128g: '2'
+      MaxBatch64c256g: '1'
+      MaxBatch32c256g: '2'
+      MaxBatch64c512g: '1'
+      MaxUi: '4'
     medium:
-      BatchCpu: '256'
-      BatchMemoryGi: '2048'
+      # Kueue quotas (derived: 4x63=252 CPU, 2x500=1000Gi)
+      BatchCpu: '252'
+      BatchMemoryGi: '1000'
       UiCpu: '64'
       UiMemoryGi: '256'
+      MaxBatch16c64g: '8'
+      MaxBatch32c128g: '4'
+      MaxBatch64c256g: '2'
+      MaxBatch32c256g: '4'
+      MaxBatch64c512g: '2'
+      MaxUi: '8'
     large:
-      BatchCpu: '512'
-      BatchMemoryGi: '4096'
+      # Kueue quotas (derived: 8x63=504 CPU, 4x500=2000Gi)
+      BatchCpu: '504'
+      BatchMemoryGi: '2000'
       UiCpu: '64'
       UiMemoryGi: '256'
+      MaxBatch16c64g: '16'
+      MaxBatch32c128g: '8'
+      MaxBatch64c256g: '4'
+      MaxBatch32c256g: '8'
+      MaxBatch64c512g: '4'
+      MaxUi: '16'
     xlarge:
-      BatchCpu: '1024'
-      BatchMemoryGi: '8192'
+      # Kueue quotas (derived: 16x63=1008 CPU, 8x500=4000Gi)
+      BatchCpu: '1008'
+      BatchMemoryGi: '4000'
       UiCpu: '64'
       UiMemoryGi: '256'
+      MaxBatch16c64g: '32'
+      MaxBatch32c128g: '16'
+      MaxBatch64c256g: '8'
+      MaxBatch32c256g: '16'
+      MaxBatch64c512g: '8'
+      MaxUi: '16'
 
 # =============================================================================
 # Conditions
@@ -1496,7 +1525,7 @@ Resources:
       NodegroupName: system
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m5.2xlarge
+        - m6a.2xlarge
       ScalingConfig:
         DesiredSize: 2
         MinSize: 1
@@ -1517,34 +1546,6 @@ Resources:
         k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
-  SystemLargeNodeGroup:
-    Type: AWS::EKS::Nodegroup
-    Properties:
-      ClusterName: !Ref EksCluster
-      NodegroupName: system-large
-      NodeRole: !GetAtt NodeGroupRole.Arn
-      InstanceTypes:
-        - m5.4xlarge
-      ScalingConfig:
-        DesiredSize: 0
-        MinSize: 0
-        MaxSize: 4
-      Subnets: !If
-        - CreateNewVpc
-        - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
-      LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
-      Labels:
-        node.kubernetes.io/pool: system
-      Tags:
-        nodegroup-type: system-large
-        k8s.io/cluster-autoscaler/enabled: 'true'
-        platforma: !Sub "${ClusterName}"
-
   UiNodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:
@@ -1556,7 +1557,7 @@ Resources:
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: 16
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxUi]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1577,18 +1578,18 @@ Resources:
         k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
-  BatchMediumNodeGroup:
+  Batch16c64gNodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-medium
+      NodegroupName: batch-16c-64g
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m5.2xlarge
+        - m6a.4xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: 32
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch16c64g]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1605,22 +1606,22 @@ Resources:
           Value: batch
           Effect: NO_SCHEDULE
       Tags:
-        nodegroup-type: batch
+        nodegroup-type: batch-16c-64g
         k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
-  BatchLargeNodeGroup:
+  Batch32c128gNodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-large
+      NodegroupName: batch-32c-128g
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m5.4xlarge
+        - m6a.8xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: 32
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch32c128g]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1637,22 +1638,22 @@ Resources:
           Value: batch
           Effect: NO_SCHEDULE
       Tags:
-        nodegroup-type: batch
+        nodegroup-type: batch-32c-128g
         k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
-  BatchXlargeNodeGroup:
+  Batch64c256gNodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-xlarge
+      NodegroupName: batch-64c-256g
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m5.8xlarge
+        - m6a.16xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: 32
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch64c256g]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1669,22 +1670,22 @@ Resources:
           Value: batch
           Effect: NO_SCHEDULE
       Tags:
-        nodegroup-type: batch
+        nodegroup-type: batch-64c-256g
         k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
-  Batch2xlargeNodeGroup:
+  Batch32c256gNodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-2xlarge
+      NodegroupName: batch-32c-256g
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - r5.4xlarge
+        - r6a.8xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: 32
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch32c256g]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1701,22 +1702,22 @@ Resources:
           Value: batch
           Effect: NO_SCHEDULE
       Tags:
-        nodegroup-type: batch
+        nodegroup-type: batch-32c-256g
         k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
-  Batch4xlargeNodeGroup:
+  Batch64c512gNodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-4xlarge
+      NodegroupName: batch-64c-512g
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - r5.8xlarge
+        - r6a.16xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: 32
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch64c512g]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1733,7 +1734,7 @@ Resources:
           Value: batch
           Effect: NO_SCHEDULE
       Tags:
-        nodegroup-type: batch
+        nodegroup-type: batch-64c-512g
         k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
@@ -2148,16 +2149,16 @@ Resources:
             Value: !GetAtt PlatformaJobsIrsaRole.Arn
           - Name: VPC_ID
             Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
-          - Name: COMPUTE_FAMILY
-            Value: !Ref ComputeFamily
+          - Name: DEPLOYMENT_SIZE
+            Value: !Ref DeploymentSize
           - Name: UI_QUEUE_CPU
-            Value: !FindInMap [ComputeFamily, !Ref ComputeFamily, UiCpu]
+            Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, UiCpu]
           - Name: UI_QUEUE_MEMORY_GI
-            Value: !FindInMap [ComputeFamily, !Ref ComputeFamily, UiMemoryGi]
+            Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, UiMemoryGi]
           - Name: BATCH_QUEUE_CPU
-            Value: !FindInMap [ComputeFamily, !Ref ComputeFamily, BatchCpu]
+            Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchCpu]
           - Name: BATCH_QUEUE_MEMORY_GI
-            Value: !FindInMap [ComputeFamily, !Ref ComputeFamily, BatchMemoryGi]
+            Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchMemoryGi]
           - Name: AUTH_METHOD
             Value: !Ref AuthMethod
           - Name: HTPASSWD_CONTENT
@@ -2448,6 +2449,9 @@ Resources:
                       alb.ingress.kubernetes.io/certificate-arn: $CERTIFICATE_ARN
                       alb.ingress.kubernetes.io/backend-protocol-version: GRPC
                   kueue:
+                    maxJobResources:
+                      cpu: 62
+                      memory: 500Gi
                     mode: dedicated
                     pools:
                       ui:
@@ -2676,7 +2680,7 @@ Resources:
       LdapSearchUser: !Ref LdapSearchUser
       LdapSearchPassword: !Ref LdapSearchPassword
       DomainName: !Ref DomainName
-      ComputeFamily: !Ref ComputeFamily
+      DeploymentSize: !Ref DeploymentSize
       DataLibrary1Name: !Ref DataLibrary1Name
       DataLibrary1Bucket: !Ref DataLibrary1Bucket
       DataLibrary1Region: !Ref DataLibrary1Region

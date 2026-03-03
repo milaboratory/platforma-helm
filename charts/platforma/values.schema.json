@@ -280,6 +280,9 @@
                 "enabled": {
                   "type": "boolean"
                 },
+                "chownOnCreate": {
+                  "type": "boolean"
+                },
                 "size": {
                   "type": "string"
                 },

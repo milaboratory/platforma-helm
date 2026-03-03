@@ -5,7 +5,9 @@
 {{- if ne (include "platforma.workspaceConfigured" .) "true" }}
 {{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.fsxLustre.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
 {{- end }}
-{{- if not (or (include "platforma.htpasswdSecretName" .) .Values.auth.ldap.server) }}
+{{- if not (or (include "platforma.htpasswdSecretName" .)
+               (has "--no-auth" .Values.app.extraArgs)
+               .Values.auth.ldap.server ) }}
 {{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n\nTo disable auth for development, add to app.extraArgs:\n  - \"--no-auth\"" }}
 {{- end }}
 {{- if and .Values.auth.htpasswd.secretName (gt (len .Values.auth.htpasswd.credentials) 0) }}
@@ -200,7 +202,7 @@ spec:
             {{- if .Values.app.debug.enabled }}
             - "--debug-ip=0.0.0.0"
             - "--log-level=debug"
-            - "--keep-workdirs=1h"
+            - "--keep-workdirs=24h"
             {{- else }}
             - "--debug-ip=127.0.0.1"
             {{- end }}
@@ -293,22 +295,25 @@ spec:
           startupProbe:
             grpc:
               port: 6345
+              service: ""
             initialDelaySeconds: 5
-            periodSeconds: 30
+            periodSeconds: 3
             timeoutSeconds: 5
-            failureThreshold: 60
+            failureThreshold: 600
           livenessProbe:
             grpc:
               port: 6345
-            initialDelaySeconds: 30
+              service: "GRPC"
             periodSeconds: 10
             timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             grpc:
               port: 6345
-            initialDelaySeconds: 10
+              service: ""
             periodSeconds: 5
-            timeoutSeconds: 3
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             {{- toYaml .Values.app.resources | nindent 12 }}
           volumeMounts:

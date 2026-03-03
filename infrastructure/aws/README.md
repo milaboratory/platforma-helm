@@ -96,6 +96,7 @@ Before deploying, check that your AWS On-Demand vCPU quota meets the recommended
 | Deploy Platforma | `false` | Set to `true` to deploy Platforma automatically after infrastructure is ready. When `false`, only infrastructure and controllers are deployed — useful for testing the stack first. |
 | License key | *(empty)* | Platforma license key (`MI_LICENSE` value). Required when Deploy Platforma is `true`. |
 | Platforma version | `3.0.0-rc.17` | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma` |
+| Custom container image | *(empty)* | Override the default Platforma container image. Leave empty to use the chart default. |
 
 ### Authentication
 

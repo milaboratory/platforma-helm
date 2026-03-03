@@ -225,7 +225,7 @@ Parameters:
     NoEcho: true
     Description: >
       htpasswd file content (one line per user, e.g. "user:$apr1$...").
-      When empty and AuthMethod=htpasswd, a random admin password is auto-generated
+      When empty and AuthMethod=htpasswd, a random users password is auto-generated
       and stored in SSM Parameter Store (see outputs).
       Generate manually with: htpasswd -nB username
 
@@ -1817,7 +1817,7 @@ Resources:
                 Action:
                   - autoscaling:CreateOrUpdateTags
                 Resource: '*'
-              # Store/retrieve auto-generated admin password in SSM Parameter Store
+              # Store/retrieve auto-generated users password in SSM Parameter Store
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
@@ -2122,7 +2122,7 @@ Resources:
           - Name: KUBERNETES_VERSION
             Value: !Ref KubernetesVersion
           # NOTE: Secrets below are visible in CodeBuild console/API.
-          # The auto-generated admin password uses SSM SecureString (see buildspec).
+          # The auto-generated users password uses SSM SecureString (see buildspec).
           # For user-provided secrets, restrict codebuild:BatchGetBuilds/BatchGetProjects
           # IAM permissions to trusted roles only.
           - Name: LICENSE_KEY
@@ -2310,7 +2310,7 @@ Resources:
                   fi
                   # Clean up SSM parameter (created by install script, not CF)
                   aws ssm delete-parameter \
-                    --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                    --name "/${CLUSTER_NAME}/platforma/users-password" \
                     --region $REGION 2>/dev/null || true
                   echo "Platforma teardown complete."
                   exit 0
@@ -2347,23 +2347,23 @@ Resources:
                   if [ "$AUTH_METHOD" = "htpasswd" ]; then
                     if [ -z "$HTPASSWD_CONTENT" ]; then
                       EXISTING=$(aws ssm get-parameter \
-                        --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                        --name "/${CLUSTER_NAME}/platforma/users-password" \
                         --with-decryption --query Parameter.Value --output text \
                         --region $REGION 2>/dev/null) || true
                       if [ -n "$EXISTING" ]; then
-                        echo "Using existing admin password from SSM: /${CLUSTER_NAME}/platforma/admin-password"
-                        ADMIN_PASSWORD="$EXISTING"
+                        echo "Using existing users password from SSM: /${CLUSTER_NAME}/platforma/users-password"
+                        USERS_PASSWORD="$EXISTING"
                       else
-                        echo "No HtpasswdContent provided — generating random admin password"
-                        ADMIN_PASSWORD=$(openssl rand -base64 12)
+                        echo "No HtpasswdContent provided — generating random users password"
+                        USERS_PASSWORD=$(openssl rand -base64 12)
                         aws ssm put-parameter \
-                          --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                          --name "/${CLUSTER_NAME}/platforma/users-password" \
                           --type SecureString \
-                          --value "$ADMIN_PASSWORD" \
+                          --value "$USERS_PASSWORD" \
                           --region $REGION
-                        echo "Admin password stored in SSM: /${CLUSTER_NAME}/platforma/admin-password"
+                        echo "Users password stored in SSM: /${CLUSTER_NAME}/platforma/users-password"
                       fi
-                      HTPASSWD_CONTENT="platforma:$(openssl passwd -apr1 "$ADMIN_PASSWORD")"
+                      HTPASSWD_CONTENT="platforma:$(openssl passwd -apr1 "$USERS_PASSWORD")"
                     fi
                     kubectl create secret generic platforma-htpasswd \
                       -n $NAMESPACE \
@@ -2831,11 +2831,11 @@ Outputs:
       Open the Desktop App and connect to this address.
     Value: !Sub '${DomainName}:443'
 
-  AdminPasswordSSMPath:
+  UsersPasswordSSMPath:
     Description: >
-      SSM Parameter containing auto-generated admin password (htpasswd mode only).
-      Retrieve with: aws ssm get-parameter --name /<ClusterName>/platforma/admin-password --with-decryption --query Parameter.Value --output text
-    Value: !Sub '/${ClusterName}/platforma/admin-password'
+      SSM Parameter containing auto-generated users password (htpasswd mode only).
+      Retrieve with: aws ssm get-parameter --name /<ClusterName>/platforma/users-password --with-decryption --query Parameter.Value --output text
+    Value: !Sub '/${ClusterName}/platforma/users-password'
 
   ClusterName:
     Description: >

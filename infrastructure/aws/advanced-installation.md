@@ -54,7 +54,7 @@ export MI_LICENSE="your-license-key"            # Platforma license key
 
 # --- Optional: defaults work for most setups ---
 export PLATFORMA_NAMESPACE="platforma"
-export PLATFORMA_VERSION="3.0.0"
+export PLATFORMA_VERSION="3.0.0-rc.17"
 export S3_BUCKET="platforma-storage-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION}"
 
 # --- Derived: do not edit ---
@@ -397,7 +397,7 @@ helm install external-dns external-dns/external-dns \
   --set serviceAccount.create=false \
   --set serviceAccount.name=external-dns \
   --set domainFilters[0]=$DOMAIN_FILTER \
-  --set policy=upsert-only \
+  --set policy=sync \
   --set registry=txt \
   --set txtOwnerId=$CLUSTER_NAME
 ```

@@ -199,7 +199,7 @@ Parameters:
 
   PlatformaVersion:
     Type: String
-    Default: '3.0.0-rc.17'
+    Default: '3.0.0-rc.19'
     AllowedPattern: '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$'
     ConstraintDescription: 'Must be a valid semver version (e.g. 3.0.0-rc.17 or 3.0.0-rc.17-rc.1)'
     Description: Platforma Helm chart version (oci://ghcr.io/milaboratory/platforma-helm/platforma)

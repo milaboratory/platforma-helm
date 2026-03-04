@@ -67,6 +67,8 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 | Public subnet IDs | *(leave as-is)* | 3 public subnets — required for ALB when using existing VPC. Same `,,` workaround applies. |
 | VPC CIDR | `10.0.0.0/16` | CIDR for the new VPC (ignored with existing VPC) |
 
+![CloudFormation parameters — cluster and networking](images/cf-parameters-1.png)
+
 ### Cluster sizing
 
 | Parameter | Default | Description |
@@ -95,7 +97,7 @@ Before deploying, check that your AWS On-Demand vCPU quota meets the recommended
 |-----------|---------|-------------|
 | Deploy Platforma | `false` | Set to `true` to deploy Platforma automatically after infrastructure is ready. When `false`, only infrastructure and controllers are deployed — useful for testing the stack first. |
 | License key | *(empty)* | Platforma license key (`MI_LICENSE` value). Required when Deploy Platforma is `true`. |
-| Platforma version | `3.0.0-rc.17` | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma` |
+| Platforma version | `3.0.0-rc.19` | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma` |
 | Custom container image | *(empty)* | Override the default Platforma container image. Leave empty to use the chart default. |
 
 ### Authentication
@@ -107,6 +109,8 @@ Before deploying, check that your AWS On-Demand vCPU quota meets the recommended
 
 For LDAP, fill in the LDAP parameters (server URL, bind DN, search rules). See the parameter descriptions in the CloudFormation Console for details.
 
+![CloudFormation parameters — Platforma and authentication](images/cf-parameters-3.png)
+
 ### Data libraries (optional)
 
 Up to 3 external S3 data libraries can be configured. Each library needs a name and S3 bucket. Access keys are optional — when omitted, the chart creates an IRSA role for read-only access.
@@ -115,8 +119,10 @@ Up to 3 external S3 data libraries can be configured. Each library needs a name 
 |-----------|-------------|
 | Library name | Display name in the Desktop App |
 | Library bucket | S3 bucket name |
-| Library region | S3 region (defaults to cluster region) |
+| Library region | S3 region — required if bucket is in a different region than the cluster |
 | Access key / Secret key | Leave both empty for IRSA mode, or provide both for explicit credentials |
+
+![CloudFormation parameters — cluster sizing, storage, and data libraries](images/cf-parameters-4.png)
 
 ### DNS / TLS (required)
 
@@ -131,7 +137,7 @@ These are **required**. The Desktop App connects only over TLS and requires a re
 
 If you don't have a domain yet, see [How to register a domain in AWS](domain-guide.md).
 
-![CloudFormation parameters — storage and DNS/TLS](images/cf-parameters.png)
+![CloudFormation parameters — networking and DNS/TLS](images/cf-parameters-2.png)
 
 ### Create the stack
 
@@ -151,6 +157,8 @@ Once complete, go to the **Outputs** tab:
 | `Region` | AWS region |
 | `HelmDeployerBuildProject` | CodeBuild logs for infra controllers |
 | `PlatformaDeployerBuildProject` | CodeBuild logs for Platforma deployment |
+
+![CloudFormation outputs](images/cf-outputs.png)
 
 ---
 
@@ -183,6 +191,8 @@ The username is `platforma`. The password persists across stack updates — it i
 2. **Add** a new connection
 3. **Enter** the `PlatformaUrl` from the Outputs tab (e.g. `https://platforma.example.com`)
 4. **Log in** with username `platforma` and the password from Step 2
+
+![Platforma Desktop App — connect to remote server](images/desktop-app.png)
 
 ALB provisioning and DNS propagation may take 1-3 minutes after the stack completes. If the connection fails immediately after deployment, wait and retry.
 

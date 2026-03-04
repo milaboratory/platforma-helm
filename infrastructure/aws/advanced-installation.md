@@ -15,7 +15,7 @@ For the recommended CloudFormation setup (all infrastructure and controllers man
 
 ### AWS On-Demand vCPU quota
 
-The node groups can scale up to 32 nodes per batch group. At full capacity the cluster needs ~400 On-Demand Standard vCPU (m5/r5 instances). The AWS default quota for a fresh account is 32 vCPU — request an increase before deploying.
+The node groups can scale up to several nodes per batch pool (exact limits depend on your configuration). At full capacity the cluster needs ~400 On-Demand Standard vCPU (m6a/r6a instances). The AWS default quota for a fresh account is 32 vCPU — request an increase before deploying.
 
 Check your current quota:
 
@@ -54,7 +54,7 @@ export MI_LICENSE="your-license-key"            # Platforma license key
 
 # --- Optional: defaults work for most setups ---
 export PLATFORMA_NAMESPACE="platforma"
-export PLATFORMA_VERSION="3.0.0-rc.17"
+export PLATFORMA_VERSION="3.0.0-rc.19"
 export S3_BUCKET="platforma-storage-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION}"
 
 # --- Derived: do not edit ---
@@ -96,18 +96,17 @@ sed "s/platforma-cluster/${CLUSTER_NAME}/g; s/eu-central-1/${AWS_REGION}/g" \
 
 This creates:
 - EKS 1.34 cluster with OIDC enabled
-- **System** node group: 2x m5.2xlarge (8 vCPU / 32 GiB — Platforma server, Kueue, controllers)
-- **UI** node group: 0-16x t3.xlarge (interactive tasks, tainted `dedicated=ui`)
-- **Batch-medium** node group: 0-32x m5.2xlarge (8 vCPU / 32 GiB, tainted `dedicated=batch`)
-- **Batch-large** node group: 0-32x m5.4xlarge (16 vCPU / 64 GiB, tainted `dedicated=batch`)
-- **Batch-xlarge** node group: 0-32x m5.8xlarge (32 vCPU / 128 GiB, tainted `dedicated=batch`)
-- **Batch-2xlarge** node group: 0-32x r5.4xlarge (16 vCPU / 128 GiB, tainted `dedicated=batch`)
-- **Batch-4xlarge** node group: 0-32x r5.8xlarge (32 vCPU / 256 GiB, tainted `dedicated=batch`)
+- **System** node group: 2x m6a.2xlarge (8 vCPU / 32 GiB — Platforma server, Kueue, controllers)
+- **UI** node group: 0-4x t3.xlarge (interactive tasks, tainted `dedicated=ui`)
+- **Batch-16c-64g** node group: 0-4x m6a.4xlarge (16 vCPU / 64 GiB, tainted `dedicated=batch`)
+- **Batch-32c-128g** node group: 0-2x m6a.8xlarge (32 vCPU / 128 GiB, tainted `dedicated=batch`)
+- **Batch-64c-256g** node group: 0-1x m6a.16xlarge (64 vCPU / 256 GiB, tainted `dedicated=batch`)
+- **Batch-32c-256g** node group: 0-2x r6a.8xlarge (32 vCPU / 256 GiB, tainted `dedicated=batch`)
+- **Batch-64c-512g** node group: 0-1x r6a.16xlarge (64 vCPU / 512 GiB, tainted `dedicated=batch`)
 - EBS CSI driver addon (for gp3 PVCs)
 - EFS CSI driver addon (for shared workspace)
-- Autoscaler autodiscovery tags on all node groups
 
-All five batch groups share label `node.kubernetes.io/pool=batch` and taint `dedicated=batch:NoSchedule`. Cluster Autoscaler with `--expander=least-waste` selects the smallest group that fits each pending pod. The r5 groups (2xlarge, 4xlarge) provide higher memory-to-CPU ratio for memory-intensive bioinformatics workloads.
+All five batch groups share label `node.kubernetes.io/pool=batch` and taint `dedicated=batch:NoSchedule`. Cluster Autoscaler with `--expander=least-waste` selects the smallest group that fits each pending pod. The r6a groups provide higher memory-to-CPU ratio for memory-intensive bioinformatics workloads.
 
 Takes ~15 minutes. Verify:
 
@@ -211,10 +210,10 @@ EOF
 
 ## Step 3: Install Cluster Autoscaler
 
-Create an IAM policy scoped to ASGs tagged with the cluster name, then bind it to a Kubernetes service account via IRSA.
+Create an IAM policy scoped to ASGs tagged with the cluster name, then bind it to a Kubernetes service account via IRSA. EKS automatically tags managed node group ASGs with `eks:cluster-name` — we use this tag for both auto-discovery and IAM scoping.
 
 ```bash
-# Generate policy with cluster name in the tag condition
+# Generate policy — uses EKS auto-tag for ASG scoping
 cat > /tmp/cluster-autoscaler-policy.json <<EOF
 {
   "Version": "2012-10-17",
@@ -244,7 +243,7 @@ cat > /tmp/cluster-autoscaler-policy.json <<EOF
       "Resource": ["*"],
       "Condition": {
         "StringEquals": {
-          "autoscaling:ResourceTag/k8s.io/cluster-autoscaler/${CLUSTER_NAME}": "owned"
+          "autoscaling:ResourceTag/eks:cluster-name": "${CLUSTER_NAME}"
         }
       }
     }
@@ -275,6 +274,7 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
   --version 9.53.0 \
   --namespace kube-system \
   --set autoDiscovery.clusterName=$CLUSTER_NAME \
+  --set "autoDiscovery.tags[0]=eks:cluster-name=$CLUSTER_NAME" \
   --set awsRegion=$AWS_REGION \
   --set image.tag=v1.34.0 \
   --set rbac.serviceAccount.create=false \

@@ -2442,6 +2442,13 @@ Resources:
                           cpu: $BATCH_QUEUE_CPU
                           memory: ${BATCH_QUEUE_MEMORY_GI}Gi
                   app:
+                    resources:
+                      requests:
+                        cpu: 4
+                        memory: 16Gi
+                      limits:
+                        cpu: 8
+                        memory: 16Gi
                     nodeSelector:
                       node.kubernetes.io/pool: system
                   dataSources: ${DATASOURCES_YAML:-[]}

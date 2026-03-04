@@ -289,7 +289,8 @@ Parameters:
     Type: String
     Default: ''
     Description: >
-      AWS region for data library 1 bucket. Leave empty to use the cluster region.
+      S3 region for Library 1. REQUIRED if the bucket is in a different
+      region than the cluster. Defaults to cluster region if empty.
 
   DataLibrary1AccessKey:
     Type: String
@@ -318,7 +319,9 @@ Parameters:
   DataLibrary2Region:
     Type: String
     Default: ''
-    Description: AWS region for data library 2 bucket. Leave empty to use the cluster region.
+    Description: >
+      S3 region for Library 2. REQUIRED if the bucket is in a different
+      region than the cluster. Defaults to cluster region if empty.
 
   DataLibrary2AccessKey:
     Type: String
@@ -347,7 +350,9 @@ Parameters:
   DataLibrary3Region:
     Type: String
     Default: ''
-    Description: AWS region for data library 3 bucket. Leave empty to use the cluster region.
+    Description: >
+      S3 region for Library 3. REQUIRED if the bucket is in a different
+      region than the cluster. Defaults to cluster region if empty.
 
   DataLibrary3AccessKey:
     Type: String
@@ -1728,8 +1733,43 @@ Resources:
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
-  # 5. EKS addons — CSI drivers (DependsOn: SystemNodeGroup for running pods)
+  # 5. EKS managed addons
   # ---------------------------------------------------------------------------
+
+  # Core networking addons — takes over from EKS auto-installed self-managed
+  # versions, giving version governance and automatic upgrade compatibility.
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: vpc-cni
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: kube-proxy
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  CoreDnsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: SystemNodeGroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: coredns
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  # CSI drivers (DependsOn: SystemNodeGroup for running pods)
   EbsCsiAddon:
     Type: AWS::EKS::Addon
     DependsOn: SystemNodeGroup
@@ -2451,7 +2491,6 @@ Resources:
                   dataSources: ${DATASOURCES_YAML:-[]}
                   PLATFORMA_VALUES
 
-                  HELM_ARGS=""
                   if [ "$AUTH_METHOD" = "htpasswd" ]; then
                     cat >> /tmp/platforma-values.yaml << AUTH_VALUES
                   auth:
@@ -2459,25 +2498,34 @@ Resources:
                       secretName: platforma-htpasswd
                   AUTH_VALUES
                   elif [ "$AUTH_METHOD" = "ldap" ]; then
-                    HELM_ARGS="$HELM_ARGS --set auth.ldap.server=$LDAP_SERVER"
-                    HELM_ARGS="$HELM_ARGS --set auth.ldap.startTLS=$LDAP_START_TLS"
+                    # Write LDAP values directly into YAML to avoid Helm --set
+                    # comma-splitting issues (LDAP DNs always contain commas).
+                    cat >> /tmp/platforma-values.yaml << LDAP_BLOCK
+                  auth:
+                    ldap:
+                      server: "${LDAP_SERVER}"
+                      startTLS: ${LDAP_START_TLS}
+                  LDAP_BLOCK
                     if [ -n "$LDAP_BIND_DN" ]; then
-                      HELM_ARGS="$HELM_ARGS --set-string auth.ldap.bindDN=$LDAP_BIND_DN"
+                      cat >> /tmp/platforma-values.yaml << LDAP_BIND
+                      bindDN: "${LDAP_BIND_DN}"
+                  LDAP_BIND
                     fi
                     if [ -n "$LDAP_SEARCH_USER" ]; then
-                      HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchUser=$LDAP_SEARCH_USER"
-                      HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchPassword=$LDAP_SEARCH_PASSWORD"
+                      cat >> /tmp/platforma-values.yaml << LDAP_SEARCH
+                      searchUser: "${LDAP_SEARCH_USER}"
+                      searchPassword: "${LDAP_SEARCH_PASSWORD}"
+                  LDAP_SEARCH
                     fi
                     if [ -n "$LDAP_SEARCH_RULES" ]; then
-                      i=0
+                      echo "    searchRules:" >> /tmp/platforma-values.yaml
                       OLD_IFS="$IFS"
                       IFS=","
                       for rule in $LDAP_SEARCH_RULES; do
                         IFS="$OLD_IFS"
                         rule=$(echo "$rule" | xargs)
                         [ -z "$rule" ] && { IFS=","; continue; }
-                        HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchRules[$i]=$rule"
-                        i=$((i + 1))
+                        echo "      - \"${rule}\"" >> /tmp/platforma-values.yaml
                         IFS=","
                       done
                       IFS="$OLD_IFS"
@@ -2487,15 +2535,18 @@ Resources:
                   if [ -n "$PLATFORMA_IMAGE" ]; then
                     IMG_REPO=$(echo "$PLATFORMA_IMAGE" | sed 's/:.*//')
                     IMG_TAG=$(echo "$PLATFORMA_IMAGE" | sed 's/.*://')
-                    HELM_ARGS="$HELM_ARGS --set image.repository=$IMG_REPO --set image.tag=$IMG_TAG"
+                    cat >> /tmp/platforma-values.yaml << IMAGE_BLOCK
+                  image:
+                    repository: "${IMG_REPO}"
+                    tag: "${IMG_TAG}"
+                  IMAGE_BLOCK
                   fi
 
                   helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
                     --version $PLATFORMA_VERSION \
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
-                    $HELM_ARGS \
-                    --atomic --timeout 10m
+                    --atomic --timeout 15m
             post_build:
               commands:
                 - |

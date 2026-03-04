@@ -1550,6 +1550,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: system
+      Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m6a.2xlarge
@@ -1577,6 +1578,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: ui
+      Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - t3.xlarge
@@ -1608,6 +1610,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-16c-64g
+      Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m6a.4xlarge
@@ -1639,6 +1642,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-32c-128g
+      Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m6a.8xlarge
@@ -1670,6 +1674,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-64c-256g
+      Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m6a.16xlarge
@@ -1701,6 +1706,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-32c-256g
+      Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - r6a.8xlarge
@@ -1732,6 +1738,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-64c-512g
+      Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - r6a.16xlarge
@@ -2700,6 +2707,7 @@ Resources:
       # Properties below trigger re-deployment when changed during stack update.
       # The Lambda reads CodeBuildProject; the rest exist only so CloudFormation
       # detects property changes and sends an UPDATE event.
+      KubernetesVersion: !Ref KubernetesVersion
       ForceUpdateInfra: "1"  # Bump to force infra re-deployment
 
   TriggerPlatformaDeploy:

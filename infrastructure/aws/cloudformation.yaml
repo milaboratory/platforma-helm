@@ -1498,7 +1498,7 @@ Resources:
   # ---------------------------------------------------------------------------
 
   # Launch template — propagates tags to EC2 instances and EBS volumes for
-  # autoscaler discovery and cost tracking.
+  # cost tracking. EKS auto-tags ASGs for cluster-autoscaler discovery.
   NodeGroupLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -1507,10 +1507,6 @@ Resources:
         TagSpecifications:
           - ResourceType: instance
             Tags:
-              - Key: k8s.io/cluster-autoscaler/enabled
-                Value: 'true'
-              - Key: !Sub 'k8s.io/cluster-autoscaler/${ClusterName}'
-                Value: owned
               - Key: platforma
                 Value: !Ref ClusterName
           - ResourceType: volume
@@ -1543,7 +1539,6 @@ Resources:
         node.kubernetes.io/pool: system
       Tags:
         nodegroup-type: system
-        k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
   UiNodeGroup:
@@ -1575,7 +1570,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: ui
-        k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
   Batch16c64gNodeGroup:
@@ -1607,7 +1601,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch-16c-64g
-        k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
   Batch32c128gNodeGroup:
@@ -1639,7 +1632,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch-32c-128g
-        k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
   Batch64c256gNodeGroup:
@@ -1671,7 +1663,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch-64c-256g
-        k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
   Batch32c256gNodeGroup:
@@ -1703,7 +1694,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch-32c-256g
-        k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
   Batch64c512gNodeGroup:
@@ -1735,7 +1725,6 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch-64c-512g
-        k8s.io/cluster-autoscaler/enabled: 'true'
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
@@ -1806,18 +1795,6 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-helm-deployer:*'
                   - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-platforma-deployer:*'
-              # Needed to tag node group ASGs for cluster-autoscaler autodiscovery
-              - Effect: Allow
-                Action:
-                  - eks:ListNodegroups
-                  - eks:DescribeNodegroup
-                Resource:
-                  - !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}'
-                  - !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:nodegroup/${ClusterName}/*/*'
-              - Effect: Allow
-                Action:
-                  - autoscaling:CreateOrUpdateTags
-                Resource: '*'
               # Store/retrieve auto-generated users password in SSM Parameter Store
               - Effect: Allow
                 Action:
@@ -1983,24 +1960,10 @@ Resources:
                   kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
                   kubectl delete mutatingwebhookconfiguration appwrapper-mutating-webhook-configuration --ignore-not-found
 
-                # --- Block 3: ASG TAGS + CLUSTER AUTOSCALER ---
+                # --- Block 3: CLUSTER AUTOSCALER ---
                 - |
                   [ "${TEARDOWN:-false}" = "true" ] && exit 0
-                  echo "=== [3/5] ASG TAGS + CLUSTER AUTOSCALER ==="
-                  for NG in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --region $REGION \
-                    --query nodegroups --output text); do
-                    ASG=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG \
-                      --region $REGION --query 'nodegroup.resources.autoScalingGroups[0].name' --output text)
-                    if [ -z "$ASG" ] || [ "$ASG" = "None" ]; then
-                      echo "ERROR: could not get ASG name for nodegroup $NG"
-                      exit 1
-                    fi
-                    aws autoscaling create-or-update-tags \
-                      --tags \
-                      "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/enabled,Value=true,PropagateAtLaunch=false" \
-                      "ResourceId=$ASG,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/$CLUSTER_NAME,Value=owned,PropagateAtLaunch=false"
-                    echo "Tagged ASG $ASG (nodegroup $NG)"
-                  done
+                  echo "=== [3/5] CLUSTER AUTOSCALER ==="
                   helm repo add autoscaler https://kubernetes.github.io/autoscaler
                   helm repo update
                   helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
@@ -2012,8 +1975,7 @@ Resources:
                     --set rbac.serviceAccount.create=true \
                     --set rbac.serviceAccount.name=cluster-autoscaler \
                     --set "rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$AUTOSCALER_ROLE_ARN" \
-                    --set 'autoDiscovery.tags[0]=k8s.io/cluster-autoscaler/enabled' \
-                    --set "autoDiscovery.tags[1]=k8s.io/cluster-autoscaler/$CLUSTER_NAME" \
+                    --set "autoDiscovery.tags[0]=eks:cluster-name=$CLUSTER_NAME" \
                     --set extraArgs.scale-down-delay-after-add=10m \
                     --set extraArgs.scale-down-unneeded-time=10m \
                     --set extraArgs.scale-down-utilization-threshold=0.5 \

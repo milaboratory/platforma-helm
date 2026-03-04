@@ -321,6 +321,12 @@
                 "endpoint": {
                   "type": "string"
                 },
+                "externalEndpoint": {
+                  "type": "string"
+                },
+                "noDataIntegrity": {
+                  "type": "boolean"
+                },
                 "secretRef": {
                   "type": "object",
                   "properties": {
@@ -439,6 +445,9 @@
                 "type": "string"
               },
               "prefix": {
+                "type": "string"
+              },
+              "serviceAccount": {
                 "type": "string"
               }
             },

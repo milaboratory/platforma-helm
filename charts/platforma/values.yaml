@@ -200,8 +200,10 @@ storage:
       bucket: ""
       region: ""
       prefix: ""
-      endpoint: ""   # Custom S3-compatible endpoint (leave empty for AWS S3)
-      secretRef:     # Only needed for non-IRSA setups or S3-compatible storage
+      endpoint: ""            # Custom S3-compatible endpoint (leave empty for AWS S3)
+      externalEndpoint: ""    # S3 URL for Desktop App if it differs from backend's (S3-compatible only)
+      noDataIntegrity: false  # Disable SHA256 integrity checks (Ceph, old MinIO)
+      secretRef:              # Only needed for non-IRSA setups or S3-compatible storage
         name: ""
         accessKeyField: "access-key"
         secretKeyField: "secret-key"
@@ -227,12 +229,14 @@ dataSources: []
   #       accessKeyField: "access-key"   # default: "access-key"
   #       secretKeyField: "secret-key"   # default: "secret-key"
   #     externalEndpoint: "" # S3 URL for Desktop App if it differs from backend's (S3-compatible only)
-  #     noDataIntegrity: false # Disable SHA256 integrity checks (GCS, Ceph, old MinIO)
+  #     noDataIntegrity: false # Disable SHA256 integrity checks (Ceph, old MinIO)
   # - name: "reference-genomes"
   #   type: gcs
   #   gcs:
   #     bucket: "reference-data"
   #     projectId: "my-project"
+  #     prefix: ""
+  #     serviceAccount: ""  # GCP service account for Workload Identity
   # - name: "local-data"
   #   type: pvc
   #   pvc:

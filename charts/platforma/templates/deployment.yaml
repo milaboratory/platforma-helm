@@ -33,6 +33,12 @@
 {{- if and (eq $mainType "gcs") (not .Values.storage.main.gcs.bucket) }}
 {{- fail "ERROR: storage.main.gcs.bucket is required when using GCS storage." }}
 {{- end }}
+{{- if and (eq $mainType "gcs") (not .Values.storage.main.gcs.projectId) }}
+{{- fail "ERROR: storage.main.gcs.projectId is required when using GCS storage." }}
+{{- end }}
+{{- if and (eq $mainType "gcs") (not .Values.storage.main.gcs.serviceAccount) }}
+{{- fail "ERROR: storage.main.gcs.serviceAccount is required when using GCS storage (Workload Identity)." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -80,6 +86,9 @@ spec:
             capabilities:
               drop: ["ALL"]
           args:
+            # Network — bind to all interfaces (Go defaults to 127.0.0.1)
+            - "--listen-address=0.0.0.0"
+            - "--monitoring-ip=0.0.0.0"
             # Storage paths
             - "--main-root=/data/main"
             - "--db-dir=/data/database"
@@ -93,6 +102,12 @@ spec:
             {{- end }}
             {{- if .Values.storage.main.s3.region }}
             - "--primary-storage-s3-region={{ .Values.storage.main.s3.region }}"
+            {{- end }}
+            {{- if .Values.storage.main.s3.externalEndpoint }}
+            - "--primary-storage-s3-external-endpoint={{ .Values.storage.main.s3.externalEndpoint }}"
+            {{- end }}
+            {{- if .Values.storage.main.s3.noDataIntegrity }}
+            - "--primary-storage-s3-no-data-integrity=true"
             {{- end }}
             {{- else if eq $mainType "gcs" }}
             - "--primary-storage-gcs=gs://{{ .Values.storage.main.gcs.bucket }}{{ if .Values.storage.main.gcs.prefix }}/{{ .Values.storage.main.gcs.prefix }}{{ end }}"
@@ -192,11 +207,14 @@ spec:
             {{- if .gcs.projectId }}
             - "--data-library-gcs-project-id={{ .name }}={{ .gcs.projectId }}"
             {{- end }}
+            {{- if .gcs.serviceAccount }}
+            - "--data-library-gcs-service-account={{ .name }}={{ .gcs.serviceAccount }}"
+            {{- end }}
             {{- end }}
             {{- end }}
             # Debug API: always available via port-forward.
             # When app.debug.enabled: also reachable from within the cluster,
-            # verbose logging, job working directories kept for 1h after completion.
+            # verbose logging, job working directories kept for 24h after completion.
             - "--debug-enabled"
             - "--debug-port=9091"
             {{- if .Values.app.debug.enabled }}

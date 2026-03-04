@@ -46,7 +46,11 @@ No CLI steps required. The stack handles everything: infrastructure, Helm instal
 
 Open the AWS Console and navigate to **CloudFormation → Create Stack → With new resources**.
 
-Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
+Get the template using one of these options:
+- **S3 URL** (easiest) — paste this URL directly in the CloudFormation Console: `https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/cloudformation-v1.yaml`
+- **Upload** — clone the [platforma-helm](https://github.com/milaboratory/platforma-helm) repository and upload `infrastructure/aws/cloudformation.yaml`
+
+Fill in the parameters below.
 
 ![Create stack — upload template](images/cf-create-stack.png)
 

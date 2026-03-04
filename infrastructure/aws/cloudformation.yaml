@@ -163,6 +163,8 @@ Parameters:
   ClusterName:
     Type: String
     Default: platforma-cluster
+    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$'
+    ConstraintDescription: 'Alphanumeric, hyphens, underscores, 1-100 characters'
     Description: EKS cluster name
 
   KubernetesVersion:
@@ -232,6 +234,8 @@ Parameters:
   LdapServer:
     Type: String
     Default: ''
+    AllowedPattern: '^(ldaps?://[^\s]+)?$'
+    ConstraintDescription: 'Must be an LDAP URL (e.g. ldap://ldap.example.com:389) or empty'
     Description: >
       LDAP server URL (e.g. ldap://ldap.example.com:389).
       Required when AuthMethod=ldap.
@@ -281,6 +285,8 @@ Parameters:
   DataLibrary1Bucket:
     Type: String
     Default: ''
+    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
+    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
     Description: >
       S3 bucket name for data library 1 (e.g. my-reference-data).
       Leave empty to disable.
@@ -288,13 +294,18 @@ Parameters:
   DataLibrary1Region:
     Type: String
     Default: ''
+    AllowedPattern: '^([a-z]{2}(-[a-z]+)+-\d{1,2})?$'
+    ConstraintDescription: 'Must be a valid AWS region (e.g. us-east-1, eu-central-1) or empty'
     Description: >
-      AWS region for data library 1 bucket. Leave empty to use the cluster region.
+      S3 region for Library 1. REQUIRED if the bucket is in a different
+      region than the cluster. Defaults to cluster region if empty.
 
   DataLibrary1AccessKey:
     Type: String
     Default: ''
     NoEcho: true
+    AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
+    ConstraintDescription: 'Must be a valid AWS access key ID (20 characters, starts with AKIA or ASIA) or empty'
     Description: >
       S3 access key for data library 1. Leave empty to use IRSA
       (bucket must be in the same AWS account).
@@ -313,17 +324,25 @@ Parameters:
   DataLibrary2Bucket:
     Type: String
     Default: ''
+    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
+    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
     Description: S3 bucket name for data library 2. Leave empty to disable.
 
   DataLibrary2Region:
     Type: String
     Default: ''
-    Description: AWS region for data library 2 bucket. Leave empty to use the cluster region.
+    AllowedPattern: '^([a-z]{2}(-[a-z]+)+-\d{1,2})?$'
+    ConstraintDescription: 'Must be a valid AWS region (e.g. us-east-1, eu-central-1) or empty'
+    Description: >
+      S3 region for Library 2. REQUIRED if the bucket is in a different
+      region than the cluster. Defaults to cluster region if empty.
 
   DataLibrary2AccessKey:
     Type: String
     Default: ''
     NoEcho: true
+    AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
+    ConstraintDescription: 'Must be a valid AWS access key ID (20 characters, starts with AKIA or ASIA) or empty'
     Description: >
       S3 access key for data library 2. Leave empty to use IRSA
       (bucket must be in the same AWS account).
@@ -342,17 +361,25 @@ Parameters:
   DataLibrary3Bucket:
     Type: String
     Default: ''
+    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
+    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
     Description: S3 bucket name for data library 3. Leave empty to disable.
 
   DataLibrary3Region:
     Type: String
     Default: ''
-    Description: AWS region for data library 3 bucket. Leave empty to use the cluster region.
+    AllowedPattern: '^([a-z]{2}(-[a-z]+)+-\d{1,2})?$'
+    ConstraintDescription: 'Must be a valid AWS region (e.g. us-east-1, eu-central-1) or empty'
+    Description: >
+      S3 region for Library 3. REQUIRED if the bucket is in a different
+      region than the cluster. Defaults to cluster region if empty.
 
   DataLibrary3AccessKey:
     Type: String
     Default: ''
     NoEcho: true
+    AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
+    ConstraintDescription: 'Must be a valid AWS access key ID (20 characters, starts with AKIA or ASIA) or empty'
     Description: >
       S3 access key for data library 3. Leave empty to use IRSA
       (bucket must be in the same AWS account).
@@ -372,6 +399,8 @@ Parameters:
   VpcId:
     Type: String
     Default: ''
+    AllowedPattern: '^(vpc-[a-f0-9]{8,17})?$'
+    ConstraintDescription: 'Must be a valid VPC ID (e.g. vpc-0123456789abcdef0) or empty'
     Description: >
       Existing VPC ID. Leave empty to create a new VPC.
       If provided, you must also provide PrivateSubnetIds.
@@ -430,6 +459,8 @@ Parameters:
   S3BucketName:
     Type: String
     Default: ''
+    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
+    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
     Description: >
       S3 bucket name for primary storage. Leave empty to auto-generate
       as platforma-<ClusterName>-<AccountId> (unique per stack, allows
@@ -1728,8 +1759,43 @@ Resources:
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
-  # 5. EKS addons — CSI drivers (DependsOn: SystemNodeGroup for running pods)
+  # 5. EKS managed addons
   # ---------------------------------------------------------------------------
+
+  # Core networking addons — takes over from EKS auto-installed self-managed
+  # versions, giving version governance and automatic upgrade compatibility.
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: vpc-cni
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: kube-proxy
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  CoreDnsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: SystemNodeGroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: coredns
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  # CSI drivers (DependsOn: SystemNodeGroup for running pods)
   EbsCsiAddon:
     Type: AWS::EKS::Addon
     DependsOn: SystemNodeGroup
@@ -2454,7 +2520,6 @@ Resources:
                   dataSources: ${DATASOURCES_YAML:-[]}
                   PLATFORMA_VALUES
 
-                  HELM_ARGS=""
                   if [ "$AUTH_METHOD" = "htpasswd" ]; then
                     cat >> /tmp/platforma-values.yaml << AUTH_VALUES
                   auth:
@@ -2462,25 +2527,34 @@ Resources:
                       secretName: platforma-htpasswd
                   AUTH_VALUES
                   elif [ "$AUTH_METHOD" = "ldap" ]; then
-                    HELM_ARGS="$HELM_ARGS --set auth.ldap.server=$LDAP_SERVER"
-                    HELM_ARGS="$HELM_ARGS --set auth.ldap.startTLS=$LDAP_START_TLS"
+                    # Write LDAP values directly into YAML to avoid Helm --set
+                    # comma-splitting issues (LDAP DNs always contain commas).
+                    cat >> /tmp/platforma-values.yaml << LDAP_BLOCK
+                  auth:
+                    ldap:
+                      server: "${LDAP_SERVER}"
+                      startTLS: ${LDAP_START_TLS}
+                  LDAP_BLOCK
                     if [ -n "$LDAP_BIND_DN" ]; then
-                      HELM_ARGS="$HELM_ARGS --set-string auth.ldap.bindDN=$LDAP_BIND_DN"
+                      cat >> /tmp/platforma-values.yaml << LDAP_BIND
+                      bindDN: "${LDAP_BIND_DN}"
+                  LDAP_BIND
                     fi
                     if [ -n "$LDAP_SEARCH_USER" ]; then
-                      HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchUser=$LDAP_SEARCH_USER"
-                      HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchPassword=$LDAP_SEARCH_PASSWORD"
+                      cat >> /tmp/platforma-values.yaml << LDAP_SEARCH
+                      searchUser: "${LDAP_SEARCH_USER}"
+                      searchPassword: "${LDAP_SEARCH_PASSWORD}"
+                  LDAP_SEARCH
                     fi
                     if [ -n "$LDAP_SEARCH_RULES" ]; then
-                      i=0
+                      echo "    searchRules:" >> /tmp/platforma-values.yaml
                       OLD_IFS="$IFS"
                       IFS=","
                       for rule in $LDAP_SEARCH_RULES; do
                         IFS="$OLD_IFS"
                         rule=$(echo "$rule" | xargs)
                         [ -z "$rule" ] && { IFS=","; continue; }
-                        HELM_ARGS="$HELM_ARGS --set-string auth.ldap.searchRules[$i]=$rule"
-                        i=$((i + 1))
+                        echo "      - \"${rule}\"" >> /tmp/platforma-values.yaml
                         IFS=","
                       done
                       IFS="$OLD_IFS"
@@ -2490,15 +2564,18 @@ Resources:
                   if [ -n "$PLATFORMA_IMAGE" ]; then
                     IMG_REPO=$(echo "$PLATFORMA_IMAGE" | sed 's/:.*//')
                     IMG_TAG=$(echo "$PLATFORMA_IMAGE" | sed 's/.*://')
-                    HELM_ARGS="$HELM_ARGS --set image.repository=$IMG_REPO --set image.tag=$IMG_TAG"
+                    cat >> /tmp/platforma-values.yaml << IMAGE_BLOCK
+                  image:
+                    repository: "${IMG_REPO}"
+                    tag: "${IMG_TAG}"
+                  IMAGE_BLOCK
                   fi
 
                   helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
                     --version $PLATFORMA_VERSION \
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
-                    $HELM_ARGS \
-                    --atomic --timeout 10m
+                    --atomic --timeout 15m
             post_build:
               commands:
                 - |

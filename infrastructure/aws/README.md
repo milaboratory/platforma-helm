@@ -69,6 +69,33 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 
 ![CloudFormation parameters — cluster and networking](images/cf-parameters-1.png)
 
+### Storage
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| EFS performance mode | `generalPurpose` | `maxIO` for very high throughput |
+| S3 bucket name | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<AccountId>` |
+
+### Platforma deployment
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Deploy Platforma | `true` | Set to `true` to deploy Platforma automatically after infrastructure is ready. When `false`, only infrastructure and controllers are deployed — useful for testing the stack first. |
+| License key | *(empty)* | Platforma license key (`MI_LICENSE` value). Required when Deploy Platforma is `true`. |
+| Platforma version | `3.0.0` | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma` |
+| Custom container image | *(empty)* | Override the default Platforma container image. Leave empty to use the chart default. |
+
+### Authentication
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Auth method | `htpasswd` | `htpasswd` for file-based auth, `ldap` for LDAP |
+| Htpasswd content | *(empty)* | Pre-generated htpasswd string. When empty, a random password is auto-generated and stored in SSM Parameter Store (see Step 2). Generate manually with `htpasswd -nB username`. |
+
+For LDAP, fill in the LDAP parameters (server URL, bind DN, search rules). See the parameter descriptions in the CloudFormation Console for details.
+
+![CloudFormation parameters — Platforma and authentication](images/cf-parameters-3.png)
+
 ### Cluster sizing
 
 | Parameter | Default | Description |
@@ -83,33 +110,6 @@ Upload `cloudformation.yaml` or paste its S3 URL, then fill in the parameters.
 | `xlarge` | 62 vCPU / 500 GiB | ~32 large or ~128 small jobs | ~2700 |
 
 Before deploying, check that your AWS On-Demand vCPU quota meets the recommended minimum. Request an increase at [Service Quotas console](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A) if needed. The stack checks the quota during deployment and fails with an error if it is too low.
-
-### Storage
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| EFS performance mode | `generalPurpose` | `maxIO` for very high throughput |
-| S3 bucket name | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<AccountId>` |
-
-### Platforma deployment
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| Deploy Platforma | `false` | Set to `true` to deploy Platforma automatically after infrastructure is ready. When `false`, only infrastructure and controllers are deployed — useful for testing the stack first. |
-| License key | *(empty)* | Platforma license key (`MI_LICENSE` value). Required when Deploy Platforma is `true`. |
-| Platforma version | `3.0.0-rc.19` | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma` |
-| Custom container image | *(empty)* | Override the default Platforma container image. Leave empty to use the chart default. |
-
-### Authentication
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| Auth method | `htpasswd` | `htpasswd` for file-based auth, `ldap` for LDAP |
-| Htpasswd content | *(empty)* | Pre-generated htpasswd string. When empty, a random password is auto-generated and stored in SSM Parameter Store (see Step 2). Generate manually with `htpasswd -nB username`. |
-
-For LDAP, fill in the LDAP parameters (server URL, bind DN, search rules). See the parameter descriptions in the CloudFormation Console for details.
-
-![CloudFormation parameters — Platforma and authentication](images/cf-parameters-3.png)
 
 ### Data libraries (optional)
 

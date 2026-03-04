@@ -30,7 +30,7 @@ storage:
 # LDAP: uncomment and provide server + bind/search configuration.
 auth:
   htpasswd:
-    credentials: []  # --set auth.htpasswd.credentials[0].username=admin --set auth.htpasswd.credentials[0].password=<password>
+    credentials: []  # --set auth.htpasswd.credentials[0].username=platforma --set auth.htpasswd.credentials[0].password=<password>
     # secretName: ""  # alternative: reference an existing htpasswd secret
   # ldap:
   #   server: ""            # --set auth.ldap.server=ldap://ldap.example.com:389

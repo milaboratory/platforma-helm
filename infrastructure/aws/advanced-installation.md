@@ -2,7 +2,7 @@
 
 Manual setup using `eksctl` and AWS CLI. Use this guide if you need full control over every resource, have custom VPC requirements, or want to manage Cluster Autoscaler, ALB Controller, and External DNS yourself — in your own namespace, with your own IAM policies and lifecycle.
 
-For the recommended CloudFormation setup (all infrastructure and controllers managed as a single stack, controllers bundled as Helm sub-charts), see the [main guide](README.md).
+For the recommended CloudFormation setup (all infrastructure and controllers managed as a single stack, installed individually via CodeBuild), see the [main guide](README.md).
 
 ## Prerequisites
 
@@ -54,7 +54,7 @@ export MI_LICENSE="your-license-key"            # Platforma license key
 
 # --- Optional: defaults work for most setups ---
 export PLATFORMA_NAMESPACE="platforma"
-export PLATFORMA_VERSION="3.0.0-rc.19"
+export PLATFORMA_VERSION="3.0.0"
 export S3_BUCKET="platforma-storage-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION}"
 
 # --- Derived: do not edit ---
@@ -656,7 +656,7 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set storage.workspace.efs.fileSystemId=$EFS_ID \
   --set storage.main.s3.bucket=$S3_BUCKET \
   --set storage.main.s3.region=$AWS_REGION \
-  --set auth.htpasswd.credentials[0].username=admin \
+  --set auth.htpasswd.credentials[0].username=platforma \
   --set auth.htpasswd.credentials[0].password=changeme \
   --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_ROLE_ARN" \
   --set "jobServiceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_JOBS_ROLE_ARN" \
@@ -668,7 +668,8 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/target-type"=ip \
   --set-json 'ingress.annotations."alb\.ingress\.kubernetes\.io/listen-ports"=[{"HTTPS":443}]' \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=$CERT_ARN \
-  --set ingress.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC \
+  --atomic --timeout 15m
 ```
 
 Verify:
@@ -685,10 +686,10 @@ kubectl get localqueues -n $PLATFORMA_NAMESPACE
 
 ## Step 11: Connect from Desktop App
 
-1. Download the **Platforma Desktop App** from [platforma.bio](https://platforma.bio)
-2. Open the app and add a new connection
-3. Enter your gRPC endpoint: `<your DOMAIN_NAME>:443`
-4. TLS via the ACM certificate secures the connection
+1. **Open** the Platforma Desktop App (download from [platforma.bio](https://platforma.bio) if needed)
+2. **Add** a new connection
+3. **Enter** `https://<your DOMAIN_NAME>` as the remote address
+4. **Log in** with username `platforma` and the password from Step 10
 
 For quick testing before DNS propagates, use port-forwarding:
 

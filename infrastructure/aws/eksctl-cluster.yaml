@@ -3,17 +3,17 @@
 # =============================================================================
 # Creates EKS cluster with:
 # - System node group (Platforma server, Kueue, controllers)
-# - UI node group (interactive tasks, scales 0-16)
-# - Batch node groups: medium, large, xlarge, 2xlarge, 4xlarge (scales 0-32)
+# - UI node group (interactive tasks, scale-from-zero)
+# - 5 batch node groups: 16c-64g, 32c-128g, 64c-256g, 32c-256g, 64c-512g
 # - EFS CSI driver addon (for RWX workspace storage)
 # - EBS CSI driver addon (for gp3 database/main storage)
 #
 # Usage:
-#   eksctl create cluster -f eksctl-cluster.yaml
+#   sed "s/platforma-cluster/${CLUSTER_NAME}/g; s/eu-central-1/${AWS_REGION}/g" \
+#     eksctl-cluster.yaml | eksctl create cluster -f -
 #
-# Cluster Autoscaler autodiscovery uses tags:
-#   k8s.io/cluster-autoscaler/enabled=true
-#   k8s.io/cluster-autoscaler/<cluster-name>=owned
+# Cluster Autoscaler discovery uses EKS auto-tag (eks:cluster-name).
+# No manual autoscaler tags needed for managed node groups.
 # =============================================================================
 
 apiVersion: eksctl.io/v1alpha5
@@ -44,10 +44,10 @@ addons:
       - arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy
 
 managedNodeGroups:
-  # System nodes - runs Platforma server, Kueue, controllers
-  # m5.2xlarge: 8 vCPU / 32 GiB — fits Platforma at 8 CPU / 16 GiB
+  # System nodes — Platforma server, Kueue, controllers
+  # m6a.2xlarge: 8 vCPU / 32 GiB
   - name: system
-    instanceType: m5.2xlarge
+    instanceType: m6a.2xlarge
     desiredCapacity: 2
     minSize: 1
     maxSize: 4
@@ -55,15 +55,15 @@ managedNodeGroups:
       node.kubernetes.io/pool: system
     tags:
       nodegroup-type: system
-      k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+      platforma: platforma-cluster
 
-  # UI nodes - fast response for interactive tasks
+  # UI nodes — interactive tasks, scale from zero
+  # t3.xlarge: 4 vCPU / 16 GiB
   - name: ui
     instanceType: t3.xlarge
     desiredCapacity: 0
     minSize: 0
-    maxSize: 16
+    maxSize: 4
     labels:
       node.kubernetes.io/pool: ui
     taints:
@@ -72,16 +72,15 @@ managedNodeGroups:
         effect: NoSchedule
     tags:
       nodegroup-type: ui
-      k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+      platforma: platforma-cluster
 
-  # Batch nodes - small/medium compute workloads (scales from 0)
-  # m5.2xlarge: 8 vCPU / 32 GiB
-  - name: batch-medium
-    instanceType: m5.2xlarge
+  # Batch: 16 vCPU / 64 GiB (scale from zero)
+  # m6a.4xlarge
+  - name: batch-16c-64g
+    instanceType: m6a.4xlarge
     desiredCapacity: 0
     minSize: 0
-    maxSize: 32
+    maxSize: 4
     labels:
       node.kubernetes.io/pool: batch
     taints:
@@ -89,17 +88,16 @@ managedNodeGroups:
         value: batch
         effect: NoSchedule
     tags:
-      nodegroup-type: batch
-      k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+      nodegroup-type: batch-16c-64g
+      platforma: platforma-cluster
 
-  # Batch nodes - medium/large compute workloads (scales from 0)
-  # m5.4xlarge: 16 vCPU / 64 GiB
-  - name: batch-large
-    instanceType: m5.4xlarge
+  # Batch: 32 vCPU / 128 GiB (scale from zero)
+  # m6a.8xlarge
+  - name: batch-32c-128g
+    instanceType: m6a.8xlarge
     desiredCapacity: 0
     minSize: 0
-    maxSize: 32
+    maxSize: 2
     labels:
       node.kubernetes.io/pool: batch
     taints:
@@ -107,17 +105,16 @@ managedNodeGroups:
         value: batch
         effect: NoSchedule
     tags:
-      nodegroup-type: batch
-      k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+      nodegroup-type: batch-32c-128g
+      platforma: platforma-cluster
 
-  # Batch nodes - large compute workloads (scales from 0)
-  # m5.8xlarge: 32 vCPU / 128 GiB
-  - name: batch-xlarge
-    instanceType: m5.8xlarge
+  # Batch: 64 vCPU / 256 GiB (scale from zero)
+  # m6a.16xlarge
+  - name: batch-64c-256g
+    instanceType: m6a.16xlarge
     desiredCapacity: 0
     minSize: 0
-    maxSize: 32
+    maxSize: 1
     labels:
       node.kubernetes.io/pool: batch
     taints:
@@ -125,17 +122,16 @@ managedNodeGroups:
         value: batch
         effect: NoSchedule
     tags:
-      nodegroup-type: batch
-      k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+      nodegroup-type: batch-64c-256g
+      platforma: platforma-cluster
 
-  # Batch nodes - memory-intensive workloads (scales from 0)
-  # r5.4xlarge: 16 vCPU / 128 GiB
-  - name: batch-2xlarge
-    instanceType: r5.4xlarge
+  # Batch: 32 vCPU / 256 GiB — high memory (scale from zero)
+  # r6a.8xlarge
+  - name: batch-32c-256g
+    instanceType: r6a.8xlarge
     desiredCapacity: 0
     minSize: 0
-    maxSize: 32
+    maxSize: 2
     labels:
       node.kubernetes.io/pool: batch
     taints:
@@ -143,17 +139,16 @@ managedNodeGroups:
         value: batch
         effect: NoSchedule
     tags:
-      nodegroup-type: batch
-      k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+      nodegroup-type: batch-32c-256g
+      platforma: platforma-cluster
 
-  # Batch nodes - largest memory-intensive workloads (scales from 0)
-  # r5.8xlarge: 32 vCPU / 256 GiB
-  - name: batch-4xlarge
-    instanceType: r5.8xlarge
+  # Batch: 64 vCPU / 512 GiB — largest high memory (scale from zero)
+  # r6a.16xlarge
+  - name: batch-64c-512g
+    instanceType: r6a.16xlarge
     desiredCapacity: 0
     minSize: 0
-    maxSize: 32
+    maxSize: 1
     labels:
       node.kubernetes.io/pool: batch
     taints:
@@ -161,9 +156,8 @@ managedNodeGroups:
         value: batch
         effect: NoSchedule
     tags:
-      nodegroup-type: batch
-      k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/platforma-cluster: "owned"
+      nodegroup-type: batch-64c-512g
+      platforma: platforma-cluster
 
 cloudWatch:
   clusterLogging:

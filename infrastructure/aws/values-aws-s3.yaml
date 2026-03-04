@@ -1,6 +1,6 @@
 # Platforma on AWS EKS with S3 primary storage
-# For CloudFormation deployments where S3 bucket and IRSA are pre-created.
-# See infrastructure/aws/README.md for full installation guide.
+# For manual deployments where S3 bucket and IRSA are pre-created.
+# See infrastructure/aws/advanced-installation.md for full setup guide.
 
 environment: aws
 
@@ -11,7 +11,7 @@ storage:
 
   workspace:
     # EFS shared filesystem for job data.
-    # Provide the EFS filesystem ID created by CloudFormation.
+    # Provide the EFS filesystem ID created in Step 2.
     efs:
       enabled: true
       fileSystemId: ""  # --set storage.workspace.efs.fileSystemId=<EfsFileSystemId>
@@ -26,7 +26,7 @@ storage:
 
 # Authentication — configure exactly one method.
 # Inline credentials (simplest): chart auto-generates the htpasswd secret.
-# Existing secret: create a K8s secret first, then set secretName.
+# Existing secret: create a K8s secret yourself, then set secretName.
 # LDAP: uncomment and provide server + bind/search configuration.
 auth:
   htpasswd:
@@ -45,8 +45,13 @@ serviceAccount:
   create: true
   annotations: {}   # --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<PlatformaRoleArn>"
 
+# Job service account — annotate with IRSA role for S3 access (jobs need S3 too).
+jobServiceAccount:
+  create: true
+  annotations: {}   # --set "jobServiceAccount.annotations.eks\.amazonaws\.com/role-arn=<PlatformaJobsRoleArn>"
+
 # Ingress — Desktop App connects through this.
-# All values provided via --set in helm install (see README.md Step 6).
+# All values provided via --set in helm install (see advanced-installation.md Step 10).
 ingress:
   enabled: false       # --set ingress.enabled=true
   className: ""        # --set ingress.className=alb
@@ -57,6 +62,10 @@ ingress:
   annotations: {}      # set via --set: scheme, target-type, listen-ports, certificate-arn, backend-protocol-version
 
 kueue:
+  # Max resources for a single job (rejects jobs that exceed this).
+  maxJobResources:
+    cpu: 62
+    memory: 500Gi
   mode: dedicated
   # Node pools — controls where jobs run.
   # Must match your EKS node group labels and taints.
@@ -76,18 +85,24 @@ kueue:
           value: batch
           effect: NoSchedule
   dedicated:
-    # Max simultaneous resources per queue. Increase to allow more parallel jobs.
-    # UI default (4 CPU / 16Gi) ≈ 1 × t3.xlarge.
-    # Batch default (60 CPU / 240Gi) ≈ 7 × m5.2xlarge.
+    # Max simultaneous resources per queue. Adjust based on your node group scaling limits.
+    # Defaults match the CloudFormation "small" deployment size.
     resources:
       ui:
-        cpu: 4
-        memory: 16Gi
+        cpu: 64
+        memory: 256Gi
       batch:
-        cpu: 60
-        memory: 240Gi
+        cpu: 126
+        memory: 500Gi
 
 # Platforma server runs on system nodes (not on compute nodes used for jobs).
 app:
+  resources:
+    requests:
+      cpu: 4
+      memory: 16Gi
+    limits:
+      cpu: 8
+      memory: 16Gi
   nodeSelector:
     node.kubernetes.io/pool: system

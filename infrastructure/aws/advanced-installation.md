@@ -1,8 +1,8 @@
 # Advanced installation (manual CLI)
 
-Manual setup using `eksctl` and AWS CLI. Use this guide if you need full control over every resource, have custom VPC requirements, or want to manage Cluster Autoscaler, ALB Controller, and External DNS yourself — in your own namespace, with your own IAM policies and lifecycle.
+Manual setup using `eksctl` and AWS CLI. Use this guide when you need full control over every resource, have custom VPC requirements, or want to manage Cluster Autoscaler, ALB Controller, and External DNS yourself.
 
-For the recommended CloudFormation setup (all infrastructure and controllers managed as a single stack, installed individually via CodeBuild), see the [main guide](README.md).
+For the recommended one-click setup, see the [CloudFormation guide](README.md).
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ For the recommended CloudFormation setup (all infrastructure and controllers man
 
 ### AWS On-Demand vCPU quota
 
-The node groups can scale up to several nodes per batch pool (exact limits depend on your configuration). At full capacity the cluster needs ~400 On-Demand Standard vCPU (m6a/r6a instances). The AWS default quota for a fresh account is 32 vCPU — request an increase before deploying.
+At full capacity the cluster needs ~400 On-Demand Standard vCPU (m6a/r6a instances). The AWS default quota for a fresh account is 32 vCPU — request an increase before deploying.
 
 Check your current quota:
 
@@ -38,7 +38,7 @@ Recommended minimums by workload size:
 | Mid-sized group | 400 | 8 large or 32 small |
 | Large group | 800 | 16 large or 64 small |
 
-Quota increases are typically approved within minutes to a few hours.
+AWS typically approves quota increases within minutes to a few hours.
 
 ## Configuration
 
@@ -76,7 +76,7 @@ echo "S3 bucket:  $S3_BUCKET"
 
 | File | Description |
 |------|-------------|
-| `eksctl-cluster.yaml` | EKS cluster template (7 node groups, CSI drivers). Uses `platforma-cluster` / `eu-central-1` as defaults. |
+| `eksctl-cluster.yaml` | EKS cluster template (7 node groups, CSI drivers). Defaults: `platforma-cluster` / `eu-central-1`. |
 | `kueue-values.yaml` | Kueue Helm values with AppWrapper enabled |
 | `values-aws-s3.yaml` | Platforma Helm values for AWS with S3 primary storage |
 
@@ -103,7 +103,7 @@ This creates:
 - EBS CSI driver addon (for gp3 PVCs)
 - EFS CSI driver addon (for shared workspace)
 
-All five batch groups share label `node.kubernetes.io/pool=batch` and taint `dedicated=batch:NoSchedule`. Cluster Autoscaler with `--expander=least-waste` selects the smallest group that fits each pending pod. The r6a groups provide higher memory-to-CPU ratio for memory-intensive bioinformatics workloads.
+All five batch groups share label `node.kubernetes.io/pool=batch` and taint `dedicated=batch:NoSchedule`. The Cluster Autoscaler (`--expander=least-waste`) picks the smallest group that fits each pending pod. The r6a groups provide higher memory-to-CPU ratio for memory-intensive workloads.
 
 Takes ~15 minutes. Verify:
 
@@ -113,7 +113,7 @@ kubectl get nodes -L node.kubernetes.io/pool
 
 ### Create gp3 StorageClass
 
-EKS default `gp2` uses a legacy provisioner. Create a `gp3` StorageClass:
+The EKS default `gp2` class uses a legacy provisioner. Create a `gp3` class for Platforma's database volume:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -273,7 +273,7 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
   --set autoDiscovery.clusterName=$CLUSTER_NAME \
   --set "autoDiscovery.tags[0]=eks:cluster-name=$CLUSTER_NAME" \
   --set awsRegion=$AWS_REGION \
-  --set image.tag=v1.34.0 \
+  --set image.tag=v1.34.2 \
   --set rbac.serviceAccount.create=false \
   --set rbac.serviceAccount.name=cluster-autoscaler \
   --set extraArgs.scale-down-delay-after-add=10m \
@@ -308,7 +308,7 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler
 
 ## Step 4: Install External DNS
 
-External DNS creates Route53 records for Kubernetes Ingress resources automatically. Install it before the ALB Controller to avoid the ALB mutating webhook race condition.
+External DNS creates Route53 records for Kubernetes Ingress resources. Install it **before** the ALB Controller — the ALB Controller registers a mutating webhook that can block External DNS Service creation if installed first.
 
 ```bash
 # Create IAM policy scoped to your hosted zone
@@ -377,7 +377,7 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns
 
 ## Step 5: Install AWS Load Balancer Controller
 
-The ALB Controller provisions Application Load Balancers for Kubernetes Ingress resources.
+The ALB Controller provisions Application Load Balancers for Kubernetes Ingress resources. Must be installed after External DNS (see Step 4).
 
 ```bash
 # Download the IAM policy (v3.0.0)
@@ -430,11 +430,15 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-cont
 Platforma uses S3 for primary storage. Two service accounts need S3 access: `platforma` (server) and `platforma-jobs` (compute jobs). The Helm chart creates the K8s service accounts — you only need to create the IAM roles and pass their ARNs via `--set` in Step 10.
 
 ```bash
-# Create S3 bucket
-aws s3api create-bucket \
-  --bucket $S3_BUCKET \
-  --region $AWS_REGION \
-  --create-bucket-configuration LocationConstraint=$AWS_REGION
+# Create S3 bucket (LocationConstraint must be omitted in us-east-1)
+if [ "$AWS_REGION" = "us-east-1" ]; then
+  aws s3api create-bucket --bucket $S3_BUCKET --region $AWS_REGION
+else
+  aws s3api create-bucket \
+    --bucket $S3_BUCKET \
+    --region $AWS_REGION \
+    --create-bucket-configuration LocationConstraint=$AWS_REGION
+fi
 
 # Block public access
 aws s3api put-public-access-block \
@@ -547,7 +551,7 @@ echo "Platforma jobs role ARN: $PLATFORMA_JOBS_ROLE_ARN"
 
 ## Step 7: Request ACM certificate
 
-Request a TLS certificate for your domain. The Desktop App requires TLS to connect.
+Request a TLS certificate for your domain. The Desktop App requires TLS.
 
 ```bash
 CERT_ARN=$(aws acm request-certificate \
@@ -611,7 +615,7 @@ kubectl wait --for=condition=Available deployment/kueue-controller-manager \
 
 ### Install AppWrapper CRD and controller
 
-AppWrapper is a separate component from Kueue with its own controller and CRD.
+AppWrapper ships separately from Kueue with its own controller and CRD.
 
 ```bash
 kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.2.0/install.yaml
@@ -620,7 +624,7 @@ kubectl wait --for=condition=Available deployment/appwrapper-controller-manager 
   -n appwrapper-system --timeout=120s
 ```
 
-Delete the AppWrapper webhooks — the mutating webhook injects IAM ARN as a label value, and the `:` in the ARN is invalid in Kubernetes labels:
+Delete the AppWrapper webhooks — the mutating webhook injects IAM ARNs as label values, and `:` in the ARN is invalid for Kubernetes labels:
 
 ```bash
 kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
@@ -649,9 +653,20 @@ kubectl create secret generic platforma-license \
 
 ## Step 10: Install Platforma
 
-The `values-aws-s3.yaml` file provides the base configuration. The chart creates `platforma` and `platforma-jobs` service accounts — pass IRSA role ARNs from Step 6, EFS ID from Step 2, S3 bucket from Step 6, and cert ARN from Step 7.
+Base configuration comes from `values-aws-s3.yaml`. The `--set` overrides below reference outputs from earlier steps: IRSA role ARNs (Step 6), EFS ID (Step 2), S3 bucket (Step 6), and cert ARN (Step 7).
 
-Authentication: the simplest option is inline credentials. The chart auto-generates a bcrypt-hashed htpasswd secret from the username/password pairs. Alternatively, create a K8s secret yourself and set `auth.htpasswd.secretName`, or use LDAP.
+If resuming in a new shell, recover session variables first:
+
+```bash
+EFS_ID=$(aws efs describe-file-systems \
+  --query "FileSystems[?Tags[?Key=='Name'&&Value=='${CLUSTER_NAME}-workspace']].FileSystemId" --output text)
+PLATFORMA_ROLE_ARN=$(aws iam get-role --role-name ${CLUSTER_NAME}-platforma-irsa --query 'Role.Arn' --output text)
+PLATFORMA_JOBS_ROLE_ARN=$(aws iam get-role --role-name ${CLUSTER_NAME}-platforma-jobs-irsa --query 'Role.Arn' --output text)
+CERT_ARN=$(aws acm list-certificates \
+  --query "CertificateSummaryList[?DomainName=='${DOMAIN_NAME}'].CertificateArn" --output text)
+```
+
+The example uses inline credentials — the chart auto-generates a bcrypt-hashed htpasswd secret from the username/password pair. **Replace `changeme` with a strong password before running.** Alternatives: create a K8s secret yourself and set `auth.htpasswd.secretName`, or use LDAP.
 
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
@@ -750,7 +765,7 @@ kubectl get ingress -n $PLATFORMA_NAMESPACE
 
 ## Cleanup
 
-If running cleanup in a new shell session, set the Configuration variables from the top of this guide, then recover session-specific variables:
+Running cleanup in a new shell? Set the Configuration variables from the top of this guide first, then recover session-specific variables:
 
 ```bash
 EFS_ID=$(aws efs describe-file-systems \

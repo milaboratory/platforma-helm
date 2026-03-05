@@ -1,8 +1,8 @@
 # Platforma on AWS EKS
 
-Deploy Platforma on AWS using a single CloudFormation stack. The stack creates all infrastructure (EKS, EFS, S3, IAM) and automatically installs all Kubernetes components (Kueue, Cluster Autoscaler, ALB Controller, External DNS, Platforma) via CodeBuild.
+A single CloudFormation stack creates all infrastructure (EKS, EFS, S3, IAM) and installs all Kubernetes components (Kueue, Cluster Autoscaler, ALB Controller, External DNS, Platforma) via CodeBuild.
 
-> For manual CLI-only setup (without CloudFormation), see [Advanced installation](advanced-installation.md).
+> For manual CLI setup, see [Advanced installation](advanced-installation.md).
 
 ## Architecture
 
@@ -33,12 +33,12 @@ graph TD
 2. **Retrieve the password** — the stack auto-generates credentials and stores them in SSM Parameter Store.
 3. **Connect the Desktop App** — open the Platforma Desktop App and connect to your domain.
 
-No CLI steps required. The stack handles everything: infrastructure, Helm installs, certificate validation, DNS records.
+Everything runs in the AWS Console. The stack handles infrastructure, Helm installs, certificate validation, and DNS records.
 
 ## Prerequisites
 
 - **AWS account** with permissions to create EKS, EFS, S3, IAM roles, ACM certificates, CodeBuild (see [permissions.md](permissions.md))
-- **Route53 hosted zone** with a registered domain (e.g. `example.com`) — the Desktop App connects only over TLS, so a domain and certificate are mandatory. If you don't have one, see [How to register a domain in AWS](domain-guide.md).
+- **Route53 hosted zone** with a registered domain (e.g. `example.com`) — the Desktop App requires TLS, so you need a domain and certificate. If you don't have one, see [How to register a domain in AWS](domain-guide.md).
 - **Platforma license key**
 - **Platforma Desktop App** — download from [platforma.bio](https://platforma.bio)
 
@@ -67,8 +67,8 @@ Fill in the parameters below.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | VPC ID | *(empty = create new)* | Leave empty to create a new VPC, or provide an existing VPC ID |
-| Private subnet IDs | *(leave as-is)* | 3 private subnets (one per AZ) — required if using existing VPC. The field shows `,,` by default — **do not clear it**; this is a CloudFormation workaround required when creating a new VPC. |
-| Public subnet IDs | *(leave as-is)* | 3 public subnets — required for ALB when using existing VPC. Same `,,` workaround applies. |
+| Private subnet IDs | *(leave as-is)* | 3 private subnets (one per AZ) — required when using an existing VPC. The field shows `,,` by default — **do not clear it**; CloudFormation needs this placeholder when creating a new VPC. |
+| Public subnet IDs | *(leave as-is)* | 3 public subnets — required for ALB when using an existing VPC. Same `,,` placeholder applies. |
 | VPC CIDR | `10.0.0.0/16` | CIDR for the new VPC (ignored with existing VPC) |
 
 ![CloudFormation parameters — cluster and networking](images/cf-parameters-1.png)
@@ -84,7 +84,7 @@ Fill in the parameters below.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| Deploy Platforma | `true` | Set to `true` to deploy Platforma automatically after infrastructure is ready. When `false`, only infrastructure and controllers are deployed — useful for testing the stack first. |
+| Deploy Platforma | `true` | Set to `true` to deploy Platforma after infrastructure is ready. When `false`, the stack deploys only infrastructure and controllers — useful for testing first. |
 | License key | *(empty)* | Platforma license key (`MI_LICENSE` value). Required when Deploy Platforma is `true`. |
 | Platforma version | `3.0.0` | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma` |
 | Custom container image | *(empty)* | Override the default Platforma container image. Leave empty to use the chart default. |
@@ -94,7 +94,7 @@ Fill in the parameters below.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | Auth method | `htpasswd` | `htpasswd` for file-based auth, `ldap` for LDAP |
-| Htpasswd content | *(empty)* | Pre-generated htpasswd string. When empty, a random password is auto-generated and stored in SSM Parameter Store (see Step 2). Generate manually with `htpasswd -nB username`. |
+| Htpasswd content | *(empty)* | Pre-generated htpasswd string. When empty, the stack generates a random password and stores it in SSM Parameter Store (see Step 2). Generate manually with `htpasswd -nB username`. |
 
 For LDAP, fill in the LDAP parameters (server URL, bind DN, search rules). See the parameter descriptions in the CloudFormation Console for details.
 
@@ -135,9 +135,9 @@ Up to 3 external S3 data libraries can be configured. Each library needs a name 
 | **Route53 hosted zone ID** | Your hosted zone ID (e.g. `Z0123456789ABCDEF`) |
 | **Domain name** | Endpoint for Platforma (e.g. `platforma.example.com`) |
 
-These are **required**. The Desktop App connects only over TLS and requires a real domain — it cannot use IP addresses or self-signed certificates.
+Both fields are **required**. The Desktop App requires TLS with a valid certificate — IP addresses and self-signed certificates do not work.
 
-**What this means:** You need a domain name you own (e.g. `platforma.example.com`) and a Route53 hosted zone for it. The stack requests an ACM certificate for your domain and validates it automatically by writing a DNS record to your hosted zone — no manual certificate steps.
+You need a domain you own (e.g. `platforma.example.com`) and a Route53 hosted zone for it. The stack requests an ACM certificate and validates it automatically by writing a DNS record to your hosted zone.
 
 If you don't have a domain yet, see [How to register a domain in AWS](domain-guide.md).
 
@@ -185,7 +185,7 @@ aws ssm get-parameter \
 
 Replace `<UsersPasswordSSMPath>` and `<Region>` with the values from the Outputs tab.
 
-The username is `platforma`. The password persists across stack updates — it is only generated once and reused on subsequent deploys.
+The username is `platforma`. The stack generates the password once and reuses it on subsequent deploys.
 
 ---
 
@@ -198,15 +198,15 @@ The username is `platforma`. The password persists across stack updates — it i
 
 ![Platforma Desktop App — connect to remote server](images/desktop-app.png)
 
-ALB provisioning and DNS propagation may take 1-3 minutes after the stack completes. If the connection fails immediately after deployment, wait and retry.
+ALB provisioning and DNS propagation take 1-3 minutes after the stack completes. If the connection fails right away, wait and retry.
 
 ---
 
 ## Updating Platforma
 
-To update the Platforma version, change the `PlatformaVersion` parameter in the CloudFormation Console and update the stack. Only the Platforma deployer CodeBuild project runs — infrastructure is not affected.
+Change the `PlatformaVersion` parameter in the CloudFormation Console and update the stack. Only the Platforma deployer CodeBuild project runs — infrastructure stays unchanged.
 
-The auto-generated password is preserved across updates. It is read from SSM on each deploy, not regenerated.
+The auto-generated password persists across updates. The deployer reads it from SSM on each deploy.
 
 ---
 
@@ -214,7 +214,7 @@ The auto-generated password is preserved across updates. It is read from SSM on 
 
 ### Stack stuck in CREATE_IN_PROGRESS after 20+ minutes
 
-The most common cause is ACM certificate validation failure. The stack creates an ACM certificate and validates it by writing a DNS record to your Route53 hosted zone. This fails silently if the hosted zone ID is wrong or if the domain's NS records are not pointing at Route53.
+The most common cause is ACM certificate validation failure. The stack creates an ACM certificate and validates it by writing a DNS record to your Route53 hosted zone. This fails silently if the hosted zone ID is wrong or the domain's NS records point elsewhere.
 
 Check certificate status in the AWS Console → **Certificate Manager** → your domain. If the certificate shows `PENDING_VALIDATION` after 5+ minutes, verify:
 1. The **Route53 hosted zone ID** parameter matches the actual zone that controls your domain's DNS
@@ -232,9 +232,9 @@ Check the CodeBuild project logs — links are in the Outputs tab (`HelmDeployer
 
 ## Cleanup
 
-Delete the CloudFormation stack from the AWS Console: **CloudFormation → Stacks → select your stack → Delete**. The stack automatically uninstalls all Helm releases, waits for ALB deprovisioning, and cleans up DNS records before deleting the infrastructure.
+Delete the CloudFormation stack: **CloudFormation → Stacks → select your stack → Delete**. The stack uninstalls all Helm releases, waits for ALB deprovisioning, and cleans up DNS records before deleting infrastructure.
 
-**S3 and EFS are retained** after stack deletion (data safety). Delete them manually when you are certain the data is no longer needed:
+**S3 and EFS persist** after stack deletion to protect data. Delete them manually when you no longer need the data:
 
 1. **S3 bucket** — go to **S3** in the Console, find the bucket (named `platforma-<ClusterName>-<AccountId>`), empty it, then delete it
 2. **EFS filesystem** — go to **EFS** in the Console, find the filesystem (tagged with the cluster name), delete it

@@ -59,8 +59,6 @@ export S3_BUCKET="platforma-storage-$(aws sts get-caller-identity --query Accoun
 
 # --- Derived: do not edit ---
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-export DOMAIN_FILTER=$(aws route53 get-hosted-zone --id $HOSTED_ZONE_ID \
-  --query 'HostedZone.Name' --output text | sed 's/\.$//')
 ```
 
 Verify your configuration:
@@ -72,7 +70,6 @@ echo "Domain:     $DOMAIN_NAME"
 echo "Zone ID:    $HOSTED_ZONE_ID"
 echo "Account:    $AWS_ACCOUNT_ID"
 echo "S3 bucket:  $S3_BUCKET"
-echo "Zone root:  $DOMAIN_FILTER"
 ```
 
 ## Files reference
@@ -285,7 +282,8 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
   --set extraArgs.expander=least-waste \
   --set extraArgs.max-node-provision-time=5m \
   --set extraArgs.initial-node-group-backoff-duration=1m \
-  --set extraArgs.max-node-group-backoff-duration=5m
+  --set extraArgs.max-node-group-backoff-duration=5m \
+  --atomic --timeout 5m
 ```
 
 ### Configuration options
@@ -308,53 +306,9 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler
 
 ---
 
-## Step 4: Install AWS Load Balancer Controller
+## Step 4: Install External DNS
 
-The ALB Controller provisions Application Load Balancers for Kubernetes Ingress resources.
-
-```bash
-# Download the IAM policy (v2.11.0)
-curl -so /tmp/alb-iam-policy.json \
-  https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.11.0/docs/install/iam_policy.json
-
-aws iam create-policy \
-  --policy-name ${CLUSTER_NAME}-alb-controller-policy \
-  --policy-document file:///tmp/alb-iam-policy.json
-
-# Create IRSA
-eksctl create iamserviceaccount \
-  --cluster=$CLUSTER_NAME \
-  --namespace=kube-system \
-  --name=aws-load-balancer-controller \
-  --attach-policy-arn=arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-alb-controller-policy \
-  --approve
-```
-
-### Install via Helm
-
-```bash
-helm repo add eks https://aws.github.io/eks-charts
-helm repo update
-
-helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  --version 3.0.0 \
-  -n kube-system \
-  --set clusterName=$CLUSTER_NAME \
-  --set serviceAccount.create=false \
-  --set serviceAccount.name=aws-load-balancer-controller
-```
-
-Verify:
-
-```bash
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
-```
-
----
-
-## Step 5: Install External DNS
-
-External DNS creates Route53 records for Kubernetes Ingress resources automatically.
+External DNS creates Route53 records for Kubernetes Ingress resources automatically. Install it before the ALB Controller to avoid the ALB mutating webhook race condition.
 
 ```bash
 # Create IAM policy scoped to your hosted zone
@@ -406,16 +360,67 @@ helm install external-dns external-dns/external-dns \
   -n kube-system \
   --set serviceAccount.create=false \
   --set serviceAccount.name=external-dns \
-  --set domainFilters[0]=$DOMAIN_FILTER \
+  --set "extraArgs[0]=--zone-id-filter=$HOSTED_ZONE_ID" \
   --set policy=sync \
   --set registry=txt \
-  --set txtOwnerId=$CLUSTER_NAME
+  --set txtOwnerId=$CLUSTER_NAME \
+  --atomic --timeout 3m
 ```
 
 Verify:
 
 ```bash
 kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns
+```
+
+---
+
+## Step 5: Install AWS Load Balancer Controller
+
+The ALB Controller provisions Application Load Balancers for Kubernetes Ingress resources.
+
+```bash
+# Download the IAM policy (v3.0.0)
+curl -so /tmp/alb-iam-policy.json \
+  https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v3.0.0/docs/install/iam_policy.json
+
+aws iam create-policy \
+  --policy-name ${CLUSTER_NAME}-alb-controller-policy \
+  --policy-document file:///tmp/alb-iam-policy.json
+
+# Create IRSA
+eksctl create iamserviceaccount \
+  --cluster=$CLUSTER_NAME \
+  --namespace=kube-system \
+  --name=aws-load-balancer-controller \
+  --attach-policy-arn=arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-alb-controller-policy \
+  --approve
+```
+
+### Install via Helm
+
+```bash
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+
+VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME \
+  --query "cluster.resourcesVpcConfig.vpcId" --output text)
+
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  --version 3.0.0 \
+  -n kube-system \
+  --set clusterName=$CLUSTER_NAME \
+  --set region=$AWS_REGION \
+  --set vpcId=$VPC_ID \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --atomic --timeout 5m
+```
+
+Verify:
+
+```bash
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
 ```
 
 ---

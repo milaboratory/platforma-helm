@@ -2070,7 +2070,7 @@ Resources:
                     --set policy=sync \
                     --set registry=txt \
                     --set txtOwnerId=$CLUSTER_NAME \
-                    --set "zoneIdFilters[0]=$HOSTED_ZONE_ID" \
+                    --set "extraArgs[0]=--zone-id-filter=$HOSTED_ZONE_ID" \
                     --set serviceAccount.create=true \
                     --set serviceAccount.name=external-dns \
                     --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$EXTERNALDNS_ROLE_ARN" \

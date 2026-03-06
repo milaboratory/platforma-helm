@@ -145,7 +145,7 @@ Metadata:
       LdapBindDN:
         default: 'LDAP bind DN template (direct bind)'
       LdapSearchRules:
-        default: 'LDAP search rules (comma-separated)'
+        default: 'LDAP search rules (semicolon-separated)'
       LdapSearchUser:
         default: 'LDAP search user DN'
       LdapSearchPassword:
@@ -254,8 +254,9 @@ Parameters:
     Type: String
     Default: ''
     Description: >
-      Comma-delimited LDAP search rules. Each rule: "FILTER|BASE_DN"
-      (e.g. "(uid=%s)|ou=users,dc=example,dc=com").
+      Semicolon-delimited LDAP search rules. Each rule: "FILTER|BASE_DN"
+      (e.g. "(uid=%u)|dc=example,dc=com"). Separate multiple rules with semicolons.
+      Example with group filter: "(&(uid=%u)(memberOf=cn=users,ou=groups,dc=example,dc=com))|dc=example,dc=com"
       Set for search bind mode. Leave empty for direct bind mode.
 
   LdapSearchUser:
@@ -2570,13 +2571,13 @@ Resources:
                     if [ -n "$LDAP_SEARCH_RULES" ]; then
                       echo "    searchRules:" >> /tmp/platforma-values.yaml
                       OLD_IFS="$IFS"
-                      IFS=","
+                      IFS=";"
                       for rule in $LDAP_SEARCH_RULES; do
                         IFS="$OLD_IFS"
                         rule=$(echo "$rule" | xargs)
-                        [ -z "$rule" ] && { IFS=","; continue; }
+                        [ -z "$rule" ] && { IFS=";"; continue; }
                         echo "      - \"${rule}\"" >> /tmp/platforma-values.yaml
-                        IFS=","
+                        IFS=";"
                       done
                       IFS="$OLD_IFS"
                     fi

@@ -54,7 +54,6 @@ Metadata:
       - Label:
           default: Storage
         Parameters:
-          - EfsPerformanceMode
           - S3BucketName
       - Label:
           default: 'Data libraries (optional, up to 3 external read-only S3 buckets)'
@@ -99,8 +98,6 @@ Metadata:
         default: Platforma chart version
       PlatformaImage:
         default: Custom container image (leave empty for chart default)
-      EfsPerformanceMode:
-        default: 'EFS performance mode (generalPurpose or maxIO)'
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       DomainName:
@@ -444,14 +441,6 @@ Parameters:
       xlarge: ~32 large jobs, or 128 small — for enterprise deployments (~2700 vCPU quota).
 
   # --- Storage ---
-  EfsPerformanceMode:
-    Type: String
-    Default: generalPurpose
-    AllowedValues: [generalPurpose, maxIO]
-    Description: >
-      generalPurpose: lower latency, sufficient for most workloads.
-      maxIO: higher throughput, better for highly parallel large-dataset processing.
-
   S3BucketName:
     Type: String
     Default: ''
@@ -2804,7 +2793,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      PerformanceMode: !Ref EfsPerformanceMode
+      PerformanceMode: generalPurpose
       ThroughputMode: elastic
       Encrypted: true
       FileSystemTags:

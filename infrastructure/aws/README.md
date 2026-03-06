@@ -77,7 +77,6 @@ Fill in the parameters below.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| EFS performance mode | `generalPurpose` | `maxIO` for very high throughput |
 | S3 bucket name | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<random>`. Each stack creation gets a unique name, so retries never collide with retained buckets. |
 
 ### Platforma deployment

@@ -95,14 +95,26 @@ auth:
     # -- Direct bind: DN template where %u is replaced with the username
     # Example: "cn=%u,ou=users,dc=example,dc=com"
     # When user authenticates, main platforma pod puts user's login in 
-    # place of %u and calls LDAP.Bina method using password user provided.
+    # place of %u. Then it calls LDAP.Bind method with password user provided.
     # If LDAP replies OK, the user is allowed to login into Desktop App.
     bindDN: ""
 
     # -- Search bind: rules to find user entries
-    # Each rule: "FILTER|BASE_DN" (e.g., "(uid=%s)|ou=users,dc=example,dc=com")
+    # Each rule: "<filter>|<base DN>" ( e.g., "(uid=%u)|ou=users,dc=example,dc=com" )
+    #
+    # When user authenticates, main platforma pod gets search rules, splitting them
+    # by first '|' symbol found.
+    # When you need 'or' condition in searches, just use several search rules.
+    # Search rules are applied one by one, until first match is found.
+    #
+    # For <filter> part, platforma puts user's login in place of '%u', then performs
+    # LDAP.Search request inside <base DN>, looking for single record matching <filter>.
+    # When first match is found, platforma calls LDAP.Bind with matched record DN and
+    # password user provided.
+    #
+    # If LDAP replies OK, the user is allowed to login into Desktop App.
     searchRules: []
-    # -- Service account DN for running LDAP searches
+    # -- DN of a user to Bind in LDAP server before performing search queries
     searchUser: ""
     # -- Search user password (plaintext — use searchPasswordSecretRef for production)
     searchPassword: ""
@@ -115,7 +127,10 @@ auth:
     tls:
       # -- Skip server certificate verification (not recommended for production)
       insecureSkipVerify: false
-      # -- CA certificate for verifying the LDAP server
+      # -- CA certificate: safe way to trust self-signed certificate of LDAP server.
+      # If your LDAP server uses self-signed certificate, or all traffic to LDAP server is 
+      # intercepted by some network proxy (like ZScaler), provide this certificate's CA here
+      # instead of using `insecureSkipVerify: true`
       caSecretRef:
         name: ""
         key: "ca.crt"

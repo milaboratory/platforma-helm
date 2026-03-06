@@ -152,7 +152,6 @@ CloudFormation Console for details.
 
 | Parameter            | Default            | Description                                             |
 |----------------------|--------------------|---------------------------------------------------------|
-| EFS performance mode | `generalPurpose`   | `maxIO` for very high throughput                        |
 | S3 bucket name       | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<AccountId>` |
 
 ### Data libraries
@@ -210,21 +209,8 @@ Go to the **Outputs** tab, note the parameters below. You will need them on the 
 
 If you left `HtpasswdContent` empty, the stack generated a random password and stored it in SSM Parameter Store.
 
-**Via AWS Console:** Go to **Systems Manager → Parameter Store**, find the parameter shown in the `UsersPasswordSSMPath`
+Go to **[Systems Manager → Parameter Store](https://eu-central-1.console.aws.amazon.com/systems-manager/parameters/?region=eu-central-1&tab=Table)**, find the parameter shown in the `UsersPasswordSSMPath`
 output, click **Show** to reveal the value.
-
-**Via CLI:**
-
-```bash
-aws ssm get-parameter \
-  --name "<UsersPasswordSSMPath>" \
-  --with-decryption \
-  --query Parameter.Value \
-  --output text \
-  --region <Region>
-```
-
-Replace `<UsersPasswordSSMPath>` and `<Region>` with the values from the Outputs tab.
 
 The username is `platforma`. The stack generates the password once and reuses it on subsequent deploys.
 

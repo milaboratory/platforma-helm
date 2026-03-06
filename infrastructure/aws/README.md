@@ -1,7 +1,6 @@
 # Platforma on AWS EKS
 
-A single CloudFormation stack creates all infrastructure (EKS, EFS, S3, IAM) and installs all Kubernetes components (
-Kueue, Cluster Autoscaler, ALB Controller, External DNS, Platforma) via CodeBuild.
+A single CloudFormation stack creates all infrastructure (EKS, EFS, S3, IAM) and installs all Kubernetes components (Kueue, Cluster Autoscaler, ALB Controller, External DNS, Platforma) via CodeBuild.
 
 > For manual CLI setup, see [Advanced installation](advanced-installation.md).
 
@@ -11,14 +10,15 @@ Kueue, Cluster Autoscaler, ALB Controller, External DNS, Platforma) via CodeBuil
 graph TD
     desktop["Platforma Desktop App"]
     dns["Route53 + ALB + ACM TLS"]
-    desktop -->|" gRPC over TLS "| dns
-    desktop -.->|" data access "| s3
+
+    desktop -->|"gRPC over TLS"| dns
+    desktop -.->|"data access"| s3
 
     subgraph EKS["EKS Cluster"]
         dns --> platforma["Platforma Server"]
         platforma --> kueue["Kueue + AppWrapper"]
         kueue --> ui["UI pool: t3.xlarge, scale-from-zero"]
-        kueue --> batch["Batch pools: m6a.4xl–16xl + r6a.8xl–16xl, scale-from-zero"]
+        kueue --> batch["Batch pools: m7i.4xl–16xl + r7i.8xl–16xl, scale-from-zero"]
         platforma --- ebs[("EBS gp3: database")]
     end
 
@@ -192,14 +192,15 @@ During this time it:
 ## Once install complete
 Go to the **Outputs** tab:
 
-| Output                          | Description                                          |
-|---------------------------------|------------------------------------------------------|
-| `PlatformaUrl`                  | URL to connect from the Desktop App                  |
-| `UsersPasswordSSMPath`          | SSM path for auto-generated password (htpasswd mode) |
-| `ClusterName`                   | EKS cluster name (for kubectl access)                |
-| `Region`                        | AWS region                                           |
-| `HelmDeployerBuildProject`      | CodeBuild logs for infra controllers                 |
-| `PlatformaDeployerBuildProject` | CodeBuild logs for Platforma deployment              |
+| Output | Description |
+|--------|-------------|
+| `PlatformaUrl` | URL to connect from the Desktop App |
+| `UsersPasswordSSMPath` | SSM path for auto-generated password (htpasswd mode) |
+| `S3BucketOutput` | S3 bucket name (retained on stack deletion — note this for cleanup) |
+| `ClusterName` | EKS cluster name (for kubectl access) |
+| `Region` | AWS region |
+| `HelmDeployerBuildProject` | CodeBuild logs for infra controllers |
+| `PlatformaDeployerBuildProject` | CodeBuild logs for Platforma deployment |
 
 ![CloudFormation outputs](images/cf-outputs.png)
 
@@ -285,6 +286,5 @@ releases, waits for ALB deprovisioning, and cleans up DNS records before deletin
 
 **S3 and EFS persist** after stack deletion to protect data. Delete them manually when you no longer need the data:
 
-1. **S3 bucket** — go to **S3** in the Console, find the bucket (named `platforma-<ClusterName>-<AccountId>`), empty it,
-   then delete it
+1. **S3 bucket** — go to **S3** in the Console, find the bucket (name from `S3BucketOutput` in the Outputs tab), empty it, then delete it
 2. **EFS filesystem** — go to **EFS** in the Console, find the filesystem (tagged with the cluster name), delete it

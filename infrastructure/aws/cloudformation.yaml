@@ -54,7 +54,6 @@ Metadata:
       - Label:
           default: Storage
         Parameters:
-          - EfsPerformanceMode
           - S3BucketName
       - Label:
           default: 'Data libraries (optional, up to 3 external read-only S3 buckets)'
@@ -99,8 +98,6 @@ Metadata:
         default: Platforma chart version
       PlatformaImage:
         default: Custom container image (leave empty for chart default)
-      EfsPerformanceMode:
-        default: 'EFS performance mode (generalPurpose or maxIO)'
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       DomainName:
@@ -194,7 +191,6 @@ Parameters:
   LicenseKey:
     Type: String
     Default: ''
-    NoEcho: true
     Description: Platforma license key (MI_LICENSE value from your license file). Required when DeployPlatforma=true.
 
   PlatformaVersion:
@@ -303,7 +299,6 @@ Parameters:
   DataLibrary1AccessKey:
     Type: String
     Default: ''
-    NoEcho: true
     AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
     ConstraintDescription: 'Must be a valid AWS access key ID (20 characters, starts with AKIA or ASIA) or empty'
     Description: >
@@ -340,7 +335,6 @@ Parameters:
   DataLibrary2AccessKey:
     Type: String
     Default: ''
-    NoEcho: true
     AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
     ConstraintDescription: 'Must be a valid AWS access key ID (20 characters, starts with AKIA or ASIA) or empty'
     Description: >
@@ -377,7 +371,6 @@ Parameters:
   DataLibrary3AccessKey:
     Type: String
     Default: ''
-    NoEcho: true
     AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
     ConstraintDescription: 'Must be a valid AWS access key ID (20 characters, starts with AKIA or ASIA) or empty'
     Description: >
@@ -448,14 +441,6 @@ Parameters:
       xlarge: ~32 large jobs, or 128 small — for enterprise deployments (~2700 vCPU quota).
 
   # --- Storage ---
-  EfsPerformanceMode:
-    Type: String
-    Default: generalPurpose
-    AllowedValues: [generalPurpose, maxIO]
-    Description: >
-      generalPurpose: lower latency, sufficient for most workloads.
-      maxIO: higher throughput, better for highly parallel large-dataset processing.
-
   S3BucketName:
     Type: String
     Default: ''
@@ -463,8 +448,8 @@ Parameters:
     ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
     Description: >
       S3 bucket name for primary storage. Leave empty to auto-generate
-      as platforma-<ClusterName>-<AccountId> (unique per stack, allows
-      multiple Platforma stacks in the same region).
+      as platforma-<ClusterName>-<random> (unique per stack creation).
+      The bucket is retained on stack deletion for data safety.
 
   # --- IAM / IRSA roles ---
   # Always created (required for Platforma):
@@ -479,9 +464,7 @@ Parameters:
 
   # --- DNS / TLS (required) ---
   HostedZoneId:
-    Type: String
-    AllowedPattern: '^Z[A-Z0-9]+$'
-    ConstraintDescription: 'Must be a valid Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
+    Type: 'AWS::Route53::HostedZone::Id'
     Description: >
       Route53 hosted zone ID. Required — used for ACM certificate DNS validation
       and External DNS record management. The Desktop App connects via TLS,
@@ -503,7 +486,7 @@ Parameters:
 Mappings:
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
-  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r6a.16xl count) x 500Gi.
+  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r7i.16xl count) x 500Gi.
   # UI quota is fixed at 64 vCPU / 256 GiB regardless of size.
   DeploymentSize:
     small:
@@ -575,6 +558,7 @@ Conditions:
   HasLibrary3Irsa: !And
     - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
     - !Equals [!Ref DataLibrary3AccessKey, '']
+  IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
 
 # =============================================================================
 # Rules — fail fast on invalid parameter combinations
@@ -592,6 +576,36 @@ Rules:
     Assertions:
       - Assert: !Not [!Equals [!Ref LdapServer, '']]
         AssertDescription: LdapServer is required when AuthMethod is ldap
+  DataLibrary1KeyPair:
+    Assertions:
+      - Assert: !Or
+          - !Equals [!Ref DataLibrary1AccessKey, '']
+          - !Not [!Equals [!Ref DataLibrary1SecretKey, '']]
+        AssertDescription: DataLibrary1SecretKey is required when DataLibrary1AccessKey is set
+      - Assert: !Or
+          - !Equals [!Ref DataLibrary1SecretKey, '']
+          - !Not [!Equals [!Ref DataLibrary1AccessKey, '']]
+        AssertDescription: DataLibrary1AccessKey is required when DataLibrary1SecretKey is set
+  DataLibrary2KeyPair:
+    Assertions:
+      - Assert: !Or
+          - !Equals [!Ref DataLibrary2AccessKey, '']
+          - !Not [!Equals [!Ref DataLibrary2SecretKey, '']]
+        AssertDescription: DataLibrary2SecretKey is required when DataLibrary2AccessKey is set
+      - Assert: !Or
+          - !Equals [!Ref DataLibrary2SecretKey, '']
+          - !Not [!Equals [!Ref DataLibrary2AccessKey, '']]
+        AssertDescription: DataLibrary2AccessKey is required when DataLibrary2SecretKey is set
+  DataLibrary3KeyPair:
+    Assertions:
+      - Assert: !Or
+          - !Equals [!Ref DataLibrary3AccessKey, '']
+          - !Not [!Equals [!Ref DataLibrary3SecretKey, '']]
+        AssertDescription: DataLibrary3SecretKey is required when DataLibrary3AccessKey is set
+      - Assert: !Or
+          - !Equals [!Ref DataLibrary3SecretKey, '']
+          - !Not [!Equals [!Ref DataLibrary3AccessKey, '']]
+        AssertDescription: DataLibrary3AccessKey is required when DataLibrary3SecretKey is set
   ExistingVpcRequiresSubnets:
     RuleCondition: !Not [!Equals [!Ref VpcId, '']]
     Assertions:
@@ -1553,7 +1567,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m6a.2xlarge
+        - m7i.2xlarge
       ScalingConfig:
         DesiredSize: 2
         MinSize: 1
@@ -1613,7 +1627,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m6a.4xlarge
+        - m7i.4xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
@@ -1645,7 +1659,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m6a.8xlarge
+        - m7i.8xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
@@ -1677,7 +1691,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m6a.16xlarge
+        - m7i.16xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
@@ -1709,7 +1723,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - r6a.8xlarge
+        - r7i.8xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
@@ -1741,7 +1755,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - r6a.16xlarge
+        - r7i.16xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
@@ -2779,7 +2793,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      PerformanceMode: !Ref EfsPerformanceMode
+      PerformanceMode: generalPurpose
       ThroughputMode: elastic
       Encrypted: true
       FileSystemTags:
@@ -2823,7 +2837,11 @@ Resources:
     Properties:
       BucketName: !If
         - AutoGenerateS3Name
-        - !Sub 'platforma-${ClusterName}-${AWS::AccountId}'
+        - !Join
+          - '-'
+          - - 'platforma'
+            - !Ref ClusterName
+            - !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
         - !Ref S3BucketName
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -2887,17 +2905,35 @@ Outputs:
       Platforma URL. Connect to this address using the Platforma Desktop App.
     Value: !Sub 'https://${DomainName}'
 
+  DefaultUsername:
+    Condition: IsHtpasswd
+    Description: >
+      Default username for Platforma login (htpasswd mode, auto-generated password).
+    Value: platforma
+
   UsersPasswordSSMPath:
+    Condition: IsHtpasswd
     Description: >
       SSM Parameter containing auto-generated users password (htpasswd mode only).
       Retrieve with: aws ssm get-parameter --name /<ClusterName>/platforma/users-password --with-decryption --query Parameter.Value --output text
     Value: !Sub '/${ClusterName}/platforma/users-password'
+
+  UsersPasswordSSMConsole:
+    Condition: IsHtpasswd
+    Description: >
+      Click to open the SSM Parameter with the auto-generated users password.
+      Click "Show" on the parameter page to reveal the value.
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/systems-manager/parameters/%2F${ClusterName}%2Fplatforma%2Fusers-password/description?region=${AWS::Region}'
 
   ClusterName:
     Description: >
       EKS cluster name. To access the cluster:
       aws eks update-kubeconfig --name <ClusterName> --region <Region>
     Value: !Ref EksCluster
+
+  S3BucketOutput:
+    Description: S3 bucket name for primary storage (retained on stack deletion)
+    Value: !Ref S3Bucket
 
   Region:
     Description: AWS region where the cluster is deployed

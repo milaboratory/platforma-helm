@@ -3,7 +3,41 @@
 # =============================================================================
 {{- /* Validate required configuration */ -}}
 {{- if ne (include "platforma.workspaceConfigured" .) "true" }}
-{{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
+{{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.fsxLustre.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
+{{- end }}
+{{- if not (or (include "platforma.htpasswdSecretName" .)
+               (has "--no-auth" .Values.app.extraArgs)
+               .Values.auth.ldap.server ) }}
+{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n\nTo disable auth for development, add to app.extraArgs:\n  - \"--no-auth\"" }}
+{{- end }}
+{{- if and .Values.auth.htpasswd.secretName (gt (len .Values.auth.htpasswd.credentials) 0) }}
+{{- fail "ERROR: Set either auth.htpasswd.secretName or auth.htpasswd.credentials, not both." }}
+{{- end }}
+{{- /* Validate main storage type vs environment */ -}}
+{{- $mainType := include "platforma.mainStorageType" . -}}
+{{- if not $mainType }}
+{{- fail "ERROR: Main storage is required.\n\nSet storage.main.type to 's3' or 'gcs'.\n  s3: AWS S3 or S3-compatible (MinIO, Ceph)\n  gcs: Google Cloud Storage (requires environment: gcp)" }}
+{{- end }}
+{{- if and (eq .Values.environment "aws") (eq $mainType "gcs") }}
+{{- fail "ERROR: GCS is not supported on AWS. Use storage.main.type: s3" }}
+{{- end }}
+{{- if and (eq .Values.environment "gcp") (eq $mainType "s3") }}
+{{- fail "ERROR: S3 is not supported on GCP. Use storage.main.type: gcs" }}
+{{- end }}
+{{- if and (ne .Values.environment "gcp") (eq $mainType "gcs") }}
+{{- fail "ERROR: GCS requires environment: gcp" }}
+{{- end }}
+{{- if and (eq $mainType "s3") (not .Values.storage.main.s3.bucket) }}
+{{- fail "ERROR: storage.main.s3.bucket is required when using S3 storage." }}
+{{- end }}
+{{- if and (eq $mainType "gcs") (not .Values.storage.main.gcs.bucket) }}
+{{- fail "ERROR: storage.main.gcs.bucket is required when using GCS storage." }}
+{{- end }}
+{{- if and (eq $mainType "gcs") (not .Values.storage.main.gcs.projectId) }}
+{{- fail "ERROR: storage.main.gcs.projectId is required when using GCS storage." }}
+{{- end }}
+{{- if and (eq $mainType "gcs") (not .Values.storage.main.gcs.serviceAccount) }}
+{{- fail "ERROR: storage.main.gcs.serviceAccount is required when using GCS storage (Workload Identity)." }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -15,7 +49,7 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    {{- toYaml .Values.deployment.strategy | nindent 4 }}
+    type: Recreate
   selector:
     matchLabels:
       {{- include "platforma.selectorLabels" . | nindent 6 }}
@@ -23,17 +57,13 @@ spec:
     metadata:
       labels:
         {{- include "platforma.selectorLabels" . | nindent 8 }}
-        {{- with .Values.deployment.podLabels }}
+        {{- with .Values.app.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        {{- if .Values.slurm.enabled }}
-        checksum/job-template: {{ include (print $.Template.BasePath "/configmap-job-template-slurm.yaml") . | sha256sum }}
-        {{- else }}
         checksum/job-template: {{ include (print $.Template.BasePath "/configmap-job-template-kueue.yaml") . | sha256sum }}
-        {{- end }}
         checksum/watch-config: {{ include (print $.Template.BasePath "/configmap-watch-config.yaml") . | sha256sum }}
-        {{- with .Values.deployment.podAnnotations }}
+        {{- with .Values.app.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
@@ -43,40 +73,28 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "platforma.serviceAccountName" . }}
       securityContext:
-        {{- toYaml .Values.deployment.podSecurityContext | nindent 8 }}
-      {{- if .Values.storage.workspace.chownOnInit }}
-      initContainers:
-        - name: chown-workspace
-          image: busybox:1.36
-          command: ["sh", "-c", "chown -R {{ .Values.deployment.securityContext.runAsUser }}:{{ .Values.deployment.securityContext.runAsGroup }} /data/workspace"]
-          securityContext:
-            runAsUser: 0
-            runAsNonRoot: false
-          volumeMounts:
-            - name: workspace
-              mountPath: /data/workspace
-              {{- with (include "platforma.workspaceSubPath" $) }}
-              subPath: {{ . }}
-              {{- end }}
-      {{- end }}
+        fsGroup: 1010
+        runAsNonRoot: true
       containers:
         - name: platforma
           image: {{ include "platforma.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
-            {{- toYaml .Values.deployment.securityContext | nindent 12 }}
+            runAsUser: 1010
+            runAsGroup: 1010
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           args:
+            # Network — bind to all interfaces (Go defaults to 127.0.0.1)
+            - "--listen-address=0.0.0.0"
+            - "--monitoring-ip=0.0.0.0"
             # Storage paths
             - "--main-root=/data/main"
             - "--db-dir=/data/database"
             - "--work-dir=/data/workspace/work"
             - "--packages-dir=/data/workspace/packages"
-            {{- if eq .Values.storage.main.type "fs" }}
-            - "--primary-storage-fs=/data/main/storage"
-            {{- if and .Values.ingress.enabled .Values.ingress.data.host }}
-            - "--primary-storage-fs-url={{ if .Values.ingress.data.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.data.host }}"
-            {{- end }}
-            {{- else if eq .Values.storage.main.type "s3" }}
+            {{- if eq $mainType "s3" }}
             {{- if .Values.storage.main.s3.endpoint }}
             - "--primary-storage-s3={{ .Values.storage.main.s3.endpoint }}/{{ .Values.storage.main.s3.bucket }}{{ if .Values.storage.main.s3.prefix }}/{{ .Values.storage.main.s3.prefix }}{{ end }}"
             {{- else }}
@@ -85,7 +103,13 @@ spec:
             {{- if .Values.storage.main.s3.region }}
             - "--primary-storage-s3-region={{ .Values.storage.main.s3.region }}"
             {{- end }}
-            {{- else if eq .Values.storage.main.type "gcs" }}
+            {{- if .Values.storage.main.s3.externalEndpoint }}
+            - "--primary-storage-s3-external-endpoint={{ .Values.storage.main.s3.externalEndpoint }}"
+            {{- end }}
+            {{- if .Values.storage.main.s3.noDataIntegrity }}
+            - "--primary-storage-s3-no-data-integrity=true"
+            {{- end }}
+            {{- else if eq $mainType "gcs" }}
             - "--primary-storage-gcs=gs://{{ .Values.storage.main.gcs.bucket }}{{ if .Values.storage.main.gcs.prefix }}/{{ .Values.storage.main.gcs.prefix }}{{ end }}"
             {{- if .Values.storage.main.gcs.projectId }}
             - "--primary-storage-gcs-project-id={{ .Values.storage.main.gcs.projectId }}"
@@ -106,35 +130,28 @@ spec:
             - "--k8s-max-ram-request={{ .Values.kueue.maxJobResources.memory }}"
             {{- end }}
             {{- end }}
-            - "--runner-enable-docker" # force pass the docker flag to the tengo template
-            # Queue to runner mapping
-            {{- range $queue, $runner := .Values.queueRunners }}
-            - "--queue-runner={{ $queue }}:{{ $runner }}"
-            {{- end }}
+            - "--runner-enable-docker"
+            # Queue runners (hardcoded — 4 fixed queues, always K8s backend)
+            - "--queue-runner=ui-tasks:k8s"
+            - "--queue-runner=light:k8s"
+            - "--queue-runner=medium:k8s"
+            - "--queue-runner=heavy:k8s"
             # Logging
-            {{- if hasPrefix "dir://" .Values.logging.destination }}
-            - "--log-dst={{ .Values.logging.destination }}"
-            {{- if .Values.logging.rotation }}
-            {{- if .Values.logging.rotation.size }}
-            - "--log-rotation-size={{ .Values.logging.rotation.size }}"
+            {{- if .Values.app.logging.persistence.enabled }}
+            - "--log-dst=dir:///var/log/platforma"
+            {{- if .Values.app.logging.persistence.rotation.size }}
+            - "--log-rotation-size={{ .Values.app.logging.persistence.rotation.size }}"
             {{- end }}
-            {{- if .Values.logging.rotation.count }}
-            - "--log-rotation-backups={{ .Values.logging.rotation.count }}"
+            {{- if .Values.app.logging.persistence.rotation.count }}
+            - "--log-rotation-backups={{ .Values.app.logging.persistence.rotation.count }}"
             {{- end }}
             {{- end }}
-            {{- else }}
-            - "--log-dst={{ .Values.logging.destination }}"
-            {{- end }}
-            {{- if .Values.license.file }}
-            # License file
+            # License file (always mounted from secret)
             - "--license-file={{ include "platforma.path.license" . }}/{{ .Values.license.secretKey }}"
-            {{- end }}
-            {{- if .Values.auth.enabled }}
             # Authentication
-            {{- if .Values.auth.htpasswd.enabled }}
+            {{- if include "platforma.htpasswdSecretName" . }}
             - "--auth-htpasswd=/etc/platforma/secrets/htpasswd"
-            {{- end }}
-            {{- if .Values.auth.ldap.enabled }}
+            {{- else if .Values.auth.ldap.server }}
             - "--auth-ldap-server={{ .Values.auth.ldap.server }}"
             {{- if .Values.auth.ldap.startTLS }}
             - "--auth-ldap-start-tls"
@@ -161,7 +178,6 @@ spec:
             - "--auth-ldap-client-cert=/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.certKey }},/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.keyKey }}"
             {{- end }}
             {{- end }}
-            {{- end }}
             # Disable default host data library (exposes entire pod filesystem)
             - "--no-host-data-library"
             # Data library sources
@@ -173,20 +189,46 @@ spec:
             {{- if .s3.region }}
             - "--data-library-s3-region={{ .name }}={{ .s3.region }}"
             {{- end }}
+            {{- if .s3.secretRef }}
+            {{- if .s3.secretRef.name }}
+            {{- $envPrefix := .name | upper | replace "-" "_" | replace "." "_" }}
+            - "--data-library-s3-key={{ .name }}=$(PL_DATASOURCE_S3_KEY_{{ $envPrefix }})"
+            - "--data-library-s3-secret={{ .name }}=$(PL_DATASOURCE_S3_SECRET_{{ $envPrefix }})"
+            {{- end }}
+            {{- end }}
+            {{- if .s3.externalEndpoint }}
+            - "--data-library-s3-external-endpoint={{ .name }}={{ .s3.externalEndpoint }}"
+            {{- end }}
+            {{- if .s3.noDataIntegrity }}
+            - "--data-library-s3-no-data-integrity={{ .name }}=true"
+            {{- end }}
             {{- else if eq .type "gcs" }}
             - "--data-library-gcs={{ .name }}=gs://{{ .gcs.bucket }}{{ if .gcs.prefix }}/{{ .gcs.prefix }}{{ end }}"
             {{- if .gcs.projectId }}
             - "--data-library-gcs-project-id={{ .name }}={{ .gcs.projectId }}"
             {{- end }}
+            {{- if .gcs.serviceAccount }}
+            - "--data-library-gcs-service-account={{ .name }}={{ .gcs.serviceAccount }}"
             {{- end }}
             {{- end }}
-            {{- if .Values.debug.enabled }}
+            {{- end }}
+            # Debug API: always available via port-forward.
+            # When app.debug.enabled: also reachable from within the cluster,
+            # verbose logging, job working directories kept for 24h after completion.
             - "--debug-enabled"
+            - "--debug-port=9091"
+            {{- if .Values.app.debug.enabled }}
+            - "--debug-ip=0.0.0.0"
             - "--log-level=debug"
-            - "--keep-workdirs=1h"
+            - "--keep-workdirs=24h"
+            {{- else }}
+            - "--debug-ip=127.0.0.1"
             {{- end }}
+            # Keeps user sessions valid across pod restarts.
+            # To force-logout all users: add "--auth-sessions-gen=2" to app.extraArgs
+            - "--auth-sessions-gen=1"
             # Extra arguments
-            {{- range .Values.extraArgs }}
+            {{- range .Values.app.extraArgs }}
             - {{ . | quote }}
             {{- end }}
           ports:
@@ -196,24 +238,20 @@ spec:
             - name: http
               containerPort: 6347
               protocol: TCP
-            {{- if .Values.monitoring.enabled }}
             - name: metrics
-              containerPort: {{ .Values.monitoring.port }}
+              containerPort: 9090
               protocol: TCP
-            {{- end }}
-            {{- if .Values.debug.enabled }}
             - name: debug
-              containerPort: {{ .Values.debug.port | default "9091" }}
+              containerPort: 9091
               protocol: TCP
-            {{- end }}
           env:
-            # License (env var - supports both PL_LICENSE and MI_LICENSE)
+            # License (env var - supports both PL_LICENSE and {{ .Values.license.secretKey }})
             - name: PL_LICENSE
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.license.secretName }}
                   key: {{ .Values.license.secretKey }}
-            {{- if and (eq .Values.storage.main.type "s3") .Values.storage.main.s3.secretRef.name }}
+            {{- if and (eq $mainType "s3") .Values.storage.main.s3.secretRef.name }}
             - name: PL_PRIMARY_STORAGE_S3_KEY
               valueFrom:
                 secretKeyRef:
@@ -225,7 +263,22 @@ spec:
                   name: {{ .Values.storage.main.s3.secretRef.name }}
                   key: {{ .Values.storage.main.s3.secretRef.secretKeyField }}
             {{- end }}
-            {{- if and .Values.auth.enabled .Values.auth.ldap.enabled }}
+            {{- range .Values.dataSources }}
+            {{- if and (eq .type "s3") (and .s3.secretRef .s3.secretRef.name) }}
+            {{- $envPrefix := .name | upper | replace "-" "_" | replace "." "_" }}
+            - name: PL_DATASOURCE_S3_KEY_{{ $envPrefix }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .s3.secretRef.name }}
+                  key: {{ .s3.secretRef.accessKeyField | default "access-key" }}
+            - name: PL_DATASOURCE_S3_SECRET_{{ $envPrefix }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .s3.secretRef.name }}
+                  key: {{ .s3.secretRef.secretKeyField | default "secret-key" }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.auth.ldap.server }}
             {{- if .Values.auth.ldap.searchPassword }}
             - name: PL_AUTH_LDAP_SEARCH_PASSWORD
               value: {{ .Values.auth.ldap.searchPassword | quote }}
@@ -237,53 +290,55 @@ spec:
                   key: {{ .Values.auth.ldap.searchPasswordSecretRef.key }}
             {{- end }}
             {{- end }}
-            {{- with .Values.env.variables }}
-            # Additional environment variables
+            {{- with .Values.app.env.variables }}
             {{- range $key, $value := . }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
             {{- end }}
-            {{- range .Values.env.secretVariables }}
+            {{- range .Values.app.env.secretVariables }}
             - name: {{ .name }}
               valueFrom:
                 secretKeyRef:
                   name: {{ .secretName }}
                   key: {{ .secretKey }}
             {{- end }}
-            {{- range .Values.env.configMapVariables }}
+            {{- range .Values.app.env.configMapVariables }}
             - name: {{ .name }}
               valueFrom:
                 configMapKeyRef:
                   name: {{ .configMapName }}
                   key: {{ .configMapKey }}
             {{- end }}
-          {{- if .Values.probes.liveness.enabled }}
+          startupProbe:
+            grpc:
+              port: 6345
+              service: ""
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            timeoutSeconds: 5
+            failureThreshold: 600
           livenessProbe:
             grpc:
               port: 6345
-            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
-            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
-            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
-          {{- end }}
-          {{- if .Values.probes.readiness.enabled }}
+              service: "GRPC"
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             grpc:
               port: 6345
-            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
-            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
-            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
-          {{- end }}
+              service: ""
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.app.resources | nindent 12 }}
           volumeMounts:
             - name: database
               mountPath: {{ include "platforma.path.database" . }}
             - name: workspace
               mountPath: /data/workspace
-              {{- with (include "platforma.workspaceSubPath" $) }}
-              subPath: {{ . }}
-              {{- end }}
             - name: main-storage
               mountPath: /data/main
             - name: job-templates
@@ -294,26 +349,24 @@ spec:
               mountPath: {{ include "platforma.path.templates" . }}/watch-config.yaml
               subPath: watch-config.yaml
               readOnly: true
-            {{- if .Values.license.file }}
             - name: license
               mountPath: {{ include "platforma.path.license" . }}
               readOnly: true
-            {{- end }}
-            {{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
+            {{- if .Values.app.logging.persistence.enabled }}
             - name: logs
-              mountPath: {{ trimPrefix "dir://" .Values.logging.destination }}
+              mountPath: /var/log/platforma
             {{- end }}
-            {{- if and .Values.auth.enabled .Values.auth.htpasswd.enabled .Values.auth.htpasswd.secretName }}
+            {{- if include "platforma.htpasswdSecretName" . }}
             - name: htpasswd
               mountPath: {{ include "platforma.path.secrets" . }}
               readOnly: true
             {{- end }}
-            {{- if and .Values.auth.enabled .Values.auth.ldap.enabled .Values.auth.ldap.tls.caSecretRef.name }}
+            {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.caSecretRef.name }}
             - name: ldap-ca
               mountPath: {{ include "platforma.path.secrets" . }}/ldap-ca
               readOnly: true
             {{- end }}
-            {{- if and .Values.auth.enabled .Values.auth.ldap.enabled .Values.auth.ldap.tls.clientCertSecretRef.name }}
+            {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.clientCertSecretRef.name }}
             - name: ldap-client
               mountPath: {{ include "platforma.path.secrets" . }}/ldap-client
               readOnly: true
@@ -332,47 +385,39 @@ spec:
         - name: workspace
           persistentVolumeClaim:
             claimName: {{ include "platforma.workspacePvcName" . }}
-        {{- if eq .Values.storage.main.type "fs" }}
-        - name: main-storage
-          persistentVolumeClaim:
-            claimName: {{ include "platforma.mainStoragePvcName" . }}
-        {{- else }}
         - name: main-storage
           emptyDir: {}
-        {{- end }}
         - name: job-templates
           configMap:
             name: {{ include "platforma.fullname" . }}-job-template
         - name: watch-config
           configMap:
             name: {{ include "platforma.fullname" . }}-watch-config
-        {{- if .Values.license.file }}
         - name: license
           secret:
             secretName: {{ .Values.license.secretName }}
             items:
               - key: {{ .Values.license.secretKey }}
                 path: {{ .Values.license.secretKey }}
-        {{- end }}
-        {{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
+        {{- if .Values.app.logging.persistence.enabled }}
         - name: logs
           persistentVolumeClaim:
-            claimName: {{ .Values.storage.logs.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
+            claimName: {{ .Values.app.logging.persistence.existingClaim | default (printf "%s-logs" (include "platforma.fullname" .)) }}
         {{- end }}
-        {{- if and .Values.auth.enabled .Values.auth.htpasswd.enabled .Values.auth.htpasswd.secretName }}
+        {{- if include "platforma.htpasswdSecretName" . }}
         - name: htpasswd
           secret:
-            secretName: {{ .Values.auth.htpasswd.secretName }}
+            secretName: {{ include "platforma.htpasswdSecretName" . }}
             items:
               - key: {{ .Values.auth.htpasswd.secretKey }}
                 path: htpasswd
         {{- end }}
-        {{- if and .Values.auth.enabled .Values.auth.ldap.enabled .Values.auth.ldap.tls.caSecretRef.name }}
+        {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.caSecretRef.name }}
         - name: ldap-ca
           secret:
             secretName: {{ .Values.auth.ldap.tls.caSecretRef.name }}
         {{- end }}
-        {{- if and .Values.auth.enabled .Values.auth.ldap.enabled .Values.auth.ldap.tls.clientCertSecretRef.name }}
+        {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.clientCertSecretRef.name }}
         - name: ldap-client
           secret:
             secretName: {{ .Values.auth.ldap.tls.clientCertSecretRef.name }}
@@ -385,15 +430,15 @@ spec:
             readOnly: true
         {{- end }}
         {{- end }}
-      {{- with .Values.nodeSelector }}
+      {{- with .Values.app.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- with .Values.app.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with .Values.app.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

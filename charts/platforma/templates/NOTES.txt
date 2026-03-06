@@ -7,17 +7,21 @@ Namespace: {{ .Release.Namespace }}
 SERVICES
 =============================================================================
 
-gRPC endpoint: {{ include "platforma.fullname" . }}:{{ .Values.service.grpcPort }}
-HTTP endpoint: {{ include "platforma.fullname" . }}:{{ .Values.service.httpPort }}
+gRPC endpoint: {{ include "platforma.fullname" . }}:6345
+HTTP endpoint: {{ include "platforma.fullname" . }}:6347
 
 {{- if .Values.ingress.enabled }}
 
-Ingress endpoints:
-{{- if .Values.ingress.api.host }}
-  - gRPC API: {{ if .Values.ingress.api.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.api.host }}
+Ingress:
+{{- if .Values.ingress.host }}
+  - gRPC API: {{ if .Values.ingress.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.host }}
 {{- end }}
-{{- if .Values.ingress.data.host }}
-  - HTTP Data: {{ if .Values.ingress.data.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.data.host }}
+{{- end }}
+
+{{- if .Values.additionalIngress.enabled }}
+Additional Ingress:
+{{- if .Values.additionalIngress.host }}
+  - gRPC API: {{ if .Values.additionalIngress.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.additionalIngress.host }}
 {{- end }}
 {{- end }}
 
@@ -27,41 +31,83 @@ STORAGE
 
 Database PVC: {{ include "platforma.databasePvcName" . }}
 Workspace PVC: {{ include "platforma.workspacePvcName" . }}
-{{- if eq .Values.storage.main.type "fs" }}
-Main Storage PVC: {{ include "platforma.mainStoragePvcName" . }}
-{{- else if eq .Values.storage.main.type "s3" }}
+{{- $mainType := include "platforma.mainStorageType" . }}
+{{- if eq $mainType "s3" }}
 Main Storage: S3 bucket {{ .Values.storage.main.s3.bucket }}
-{{- else if eq .Values.storage.main.type "gcs" }}
+{{- else if eq $mainType "gcs" }}
 Main Storage: GCS bucket {{ .Values.storage.main.gcs.bucket }}
 {{- end }}
+{{- if eq .Values.environment "aws" }}
+
+StorageClasses created:
+  - gp3 (EBS CSI, for database PVC)
+{{- if .Values.storage.workspace.efs.fileSystemId }}
+  - efs-platforma (EFS CSI, for dynamic EFS provisioning)
+{{- end }}
+{{- end }}
+
+=============================================================================
+SERVICE ACCOUNTS
+=============================================================================
+
+Server SA: {{ include "platforma.serviceAccountName" . }}
+Jobs SA:   {{ include "platforma.jobServiceAccountName" . }}
+
+To bind cloud IAM roles (IRSA / Workload Identity), annotate in values.yaml:
+
+  # AWS (IRSA)
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/ROLE_NAME
+  jobServiceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/ROLE_NAME
+
+  # GCP (Workload Identity)
+  serviceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: SA@PROJECT.iam.gserviceaccount.com
+  jobServiceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: SA@PROJECT.iam.gserviceaccount.com
 
 =============================================================================
 JOB EXECUTION
 =============================================================================
 
-{{- if .Values.slurm.enabled }}
-Backend: Slurm (via interLink VirtualKubelet)
-Virtual Node: {{ .Values.slurm.interlink.nodeName }}
-{{- if .Values.slurm.account }}
-Slurm Account: {{ .Values.slurm.account }}
-{{- end }}
-Pools:
-  - Interactive: partition={{ .Values.slurm.pools.interactive.partition }}
-  - Batch: partition={{ .Values.slurm.pools.batch.partition }}
-
-Note: Kueue and AppWrapper are not used with the Slurm backend.
-Jobs are submitted as bare Pods intercepted by the VirtualKubelet.
-{{- else }}
 Backend: Kueue + AppWrapper
 Kueue Mode: {{ .Values.kueue.mode }}
 {{- if eq .Values.kueue.mode "dedicated" }}
 
 Kueue Resources Created:
+{{- if .Values.kueue.dedicated.createClusterResources }}
 - ClusterQueue: {{ include "platforma.kueue.uiClusterQueueName" . }} (UI tasks)
 - ClusterQueue: {{ include "platforma.kueue.batchClusterQueueName" . }} (Batch tasks)
+{{- end }}
 - LocalQueue: {{ include "platforma.kueue.uiQueueName" . }}
 - LocalQueue: {{ include "platforma.kueue.batchQueueName" . }}
+
+  ⚠️  RESOURCE QUOTA CHECK
+  Current limits (ClusterQueue quotas):
+    UI:    {{ .Values.kueue.dedicated.resources.ui.cpu }} CPU, {{ .Values.kueue.dedicated.resources.ui.memory }} memory
+    Batch: {{ .Values.kueue.dedicated.resources.batch.cpu }} CPU, {{ .Values.kueue.dedicated.resources.batch.memory }} memory
+
+  If your cloud provider vCPU quota is lower than these limits, Kueue will
+  admit jobs but nodes will never provision — workloads will hang silently.
+{{- if eq .Values.environment "aws" }}
+
+  Check your AWS On-Demand Standard vCPU quota:
+    aws service-quotas get-service-quota \
+      --service-code ec2 --quota-code L-1216C47A \
+      --region <your-region> --query 'Quota.Value'
+
+  Request increase:
+    https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A
 {{- end }}
+
+  To adjust quotas:
+    kueue.dedicated.resources.batch.cpu / memory
+    kueue.dedicated.resources.ui.cpu / memory (recommended: batch / 4)
 {{- end }}
 
 =============================================================================
@@ -74,13 +120,6 @@ VERIFICATION
 2. Check PVC status:
    kubectl get pvc -n {{ .Release.Namespace }}
 
-{{- if .Values.slurm.enabled }}
-3. Check VirtualKubelet node:
-   kubectl get node {{ .Values.slurm.interlink.nodeName }}
-
-4. View logs:
-   kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -f
-{{- else }}
 3. Check Kueue queues:
    kubectl get clusterqueues,localqueues -n {{ .Release.Namespace }}
 
@@ -89,15 +128,14 @@ VERIFICATION
 
 5. View logs:
    kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -f
-{{- end }}
 
 =============================================================================
 CONNECT FROM DESKTOP APP
 =============================================================================
 
 To connect from Platforma Desktop App, use:
-  Server: {{ include "platforma.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.grpcPort }}
+  Server: {{ include "platforma.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:6345
 
 Or if using port-forward:
-  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "platforma.fullname" . }} {{ .Values.service.grpcPort }}:{{ .Values.service.grpcPort }}
-  Server: localhost:{{ .Values.service.grpcPort }}
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "platforma.fullname" . }} 6345:6345
+  Server: localhost:6345

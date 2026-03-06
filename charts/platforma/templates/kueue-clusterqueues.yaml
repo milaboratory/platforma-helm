@@ -1,4 +1,4 @@
-{{- if and (eq .Values.kueue.mode "dedicated") (not .Values.slurm.enabled) }}
+{{- if and (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources }}
 # =============================================================================
 # ClusterQueues
 # =============================================================================
@@ -24,7 +24,7 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 spec:
-  cohortName: {{ include "platforma.fullname" . }}
+  cohortName: {{ include "platforma.kueue.clusterResourceName" . }}
   namespaceSelector: {}
   preemption:
     reclaimWithinCohort: Never
@@ -32,14 +32,14 @@ spec:
   resourceGroups:
     - coveredResources: ["cpu", "memory"]
       flavors:
-        - name: {{ include "platforma.fullname" . }}-ui-flavor
+        - name: {{ include "platforma.kueue.clusterResourceName" . }}-ui-flavor
           resources:
             - name: cpu
-              nominalQuota: {{ .Values.kueue.dedicated.pools.ui.resources.cpu | quote }}
+              nominalQuota: {{ .Values.kueue.dedicated.resources.ui.cpu | quote }}
               # UI queue does NOT borrow - guarantees resources for interactive work
               borrowingLimit: "0"
             - name: memory
-              nominalQuota: {{ .Values.kueue.dedicated.pools.ui.resources.memory | quote }}
+              nominalQuota: {{ .Values.kueue.dedicated.resources.ui.memory | quote }}
               borrowingLimit: "0"
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
@@ -49,7 +49,7 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 spec:
-  cohortName: {{ include "platforma.fullname" . }}
+  cohortName: {{ include "platforma.kueue.clusterResourceName" . }}
   namespaceSelector: {}
   preemption:
     reclaimWithinCohort: Never   # Jobs not retryable, never preempt
@@ -57,13 +57,13 @@ spec:
   resourceGroups:
     - coveredResources: ["cpu", "memory"]
       flavors:
-        - name: {{ include "platforma.fullname" . }}-batch-flavor
+        - name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-flavor
           resources:
             - name: cpu
-              nominalQuota: {{ .Values.kueue.dedicated.pools.batch.resources.cpu | quote }}
+              nominalQuota: {{ .Values.kueue.dedicated.resources.batch.cpu | quote }}
               # Batch CAN borrow idle UI capacity (limited to UI's quota)
-              borrowingLimit: {{ .Values.kueue.dedicated.pools.ui.resources.cpu | quote }}
+              borrowingLimit: {{ .Values.kueue.dedicated.resources.ui.cpu | quote }}
             - name: memory
-              nominalQuota: {{ .Values.kueue.dedicated.pools.batch.resources.memory | quote }}
-              borrowingLimit: {{ .Values.kueue.dedicated.pools.ui.resources.memory | quote }}
+              nominalQuota: {{ .Values.kueue.dedicated.resources.batch.memory | quote }}
+              borrowingLimit: {{ .Values.kueue.dedicated.resources.ui.memory | quote }}
 {{- end }}

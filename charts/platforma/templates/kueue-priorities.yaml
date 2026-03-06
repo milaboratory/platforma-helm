@@ -1,4 +1,4 @@
-{{- if and (eq .Values.kueue.mode "dedicated") (not .Values.slurm.enabled) }}
+{{- if and (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources }}
 # =============================================================================
 # WorkloadPriorityClasses
 # =============================================================================
@@ -15,7 +15,7 @@
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: WorkloadPriorityClass
 metadata:
-  name: {{ include "platforma.fullname" . }}-ui
+  name: {{ include "platforma.kueue.priorityClassName.ui" . }}
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 value: 1000
@@ -24,7 +24,7 @@ description: "Priority for UI tasks - highest priority for interactive work"
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: WorkloadPriorityClass
 metadata:
-  name: {{ include "platforma.fullname" . }}-high
+  name: {{ include "platforma.kueue.priorityClassName.high" . }}
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 value: 1000
@@ -33,7 +33,7 @@ description: "High priority for heavy compute jobs"
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: WorkloadPriorityClass
 metadata:
-  name: {{ include "platforma.fullname" . }}-normal
+  name: {{ include "platforma.kueue.priorityClassName.normal" . }}
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 value: 100
@@ -42,7 +42,7 @@ description: "Normal priority for medium compute jobs"
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: WorkloadPriorityClass
 metadata:
-  name: {{ include "platforma.fullname" . }}-low
+  name: {{ include "platforma.kueue.priorityClassName.low" . }}
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
 value: 10

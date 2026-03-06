@@ -18,7 +18,7 @@ graph TD
         dns --> platforma["Platforma Server"]
         platforma --> kueue["Kueue + AppWrapper"]
         kueue --> ui["UI pool: t3.xlarge, scale-from-zero"]
-        kueue --> batch["Batch pools: m6a.4xl–16xl + r6a.8xl–16xl, scale-from-zero"]
+        kueue --> batch["Batch pools: m7i.4xl–16xl + r7i.8xl–16xl, scale-from-zero"]
         platforma --- ebs[("EBS gp3: database")]
     end
 

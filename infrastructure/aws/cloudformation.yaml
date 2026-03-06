@@ -497,7 +497,7 @@ Parameters:
 Mappings:
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
-  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r6a.16xl count) x 500Gi.
+  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r7i.16xl count) x 500Gi.
   # UI quota is fixed at 64 vCPU / 256 GiB regardless of size.
   DeploymentSize:
     small:
@@ -1577,7 +1577,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m6a.2xlarge
+        - m7i.2xlarge
       ScalingConfig:
         DesiredSize: 2
         MinSize: 1
@@ -1637,7 +1637,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m6a.4xlarge
+        - m7i.4xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
@@ -1669,7 +1669,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m6a.8xlarge
+        - m7i.8xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
@@ -1701,7 +1701,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m6a.16xlarge
+        - m7i.16xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
@@ -1733,7 +1733,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - r6a.8xlarge
+        - r7i.8xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
@@ -1765,7 +1765,7 @@ Resources:
       Version: !Ref KubernetesVersion
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - r6a.16xlarge
+        - r7i.16xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0

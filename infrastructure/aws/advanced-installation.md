@@ -15,7 +15,7 @@ For the recommended one-click setup, see the [CloudFormation guide](README.md).
 
 ### AWS On-Demand vCPU quota
 
-At full capacity the cluster needs ~400 On-Demand Standard vCPU (m6a/r6a instances). The AWS default quota for a fresh account is 32 vCPU — request an increase before deploying.
+At full capacity the cluster needs ~400 On-Demand Standard vCPU (m7i/r7i instances). The AWS default quota for a fresh account is 32 vCPU — request an increase before deploying.
 
 Check your current quota:
 
@@ -94,17 +94,17 @@ sed "s/platforma-cluster/${CLUSTER_NAME}/g; s/eu-central-1/${AWS_REGION}/g" \
 
 This creates:
 - EKS 1.34 cluster with OIDC enabled
-- **System** node group: 2x m6a.2xlarge (8 vCPU / 32 GiB — Platforma server, Kueue, controllers)
+- **System** node group: 2x m7i.2xlarge (8 vCPU / 32 GiB — Platforma server, Kueue, controllers)
 - **UI** node group: 0-4x t3.xlarge (interactive tasks, tainted `dedicated=ui`)
-- **Batch-16c-64g** node group: 0-4x m6a.4xlarge (16 vCPU / 64 GiB, tainted `dedicated=batch`)
-- **Batch-32c-128g** node group: 0-2x m6a.8xlarge (32 vCPU / 128 GiB, tainted `dedicated=batch`)
-- **Batch-64c-256g** node group: 0-1x m6a.16xlarge (64 vCPU / 256 GiB, tainted `dedicated=batch`)
-- **Batch-32c-256g** node group: 0-2x r6a.8xlarge (32 vCPU / 256 GiB, tainted `dedicated=batch`)
-- **Batch-64c-512g** node group: 0-1x r6a.16xlarge (64 vCPU / 512 GiB, tainted `dedicated=batch`)
+- **Batch-16c-64g** node group: 0-4x m7i.4xlarge (16 vCPU / 64 GiB, tainted `dedicated=batch`)
+- **Batch-32c-128g** node group: 0-2x m7i.8xlarge (32 vCPU / 128 GiB, tainted `dedicated=batch`)
+- **Batch-64c-256g** node group: 0-1x m7i.16xlarge (64 vCPU / 256 GiB, tainted `dedicated=batch`)
+- **Batch-32c-256g** node group: 0-2x r7i.8xlarge (32 vCPU / 256 GiB, tainted `dedicated=batch`)
+- **Batch-64c-512g** node group: 0-1x r7i.16xlarge (64 vCPU / 512 GiB, tainted `dedicated=batch`)
 - EBS CSI driver addon (for gp3 PVCs)
 - EFS CSI driver addon (for shared workspace)
 
-All five batch groups share label `node.kubernetes.io/pool=batch` and taint `dedicated=batch:NoSchedule`. The Cluster Autoscaler (`--expander=least-waste`) picks the smallest group that fits each pending pod. The r6a groups provide higher memory-to-CPU ratio for memory-intensive workloads.
+All five batch groups share label `node.kubernetes.io/pool=batch` and taint `dedicated=batch:NoSchedule`. The Cluster Autoscaler (`--expander=least-waste`) picks the smallest group that fits each pending pod. The r7i groups provide higher memory-to-CPU ratio for memory-intensive workloads.
 
 Takes ~15 minutes. Verify:
 

@@ -55,7 +55,8 @@ export MI_LICENSE="your-license-key"            # Platforma license key
 # --- Optional: defaults work for most setups ---
 export PLATFORMA_NAMESPACE="platforma"
 export PLATFORMA_VERSION="3.0.0"
-export S3_BUCKET="platforma-storage-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION}"
+export S3_BUCKET="platforma-${CLUSTER_NAME}-$(openssl rand -hex 4)"
+echo "S3 bucket: $S3_BUCKET  ← save this; the random suffix makes each deployment unique"
 
 # --- Derived: do not edit ---
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -658,6 +659,8 @@ Base configuration comes from `values-aws-s3.yaml`. The `--set` overrides below 
 If resuming in a new shell, recover session variables first:
 
 ```bash
+S3_BUCKET=$(aws s3api list-buckets \
+  --query "Buckets[?starts_with(Name, 'platforma-${CLUSTER_NAME}-')].Name | [0]" --output text)
 EFS_ID=$(aws efs describe-file-systems \
   --query "FileSystems[?Tags[?Key=='Name'&&Value=='${CLUSTER_NAME}-workspace']].FileSystemId" --output text)
 PLATFORMA_ROLE_ARN=$(aws iam get-role --role-name ${CLUSTER_NAME}-platforma-irsa --query 'Role.Arn' --output text)
@@ -765,9 +768,11 @@ kubectl get ingress -n $PLATFORMA_NAMESPACE
 
 ## Cleanup
 
-Running cleanup in a new shell? Set the Configuration variables from the top of this guide first, then recover session-specific variables:
+Running cleanup in a new shell? Set the Configuration variables from the top of this guide first (skip the `S3_BUCKET` line — it generates a new random suffix). Then recover session-specific variables:
 
 ```bash
+S3_BUCKET=$(aws s3api list-buckets \
+  --query "Buckets[?starts_with(Name, 'platforma-${CLUSTER_NAME}-')].Name | [0]" --output text)
 EFS_ID=$(aws efs describe-file-systems \
   --query "FileSystems[?Tags[?Key=='Name'&&Value=='${CLUSTER_NAME}-workspace']].FileSystemId" --output text)
 SG_ID=$(aws ec2 describe-security-groups \

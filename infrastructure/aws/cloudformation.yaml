@@ -459,8 +459,8 @@ Parameters:
     ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
     Description: >
       S3 bucket name for primary storage. Leave empty to auto-generate
-      as platforma-<ClusterName>-<AccountId> (unique per stack, allows
-      multiple Platforma stacks in the same region).
+      as platforma-<ClusterName>-<random> (unique per stack creation).
+      The bucket is retained on stack deletion for data safety.
 
   # --- IAM / IRSA roles ---
   # Always created (required for Platforma):
@@ -2847,7 +2847,11 @@ Resources:
     Properties:
       BucketName: !If
         - AutoGenerateS3Name
-        - !Sub 'platforma-${ClusterName}-${AWS::AccountId}'
+        - !Join
+          - '-'
+          - - 'platforma'
+            - !Ref ClusterName
+            - !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
         - !Ref S3BucketName
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -2922,6 +2926,10 @@ Outputs:
       EKS cluster name. To access the cluster:
       aws eks update-kubeconfig --name <ClusterName> --region <Region>
     Value: !Ref EksCluster
+
+  S3BucketOutput:
+    Description: S3 bucket name for primary storage (retained on stack deletion)
+    Value: !Ref S3Bucket
 
   Region:
     Description: AWS region where the cluster is deployed

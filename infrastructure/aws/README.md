@@ -78,7 +78,7 @@ Fill in the parameters below.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | EFS performance mode | `generalPurpose` | `maxIO` for very high throughput |
-| S3 bucket name | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<AccountId>` |
+| S3 bucket name | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<random>`. Each stack creation gets a unique name, so retries never collide with retained buckets. |
 
 ### Platforma deployment
 
@@ -157,6 +157,7 @@ Once complete, go to the **Outputs** tab:
 |--------|-------------|
 | `PlatformaUrl` | URL to connect from the Desktop App |
 | `UsersPasswordSSMPath` | SSM path for auto-generated password (htpasswd mode) |
+| `S3BucketOutput` | S3 bucket name (retained on stack deletion — note this for cleanup) |
 | `ClusterName` | EKS cluster name (for kubectl access) |
 | `Region` | AWS region |
 | `HelmDeployerBuildProject` | CodeBuild logs for infra controllers |
@@ -236,5 +237,5 @@ Delete the CloudFormation stack: **CloudFormation → Stacks → select your sta
 
 **S3 and EFS persist** after stack deletion to protect data. Delete them manually when you no longer need the data:
 
-1. **S3 bucket** — go to **S3** in the Console, find the bucket (named `platforma-<ClusterName>-<AccountId>`), empty it, then delete it
+1. **S3 bucket** — go to **S3** in the Console, find the bucket (name from `S3BucketOutput` in the Outputs tab), empty it, then delete it
 2. **EFS filesystem** — go to **EFS** in the Console, find the filesystem (tagged with the cluster name), delete it

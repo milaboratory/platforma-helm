@@ -569,6 +569,7 @@ Conditions:
   HasLibrary3Irsa: !And
     - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
     - !Equals [!Ref DataLibrary3AccessKey, '']
+  IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
 
 # =============================================================================
 # Rules — fail fast on invalid parameter combinations
@@ -2915,11 +2916,25 @@ Outputs:
       Platforma URL. Connect to this address using the Platforma Desktop App.
     Value: !Sub 'https://${DomainName}'
 
+  DefaultUsername:
+    Condition: IsHtpasswd
+    Description: >
+      Default username for Platforma login (htpasswd mode, auto-generated password).
+    Value: platforma
+
   UsersPasswordSSMPath:
+    Condition: IsHtpasswd
     Description: >
       SSM Parameter containing auto-generated users password (htpasswd mode only).
       Retrieve with: aws ssm get-parameter --name /<ClusterName>/platforma/users-password --with-decryption --query Parameter.Value --output text
     Value: !Sub '/${ClusterName}/platforma/users-password'
+
+  UsersPasswordSSMConsole:
+    Condition: IsHtpasswd
+    Description: >
+      Click to open the SSM Parameter with the auto-generated users password.
+      Click "Show" on the parameter page to reveal the value.
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/systems-manager/parameters/%2F${ClusterName}%2Fplatforma%2Fusers-password/description?region=${AWS::Region}'
 
   ClusterName:
     Description: >

@@ -8,27 +8,22 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
-  {{- with .Values.service.annotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
 spec:
-  type: {{ .Values.service.type }}
+  type: ClusterIP
   ports:
     - name: grpc
-      port: {{ .Values.service.grpcPort }}
+      port: 6345
       targetPort: grpc
       protocol: TCP
     - name: http
-      port: {{ .Values.service.httpPort }}
+      port: 6347
       targetPort: http
       protocol: TCP
   selector:
     {{- include "platforma.selectorLabels" . | nindent 4 }}
 ---
-{{- if .Values.monitoring.enabled }}
 # =============================================================================
-# Metrics Service
+# Metrics Service (always created — Platforma exposes metrics on port 9090)
 # =============================================================================
 apiVersion: v1
 kind: Service
@@ -38,23 +33,21 @@ metadata:
   labels:
     {{- include "platforma.labels" . | nindent 4 }}
     app.kubernetes.io/component: metrics
-  {{- with .Values.monitoring.service.annotations }}
+  {{- with .Values.app.monitoring.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.monitoring.service.type }}
+  type: ClusterIP
   ports:
     - name: metrics
-      port: {{ .Values.monitoring.port }}
+      port: 9090
       targetPort: metrics
       protocol: TCP
   selector:
     {{- include "platforma.selectorLabels" . | nindent 4 }}
-{{- end }}
+{{- if .Values.app.debug.enabled }}
 ---
-{{- if .Values.debug.enabled }}
-{{- $debugPort := .Values.debug.port | default "9091" }}
 # =============================================================================
 # Debug Service
 # =============================================================================
@@ -70,7 +63,7 @@ spec:
   type: ClusterIP
   ports:
     - name: debug
-      port: {{ $debugPort }}
+      port: 9091
       targetPort: debug
       protocol: TCP
   selector:

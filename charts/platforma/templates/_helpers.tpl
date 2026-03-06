@@ -90,6 +90,13 @@ Workspace PVC name
 {{- end }}
 
 {{/*
+Workspace PV name (includes namespace for multi-tenant safety)
+*/}}
+{{- define "platforma.workspacePvName" -}}
+{{- printf "%s-%s-workspace-pv" .Release.Namespace (include "platforma.fullname" .) }}
+{{- end }}
+
+{{/*
 Database PVC name
 */}}
 {{- define "platforma.databasePvcName" -}}
@@ -101,50 +108,117 @@ Database PVC name
 {{- end }}
 
 {{/*
-Main storage PVC name (for fs type)
+Kueue cluster resource name prefix.
+Used for cluster-scoped resources (ResourceFlavors, ClusterQueues, WorkloadPriorityClasses).
+Defaults to fullname when kueue.dedicated.clusterResourceName is empty.
 */}}
-{{- define "platforma.mainStoragePvcName" -}}
-{{- if .Values.storage.main.fs.existingClaim }}
-{{- .Values.storage.main.fs.existingClaim }}
-{{- else }}
-{{- printf "%s-main-storage" (include "platforma.fullname" .) }}
-{{- end }}
+{{- define "platforma.kueue.clusterResourceName" -}}
+{{- if .Values.kueue.dedicated.clusterResourceName -}}
+{{- .Values.kueue.dedicated.clusterResourceName -}}
+{{- else -}}
+{{- include "platforma.fullname" . -}}
+{{- end -}}
 {{- end }}
 
 {{/*
-Kueue UI LocalQueue name
+Kueue UI LocalQueue name — always chart-generated (both modes create LocalQueues)
 */}}
 {{- define "platforma.kueue.uiQueueName" -}}
-{{- if eq .Values.kueue.mode "shared" }}
-{{- .Values.kueue.shared.queues.ui }}
-{{- else }}
-{{- printf "%s-ui-tasks" (include "platforma.fullname" .) }}
-{{- end }}
+{{- printf "%s-ui-tasks" (include "platforma.fullname" .) -}}
 {{- end }}
 
 {{/*
-Kueue Batch LocalQueue name
+Kueue Batch LocalQueue name — always chart-generated (both modes create LocalQueues)
 */}}
 {{- define "platforma.kueue.batchQueueName" -}}
-{{- if eq .Values.kueue.mode "shared" }}
-{{- .Values.kueue.shared.queues.batch }}
-{{- else }}
-{{- printf "%s-batch-tasks" (include "platforma.fullname" .) }}
-{{- end }}
+{{- printf "%s-batch-tasks" (include "platforma.fullname" .) -}}
 {{- end }}
 
 {{/*
 Kueue UI ClusterQueue name
 */}}
 {{- define "platforma.kueue.uiClusterQueueName" -}}
-{{- printf "%s-ui" (include "platforma.fullname" .) }}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.clusterQueues.ui is required in shared mode" .Values.kueue.shared.clusterQueues.ui -}}
+{{- else -}}
+{{- printf "%s-ui" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
 {{- end }}
 
 {{/*
 Kueue Batch ClusterQueue name
 */}}
 {{- define "platforma.kueue.batchClusterQueueName" -}}
-{{- printf "%s-batch" (include "platforma.fullname" .) }}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.clusterQueues.batch is required in shared mode" .Values.kueue.shared.clusterQueues.batch -}}
+{{- else -}}
+{{- printf "%s-batch" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Kueue WorkloadPriorityClass names — mode-aware
+*/}}
+{{- define "platforma.kueue.priorityClassName.ui" -}}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.workloadPriorityClasses.uiTasks is required in shared mode" .Values.kueue.shared.workloadPriorityClasses.uiTasks -}}
+{{- else -}}
+{{- printf "%s-ui" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "platforma.kueue.priorityClassName.high" -}}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.workloadPriorityClasses.high is required in shared mode" .Values.kueue.shared.workloadPriorityClasses.high -}}
+{{- else -}}
+{{- printf "%s-high" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "platforma.kueue.priorityClassName.normal" -}}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.workloadPriorityClasses.normal is required in shared mode" .Values.kueue.shared.workloadPriorityClasses.normal -}}
+{{- else -}}
+{{- printf "%s-normal" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "platforma.kueue.priorityClassName.low" -}}
+{{- if eq .Values.kueue.mode "shared" -}}
+{{- required "kueue.shared.workloadPriorityClasses.low is required in shared mode" .Values.kueue.shared.workloadPriorityClasses.low -}}
+{{- else -}}
+{{- printf "%s-low" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Main storage type — required, no auto-detection
+*/}}
+{{- define "platforma.mainStorageType" -}}
+{{- .Values.storage.main.type -}}
+{{- end }}
+
+{{/*
+htpasswd secret name — resolves to existing secret or chart-generated secret.
+Returns empty string if htpasswd is not configured.
+*/}}
+{{- define "platforma.htpasswdSecretName" -}}
+{{- if .Values.auth.htpasswd.secretName -}}
+  {{- .Values.auth.htpasswd.secretName -}}
+{{- else if and .Values.auth.htpasswd.credentials (gt (len .Values.auth.htpasswd.credentials) 0) -}}
+  {{- printf "%s-htpasswd" (include "platforma.fullname" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Generate htpasswd file content from inline credentials
+*/}}
+{{- define "platforma.htpasswdFileContent" -}}
+{{- $result := "" -}}
+{{- range .Values.auth.htpasswd.credentials -}}
+{{- $result = printf "%s%s\n" $result (htpasswd .username .password) -}}
+{{- end -}}
+{{- $result -}}
 {{- end }}
 
 {{/*
@@ -152,7 +226,6 @@ Mount paths — single source of truth for all templates
 */}}
 {{- define "platforma.path.database" -}}/data/database{{- end }}
 {{- define "platforma.path.workspace" -}}/data/workspace{{- end }}
-{{- define "platforma.path.mainStorage" -}}/data/main{{- end }}
 {{- define "platforma.path.templates" -}}/etc/platforma/templates{{- end }}
 {{- define "platforma.path.scripts" -}}/etc/platforma/scripts{{- end }}
 {{- define "platforma.path.license" -}}/etc/platforma/license{{- end }}
@@ -176,9 +249,6 @@ Returns "true" if exactly one workspace option is enabled
 {{- if .Values.storage.workspace.filestore.enabled }}
   {{- $count = add $count 1 }}
 {{- end }}
-{{- if .Values.storage.workspace.azureFiles.enabled }}
-  {{- $count = add $count 1 }}
-{{- end }}
 {{- if .Values.storage.workspace.nfs.enabled }}
   {{- $count = add $count 1 }}
 {{- end }}
@@ -186,17 +256,4 @@ Returns "true" if exactly one workspace option is enabled
   {{- $count = add $count 1 }}
 {{- end }}
 {{- eq (int $count) 1 }}
-{{- end }}
-
-{{/*
-Workspace subPath for storage types that don't support path in PV spec.
-FSx Lustre and Azure Files require subPath in Pod mounts.
-Returns empty string if no subPath is needed.
-*/}}
-{{- define "platforma.workspaceSubPath" -}}
-{{- if and .Values.storage.workspace.fsxLustre.enabled (ne (.Values.storage.workspace.fsxLustre.path | default "/") "/") }}
-{{- trimPrefix "/" .Values.storage.workspace.fsxLustre.path }}
-{{- else if and .Values.storage.workspace.azureFiles.enabled (ne (.Values.storage.workspace.azureFiles.path | default "/") "/") }}
-{{- trimPrefix "/" .Values.storage.workspace.azureFiles.path }}
-{{- end }}
 {{- end }}

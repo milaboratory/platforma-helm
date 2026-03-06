@@ -13,30 +13,4 @@ metadata:
     {{- include "platforma.labels" . | nindent 4 }}
 data:
   job_script.sh: |
-    #!/bin/sh
-    set -e
-
-    # Prepend PL_JOB_PATH to PATH if set
-    if [ -n "${PL_JOB_PATH:-}" ]; then
-      export PATH="${PL_JOB_PATH}:${PATH}"
-    fi
-
-    # --- Output redirection ---
-    # Redirect stdout to file if PL_JOB_STDOUT_PATH is set.
-    # kubectl logs captures container stdout/stderr natively, so no tee needed.
-    if [ -n "${PL_JOB_STDOUT_PATH:-}" ]; then
-      exec 1>>"${PL_JOB_STDOUT_PATH}"
-    fi
-
-    # Redirect stderr if PL_JOB_STDERR_PATH is set.
-    if [ -n "${PL_JOB_STDERR_PATH:-}" ]; then
-      if [ "${PL_JOB_STDOUT_PATH:-}" = "${PL_JOB_STDERR_PATH:-}" ]; then
-        # Same file as stdout — merge stderr into stdout
-        exec 2>&1
-      else
-        exec 2>>"${PL_JOB_STDERR_PATH}"
-      fi
-    fi
-
-    # Execute the command
-    exec sh -c "$PL_JOB_CMD_AND_ARGS"
+{{ .Files.Get "files/job-script.sh" | indent 4 }}

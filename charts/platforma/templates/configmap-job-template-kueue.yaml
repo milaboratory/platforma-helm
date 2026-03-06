@@ -7,7 +7,6 @@
 # delimiters). Helm bakes release-specific values at install time, Platforma
 # fills per-job parameters (<< >>) at runtime when creating jobs.
 # =============================================================================
-{{- if not .Values.slurm.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -28,22 +27,22 @@ data:
         # Queue label for Kueue - maps Platforma queue to Kueue LocalQueue
         <<- if eq .PlatformaQueue "ui-tasks" >>
         kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.uiQueueName" . }}"
-        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-ui"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.kueue.priorityClassName.ui" . }}"
         <<- else if eq .PlatformaQueue "heavy" >>
         kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.batchQueueName" . }}"
-        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-high"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.kueue.priorityClassName.high" . }}"
         <<- else if eq .PlatformaQueue "medium" >>
         kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.batchQueueName" . }}"
-        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-normal"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.kueue.priorityClassName.normal" . }}"
         <<- else >>
         kueue.x-k8s.io/queue-name: "{{ include "platforma.kueue.batchQueueName" . }}"
-        kueue.x-k8s.io/priority-class: "{{ include "platforma.fullname" . }}-low"
+        kueue.x-k8s.io/priority-class: "{{ include "platforma.kueue.priorityClassName.low" . }}"
         <<- end >>
       annotations:
-        workload.codeflare.dev.appwrapper/warmupGracePeriodDuration: "2m"
+        workload.codeflare.dev.appwrapper/warmupGracePeriodDuration: "30m"
         workload.codeflare.dev.appwrapper/failureGracePeriodDuration: "30s"
         workload.codeflare.dev.appwrapper/retryPausePeriodDuration: "45s"
-        workload.codeflare.dev.appwrapper/retryLimit: "2"
+        workload.codeflare.dev.appwrapper/retryLimit: "0"
     spec:
       components:
         - template:
@@ -59,27 +58,31 @@ data:
               ttlSecondsAfterFinished: 3600
               template:
                 metadata:
+                  annotations:
+                    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
                   labels:
                     platforma.bio/job-id: << .JobID >>
                     app.kubernetes.io/managed-by: platforma
                 spec:
                   serviceAccountName: {{ include "platforma.jobServiceAccountName" . }}
+                  securityContext:
+                    runAsNonRoot: true
                   restartPolicy: Never
                   <<- if eq .PlatformaQueue "ui-tasks" >>
-                  {{- with .Values.kueue.dedicated.pools.ui.nodeSelector }}
+                  {{- with .Values.kueue.pools.ui.nodeSelector }}
                   nodeSelector:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
-                  {{- with .Values.kueue.dedicated.pools.ui.tolerations }}
+                  {{- with .Values.kueue.pools.ui.tolerations }}
                   tolerations:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
                   <<- else >>
-                  {{- with .Values.kueue.dedicated.pools.batch.nodeSelector }}
+                  {{- with .Values.kueue.pools.batch.nodeSelector }}
                   nodeSelector:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
-                  {{- with .Values.kueue.dedicated.pools.batch.tolerations }}
+                  {{- with .Values.kueue.pools.batch.tolerations }}
                   tolerations:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
@@ -119,8 +122,11 @@ data:
                         - name: HOME
                           value: "/tmp"
                       securityContext:
-                        runAsUser: {{ .Values.jobs.securityContext.runAsUser }}
-                        runAsGroup: {{ .Values.jobs.securityContext.runAsGroup }}
+                        runAsUser: 1010
+                        runAsGroup: 1010
+                        allowPrivilegeEscalation: false
+                        capabilities:
+                          drop: ["ALL"]
                       <<- if .Resources >>
                       resources:
                         requests:
@@ -159,4 +165,3 @@ data:
                         defaultMode: 0755
                     - name: temp-volume
                       emptyDir: {}
-{{- end }}

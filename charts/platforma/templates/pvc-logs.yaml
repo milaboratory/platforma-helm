@@ -1,7 +1,6 @@
-{{- if and (hasPrefix "dir://" .Values.logging.destination) .Values.storage.logs.enabled }}
-{{- if not .Values.storage.logs.existingClaim }}
+{{- if and .Values.app.logging.persistence.enabled (not .Values.app.logging.persistence.existingClaim) }}
 # =============================================================================
-# Logs PVC (for dir:// logging destination)
+# Logs PVC (for persistent log storage)
 # =============================================================================
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -16,11 +15,10 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  {{- if .Values.storage.logs.storageClass }}
-  storageClassName: {{ .Values.storage.logs.storageClass | quote }}
+  {{- if .Values.app.logging.persistence.storageClass }}
+  storageClassName: {{ .Values.app.logging.persistence.storageClass | quote }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.storage.logs.size }}
-{{- end }}
+      storage: {{ .Values.app.logging.persistence.size }}
 {{- end }}

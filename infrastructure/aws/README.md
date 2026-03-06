@@ -189,8 +189,8 @@ During this time it:
 2. Installs Kueue, AppWrapper, Cluster Autoscaler, ALB Controller, External DNS via CodeBuild
 3. If `DeployPlatforma=true` (default): installs Platforma, creates the namespace, license secret, and auth secret
 
-## Once install complete
-Go to the **Outputs** tab:
+## 2. Once install complete
+Go to the **Outputs** tab, note the parameters below. You will need them on the next steps:
 
 | Output | Description |
 |--------|-------------|
@@ -206,7 +206,7 @@ Go to the **Outputs** tab:
 
 ---
 
-## Step 2: Retrieve the password
+### Retrieve the password
 
 If you left `HtpasswdContent` empty, the stack generated a random password and stored it in SSM Parameter Store.
 
@@ -230,7 +230,7 @@ The username is `platforma`. The stack generates the password once and reuses it
 
 ---
 
-## Step 3: Connect from Desktop App
+## 3. Connect from Desktop App
 
 1. **Open** the Platforma Desktop App (download from [platforma.bio](https://platforma.bio) if needed)
 2. **Add** a new connection

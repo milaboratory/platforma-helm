@@ -10,19 +10,19 @@ A single CloudFormation stack creates all infrastructure (EKS, EFS, S3, IAM) and
 graph TD
     desktop["Platforma Desktop App"]
     dns["Route53 + ALB + ACM TLS"]
+    s3[("S3: primary storage")]
 
     desktop -->|"gRPC over TLS"| dns
     desktop -.->|"data access"| s3
 
     subgraph EKS["EKS Cluster"]
         dns --> platforma["Platforma Server"]
-        platforma --> kueue["Kueue + AppWrapper"]
-        kueue --> ui["UI pool: t3.xlarge, scale-from-zero"]
-        kueue --> batch["Batch pools: m7i.4xl–16xl + r7i.8xl–16xl, scale-from-zero"]
+        platforma --> ui["UI pool: t3.xlarge, scale-from-zero"]
+        platforma --> batch["Batch pools: m7i.4xl–16xl + r7i.8xl–16xl, scale-from-zero"]
         platforma --- ebs[("EBS gp3: database")]
     end
 
-    platforma --- s3[("S3: primary storage")]
+    platforma --- s3
     platforma --- efs[("EFS: shared workspace")]
     batch --- efs
 ```
@@ -152,7 +152,7 @@ CloudFormation Console for details.
 
 | Parameter            | Default            | Description                                             |
 |----------------------|--------------------|---------------------------------------------------------|
-| S3 bucket name       | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<AccountId>` |
+| S3 bucket name       | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<random>`. Each stack gets a unique name, so retries never collide with retained buckets. |
 
 ### Data libraries
 
@@ -194,7 +194,9 @@ Go to the **Outputs** tab, note the parameters below. You will need them on the 
 | Output | Description |
 |--------|-------------|
 | `PlatformaUrl` | URL to connect from the Desktop App |
+| `DefaultUsername` | Login username (htpasswd mode) |
 | `UsersPasswordSSMPath` | SSM path for auto-generated password (htpasswd mode) |
+| `UsersPasswordSSMConsole` | Direct link to the SSM parameter in the AWS Console |
 | `S3BucketOutput` | S3 bucket name (retained on stack deletion — note this for cleanup) |
 | `ClusterName` | EKS cluster name (for kubectl access) |
 | `Region` | AWS region |

@@ -146,13 +146,15 @@ CloudFormation Console for details.
 |-----------------|---------|--------------------------------------------------------------------------------------------------------------------------|
 | Deployment size | `small` | Controls node group scaling limits and Kueue quotas. All sizes support the same max single-job size (62 vCPU / 500 GiB). |
 
-![CloudFormation parameters — cluster sizing, storage, and data libraries](images/cf-parameters-4.png)
+![CloudFormation parameters — cluster sizing](images/cf-parameters-4.png)
 
 ### Storage
 
 | Parameter            | Default            | Description                                             |
 |----------------------|--------------------|---------------------------------------------------------|
 | S3 bucket name       | *(auto-generated)* | Auto-generates as `platforma-<ClusterName>-<random>`. Each stack gets a unique name, so retries never collide with retained buckets. |
+
+![CloudFormation parameters — storage and data libraries](images/cf-parameters-5.png)
 
 ### Data libraries
 

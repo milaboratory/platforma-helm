@@ -1,10 +1,6 @@
+.idea
 .DS_Store
-
 # personal values files
 values-* 
-
 # review notes / scratch docs
 docs/
-
-# dependencies
-charts/platforma/charts/

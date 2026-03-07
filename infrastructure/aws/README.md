@@ -38,15 +38,13 @@ records.
 
 ## Prerequisites
 
-- **AWS account** if you just created an account you already have all required permission. But if you're creating a
-  sub-account, please add permissions to create EKS, EFS, S3, IAM roles, ACM certificates, CodeBuild (
-  see [permissions.md](permissions.md) for exact values).
+- **AWS account** — a new account has all required permissions. For sub-accounts, add permissions to create EKS, EFS, S3,
+  IAM roles, ACM certificates, and CodeBuild (see [permissions.md](permissions.md) for exact values).
 - **Route53 hosted zone** with a registered domain (e.g. `example.com`) — the Desktop App requires TLS, so you need a
   domain and certificate. If you don't have one, see [How to register a domain in AWS](domain-guide.md).
-- **S3 Data Libraries (samples libraries) credentials**. Optional but usually required. You will need at least bucket name if it is hosted on AWS. Full list of credentials: `Bucket`, `Region`, `AccessKey`, `SeretKey`.
-- **Platforma license key** that your business most likely already have. If not please email us
-  on [licensing@milaboratories.com](mailto:licensing@milaboratories.com) or send request
-  on [our site](https://platforma.bio/getlicense) (check "Request a demo" under Platforma header).
+- **S3 Data Libraries** — external S3 buckets with your sample data. You need at least the bucket name. If the bucket belongs to a different AWS account, also provide `AccessKey` and `SecretKey`.
+- **Platforma license key** — request one at [platforma.bio/getlicense](https://platforma.bio/getlicense) or
+  email [licensing@milaboratories.com](mailto:licensing@milaboratories.com).
 - **Platforma Desktop App** — download from [https://platforma.bio/downloads](https://platforma.bio/downloads)
 
 ## 1. Deploy CloudFormation stack
@@ -65,9 +63,7 @@ Open the AWS Console and navigate to **CloudFormation → Create Stack → With 
 
 ### Step 2. Specify stack details
 
-### Provide a stack name
-
-Input a title for your stack. Mandatory.
+Enter a **stack name** (e.g. `platforma-prod`). This identifies the stack in the AWS Console.
 
 ### Cluster
 
@@ -110,7 +106,7 @@ If you don't have a domain yet, see [How to register a domain in AWS](domain-gui
 | Parameter              | Default               | Description                                                                                                                                                      |
 |------------------------|-----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Deploy Platforma       | `true`                | Set to `true` to deploy Platforma after infrastructure is ready. When `false`, the stack deploys only infrastructure and controllers — useful for testing first. |
-| **License key**        | **(has to be added)** | **Platforma license key must be provided.**.                                                                                                                     |
+| **License key**        | **(required)**        | **Platforma license key.**                                                                                                                                       |
 | Platforma version      | `3.0.0`               | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma`                                                                                    |
 | Custom container image | *(empty)*             | Override the default Platforma container image. Leave empty to use the chart default.                                                                            |
 
@@ -129,7 +125,7 @@ CloudFormation Console for details.
 ### Cluster sizing
 
 1. Open [Service Quotas console](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A)
-2. Find "Applied account-level quota value" (see the screenshot). It is a maximum vCPU value you could use.
+2. Find "Applied account-level quota value" (see the screenshot). This is the maximum number of vCPUs your account can launch.
    ![service-quotas.png](images/service-quotas.png)
 3. In **Deployment size (controls parallelism)** select the maximum available size from the table below. Request an increase if
    needed. The stack checks the quota during deployment and fails with an error if it is too low.
@@ -158,19 +154,19 @@ CloudFormation Console for details.
 
 ### Data libraries
 
-Up to 3 external S3 data libraries with your samples data can be configured. Each library needs a name and S3 bucket. Access keys are
-optional — when omitted, the chart creates an IRSA role for read-only access.
+Configure up to 3 external S3 buckets containing your sample data. Each library needs a name and a bucket. Access keys are
+optional — when omitted, the stack creates an IAM role for read-only access to the bucket.
 
 | Parameter               | Description                                                              |
 |-------------------------|--------------------------------------------------------------------------|
 | Library name            | Display name in the Desktop App                                          |
 | Library bucket          | S3 bucket name                                                           |
 | Library region          | S3 region — required if bucket is in a different region than the cluster |
-| Access key / Secret key | Leave both empty for IRSA mode, or provide both for explicit credentials |
+| Access key / Secret key | Leave both empty for IAM-role-based access, or provide both for explicit credentials |
 
 ### Step 3. Create the stack
 
-- In the bottom of the page check "I acknoledge that...". 
+- At the bottom of the page, check "I acknowledge that...". 
 - Press "Next"
 
 ### Step 4. Review and create
@@ -190,8 +186,8 @@ During this time it:
 2. Installs Kueue, AppWrapper, Cluster Autoscaler, ALB Controller, External DNS via CodeBuild
 3. If `DeployPlatforma=true` (default): installs Platforma, creates the namespace, license secret, and auth secret
 
-## 2. Once install complete
-Go to the **Outputs** tab, note the parameters below. You will need them on the next steps:
+## 2. After installation
+Go to the **Outputs** tab and note the values below. You will need them in the next steps:
 
 | Output | Description |
 |--------|-------------|
@@ -213,8 +209,8 @@ Go to the **Outputs** tab, note the parameters below. You will need them on the 
 
 If you left `HtpasswdContent` empty, the stack generated a random password and stored it in SSM Parameter Store.
 
-Go to **[Systems Manager → Parameter Store](https://eu-central-1.console.aws.amazon.com/systems-manager/parameters/?region=eu-central-1&tab=Table)**, find the parameter shown in the `UsersPasswordSSMPath`
-output, click **Show** to reveal the value.
+Open the `UsersPasswordSSMConsole` link from the Outputs tab (or navigate to **Systems Manager → Parameter Store** in your
+region). Find the parameter shown in `UsersPasswordSSMPath`, click **Show** to reveal the value.
 
 The username is `platforma`. The stack generates the password once and reuses it on subsequent deploys.
 

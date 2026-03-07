@@ -1,0 +1,46 @@
+{{- if and (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources }}
+# =============================================================================
+# ResourceFlavors
+# =============================================================================
+# Defines node pool characteristics. Kueue injects nodeSelector and tolerations
+# into admitted workloads based on the flavor they're assigned.
+# =============================================================================
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: {{ include "platforma.kueue.clusterResourceName" . }}-ui-flavor
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  {{- if or .Values.kueue.pools.ui.nodeSelector .Values.kueue.pools.ui.tolerations }}
+  {{- with .Values.kueue.pools.ui.nodeSelector }}
+  nodeLabels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.kueue.pools.ui.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- else }} {}
+  {{- end }}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-flavor
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  {{- if or .Values.kueue.pools.batch.nodeSelector .Values.kueue.pools.batch.tolerations }}
+  {{- with .Values.kueue.pools.batch.nodeSelector }}
+  nodeLabels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.kueue.pools.batch.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- else }} {}
+  {{- end }}
+{{- end }}

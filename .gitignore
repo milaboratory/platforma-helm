@@ -1,2 +1,6 @@
-.DS_Store
 .idea
+.DS_Store
+# personal values files
+values-* 
+# review notes / scratch docs
+docs/

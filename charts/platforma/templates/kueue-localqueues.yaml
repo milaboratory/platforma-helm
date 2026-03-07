@@ -1,0 +1,31 @@
+# =============================================================================
+# LocalQueues
+# =============================================================================
+# Jobs reference LocalQueues. The template maps:
+# - ui-tasks queue → ui-tasks LocalQueue → UI ClusterQueue
+# - light/medium/heavy queues → batch-tasks LocalQueue → Batch ClusterQueue
+#
+# Created in both modes:
+# - Dedicated: points at chart-created ClusterQueues
+# - Shared: points at externally-managed ClusterQueues
+# =============================================================================
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: {{ include "platforma.kueue.uiQueueName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  clusterQueue: {{ include "platforma.kueue.uiClusterQueueName" . }}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: {{ include "platforma.kueue.batchQueueName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  clusterQueue: {{ include "platforma.kueue.batchClusterQueueName" . }}

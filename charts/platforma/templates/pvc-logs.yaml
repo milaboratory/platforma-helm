@@ -1,0 +1,24 @@
+{{- if and .Values.app.logging.persistence.enabled (not .Values.app.logging.persistence.existingClaim) }}
+# =============================================================================
+# Logs PVC (for persistent log storage)
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "platforma.fullname" . }}-logs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.app.logging.persistence.storageClass }}
+  storageClassName: {{ .Values.app.logging.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.app.logging.persistence.size }}
+{{- end }}

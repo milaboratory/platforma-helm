@@ -51,6 +51,7 @@ Metadata:
           default: 'Cluster sizing'
         Parameters:
           - DeploymentSize
+          - AvailabilityMode
       - Label:
           default: Storage
         Parameters:
@@ -91,6 +92,8 @@ Metadata:
         default: VPC CIDR (new VPC only)
       DeploymentSize:
         default: 'Deployment size (controls parallelism)'
+      AvailabilityMode:
+        default: 'Trade availability for cost (cost-optimized: 1 system node, 1 NAT gateway, ~$360/mo savings)'
       DeployPlatforma:
         default: 'Deploy Platforma (false = infrastructure + controllers only)'
       LicenseKey:
@@ -452,6 +455,15 @@ Parameters:
       large:  ~16 large jobs, or 64 small — for large research groups (~1400 vCPU quota).
       xlarge: ~32 large jobs, or 128 small — for enterprise deployments (~2700 vCPU quota).
 
+  AvailabilityMode:
+    Type: String
+    Default: high-availability
+    AllowedValues: [high-availability, cost-optimized]
+    Description: >
+      high-availability: 2 system nodes across AZs + 2 NAT gateways for zero-downtime
+      resilience. cost-optimized: 1 system node + 1 NAT gateway, auto-recovers in ~3-5 min
+      on failure. Saves ~$360/month. Batch compute scales identically in both modes.
+
   # --- Storage ---
   S3BucketName:
     Type: String
@@ -571,6 +583,10 @@ Conditions:
     - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
     - !Equals [!Ref DataLibrary3AccessKey, '']
   IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
+  IsHighAvailability: !Equals [!Ref AvailabilityMode, 'high-availability']
+  CreateNewVpcHA: !And
+    - !Equals [!Ref VpcId, '']
+    - !Equals [!Ref AvailabilityMode, 'high-availability']
 
 # =============================================================================
 # Rules — fail fast on invalid parameter combinations
@@ -801,7 +817,8 @@ Resources:
       SubnetId: !Ref PublicSubnet3
       RouteTableId: !Ref PublicRouteTable
 
-  # NAT gateway (single — cost optimization, acceptable for dev/staging)
+  # NAT gateways: HA mode deploys 2 (one per AZ), cost-optimized deploys 1.
+  # In HA mode, AZ1 traffic → NatGateway, AZ2+AZ3 traffic → NatGateway2.
   NatEip:
     Type: AWS::EC2::EIP
     Condition: CreateNewVpc
@@ -846,6 +863,50 @@ Resources:
       DestinationCidrBlock: '0.0.0.0/0'
       NatGatewayId: !Ref NatGateway
 
+  # Second NAT gateway for HA mode (AZ2)
+  NatEip2:
+    Type: AWS::EC2::EIP
+    Condition: CreateNewVpcHA
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-nat-eip-2'
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Condition: CreateNewVpcHA
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt NatEip2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-nat-2'
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateNewVpcHA
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-private-rt-2'
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  PrivateRoute2:
+    Type: AWS::EC2::Route
+    Condition: CreateNewVpcHA
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGateway2
+
   PrivateSubnet1RouteTableAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Condition: CreateNewVpc
@@ -858,14 +919,20 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       SubnetId: !Ref PrivateSubnet2
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !If
+        - IsHighAvailability
+        - !Ref PrivateRouteTable2
+        - !Ref PrivateRouteTable
 
   PrivateSubnet3RouteTableAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Condition: CreateNewVpc
     Properties:
       SubnetId: !Ref PrivateSubnet3
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !If
+        - IsHighAvailability
+        - !Ref PrivateRouteTable2
+        - !Ref PrivateRouteTable
 
   # ---------------------------------------------------------------------------
   # 2. EKS Cluster
@@ -1581,7 +1648,7 @@ Resources:
       InstanceTypes:
         - m7i.2xlarge
       ScalingConfig:
-        DesiredSize: 2
+        DesiredSize: !If [IsHighAvailability, 2, 1]
         MinSize: 1
         MaxSize: 4
       Subnets: !If

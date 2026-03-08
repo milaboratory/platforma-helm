@@ -108,7 +108,7 @@ Metadata:
       AuthMethod:
         default: 'Authentication method (htpasswd or ldap)'
       EnableDemoLibrary:
-        default: 'Enable MiLaboratories' demo data library'
+        default: 'Enable MiLaboratories'' demo data library'
       DataLibrary1Name:
         default: 'Library 1 name (shown in Desktop App)'
       DataLibrary1Bucket:

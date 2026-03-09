@@ -1693,7 +1693,7 @@ Resources:
               - Key: platforma
                 Value: !Ref ClusterName
 
-  SystemNodeGroup:
+  SystemNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
@@ -1721,7 +1721,7 @@ Resources:
         nodegroup-type: system
         platforma: !Sub "${ClusterName}"
 
-  UiNodeGroup:
+  UiNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
@@ -1753,7 +1753,7 @@ Resources:
         nodegroup-type: ui
         platforma: !Sub "${ClusterName}"
 
-  Batch16c64gNodeGroup:
+  Batch16c64gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
@@ -1785,7 +1785,7 @@ Resources:
         nodegroup-type: batch-16c-64g
         platforma: !Sub "${ClusterName}"
 
-  Batch32c128gNodeGroup:
+  Batch32c128gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
@@ -1817,7 +1817,7 @@ Resources:
         nodegroup-type: batch-32c-128g
         platforma: !Sub "${ClusterName}"
 
-  Batch64c256gNodeGroup:
+  Batch64c256gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
@@ -1849,7 +1849,7 @@ Resources:
         nodegroup-type: batch-64c-256g
         platforma: !Sub "${ClusterName}"
 
-  Batch32c256gNodeGroup:
+  Batch32c256gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
@@ -1881,7 +1881,7 @@ Resources:
         nodegroup-type: batch-32c-256g
         platforma: !Sub "${ClusterName}"
 
-  Batch64c512gNodeGroup:
+  Batch64c512gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
@@ -1941,7 +1941,7 @@ Resources:
 
   CoreDnsAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroup
+    DependsOn: SystemNodeGroupV2
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: coredns
@@ -1950,10 +1950,10 @@ Resources:
         - Key: platforma
           Value: !Ref ClusterName
 
-  # CSI drivers (DependsOn: SystemNodeGroup for running pods)
+  # CSI drivers (DependsOn: SystemNodeGroupV2 for running pods)
   EbsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroup
+    DependsOn: SystemNodeGroupV2
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-ebs-csi-driver
@@ -1965,7 +1965,7 @@ Resources:
 
   EfsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroup
+    DependsOn: SystemNodeGroupV2
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-efs-csi-driver

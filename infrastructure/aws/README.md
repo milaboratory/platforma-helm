@@ -106,7 +106,7 @@ If you don't have a domain yet, see [How to register a domain in AWS](domain-gui
 |------------------------|-----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Deploy Platforma       | `true`                | Set to `true` to deploy Platforma after infrastructure is ready. When `false`, the stack deploys only infrastructure and controllers — useful for testing first. |
 | **License key**        | **(required)**        | **Platforma license key.**                                                                                                                                       |
-| Platforma version      | `3.0.0`               | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma`                                                                                    |
+| Platforma version      | `3.0.1`               | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma`                                                                                    |
 | Custom container image | *(empty)*             | Override the default Platforma container image. Leave empty to use the chart default.                                                                            |
 
 ![CloudFormation parameters — Platforma and authentication](images/cf-parameters-3.png)

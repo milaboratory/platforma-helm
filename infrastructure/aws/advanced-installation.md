@@ -54,7 +54,7 @@ export MI_LICENSE="your-license-key"            # Platforma license key
 
 # --- Optional: defaults work for most setups ---
 export PLATFORMA_NAMESPACE="platforma"
-export PLATFORMA_VERSION="3.0.0"
+export PLATFORMA_VERSION="3.0.1"
 export S3_BUCKET="platforma-${CLUSTER_NAME}-$(openssl rand -hex 4)"
 echo "S3 bucket: $S3_BUCKET  ← save this; the random suffix makes each deployment unique"
 

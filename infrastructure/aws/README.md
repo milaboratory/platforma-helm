@@ -56,7 +56,7 @@ Open the AWS Console and navigate to **CloudFormation → Create Stack → With 
 - **Prerequisite - Prepare template** - Choose an existing template
 - **Specify template** - Amazon S3 URL
     - Paste the URL in "Amazon S3 URL" field:
-      `https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/cloudformation-v1.yaml`
+      `https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/cloudformation-eks-1-35.yaml`
 - Press "Next"
 
 ![create-stack-step-1.png](images/create-stack-step-1.png)
@@ -70,7 +70,6 @@ Enter a **stack name** (e.g. `platforma-prod`). This identifies the stack in the
 | Parameter           | Default             | Description                        |
 |---------------------|---------------------|------------------------------------|
 | Cluster name        | `platforma-cluster` | EKS cluster name                   |
-| Kubernetes version  | `1.34`              | EKS version                        |
 | Platforma namespace | `platforma`         | Kubernetes namespace for Platforma |
 
 ![CloudFormation parameters — cluster](images/cf-parameters-1.png)
@@ -107,7 +106,7 @@ If you don't have a domain yet, see [How to register a domain in AWS](domain-gui
 |------------------------|-----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Deploy Platforma       | `true`                | Set to `true` to deploy Platforma after infrastructure is ready. When `false`, the stack deploys only infrastructure and controllers — useful for testing first. |
 | **License key**        | **(required)**        | **Platforma license key.**                                                                                                                                       |
-| Platforma version      | `3.0.1`               | Helm chart version from `oci://ghcr.io/milaboratory/platforma-helm/platforma`                                                                                    |
+| Platforma version      | *(empty)*             | Leave empty to use the version built into the template. On stack update with a new template, an empty value automatically picks up the new version. Set explicitly to pin a specific version. |
 | Custom container image | *(empty)*             | Override the default Platforma container image. Leave empty to use the chart default.                                                                            |
 
 ![CloudFormation parameters — Platforma and authentication](images/cf-parameters-3.png)
@@ -235,16 +234,16 @@ wait and retry.
 1. Open **CloudFormation** in the AWS Console → select your stack → **Update**
 2. Select **Make a direct update** → **Next**
 3. **Prepare template** — choose one:
-   - **Use current template** — to change parameter values only (e.g. Platforma version, auth settings)
-   - **Replace current template** → **Amazon S3 URL** — to upgrade to a new template version. Paste the URL, e.g.:
-     `https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/cloudformation-v1.yaml`
+   - **Use current template** — to change parameter values only (e.g. auth settings, data libraries)
+   - **Replace current template** → **Amazon S3 URL** — to upgrade to a new template version. Paste the new URL.
 4. Click **Next** to reach the **Parameters** page. Each parameter shows its previous value.
-   Change what you need — for example, set **Platforma version** to `3.0.1`. New parameters added
-   by the template appear with their defaults; removed parameters disappear automatically.
+   Change what you need. New parameters added by the template appear with their defaults;
+   removed parameters disappear automatically.
 
-   > **Important:** CloudFormation always keeps previous parameter values on update, even when the new template
-   > has a different default. You must set **Platforma version** to the new value explicitly — it will not
-   > update automatically.
+   > **Platforma version auto-upgrade:** If you left `PlatformaVersion` empty (the default), the new template's
+   > built-in version is used automatically — no manual input needed. To pin a specific version, enter it
+   > explicitly in the `PlatformaVersion` field.
+
 5. Click **Next** → check **I acknowledge that AWS CloudFormation might create IAM resources with custom names** →
    **Submit**
 
@@ -254,8 +253,8 @@ Running jobs are not interrupted during updates.
 
 CloudFormation detects which resources changed and only runs the affected deployers:
 
-- **Parameter-only changes** (Platforma version, auth, data libraries): **2-5 minutes** — only the Platforma deployer runs
-- **Infrastructure changes** (deployment size, availability mode, new template with EKS upgrade): **10-20 minutes** — both deployers run
+- **Parameter-only changes** (auth, data libraries): **2-5 minutes** — only the Platforma deployer runs
+- **Template upgrade** (new Platforma version, deployment size, new EKS version): **10-20 minutes** — both deployers may run
 
 To monitor progress, open the CodeBuild project links from the **Outputs** tab:
 - `HelmDeployerBuildProject` — infrastructure controllers (Kueue, Autoscaler, ALB, DNS)
@@ -265,14 +264,13 @@ To monitor progress, open the CodeBuild project links from the **Outputs** tab:
 
 | Parameter | Effect |
 |-----------|--------|
-| Platforma version | Deploys the new Helm chart version |
+| Platforma version | Leave empty for auto-upgrade with template, or set explicitly to pin a version |
 | Custom container image | Overrides the default container image |
 | License key | Updates the license secret |
 | Authentication settings | Updates auth method, credentials, or LDAP config |
 | Data libraries | Adds, removes, or reconfigures S3 data libraries |
 | Deploy Platforma | Set to `false` to uninstall Platforma while keeping infrastructure |
 | Deployment size | Changes node group scaling limits and Kueue quotas |
-| Availability mode | Switches between high-availability and cost-optimized |
 
 ### Credentials
 

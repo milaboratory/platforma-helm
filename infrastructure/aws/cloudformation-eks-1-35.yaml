@@ -4,6 +4,7 @@ Description: >
   EFS, S3, IAM roles, and deploys Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
   and External DNS via CodeBuild. Optionally deploys Platforma (set DeployPlatforma=true).
   For infrastructure-only testing, leave DeployPlatforma=false and run tests/ scripts manually.
+  Updating: replace the template URL and keep PlatformaVersion empty to auto-upgrade.
 
 # =============================================================================
 # Metadata — controls parameter display order in AWS Console
@@ -15,7 +16,6 @@ Metadata:
           default: Cluster
         Parameters:
           - ClusterName
-          - KubernetesVersion
           - PlatformaNamespace
       - Label:
           default: Networking
@@ -51,6 +51,7 @@ Metadata:
           default: 'Cluster sizing'
         Parameters:
           - DeploymentSize
+          - AvailabilityMode
       - Label:
           default: Storage
         Parameters:
@@ -77,8 +78,6 @@ Metadata:
     ParameterLabels:
       ClusterName:
         default: Cluster name
-      KubernetesVersion:
-        default: Kubernetes version
       PlatformaNamespace:
         default: Platforma namespace
       VpcId:
@@ -91,12 +90,14 @@ Metadata:
         default: VPC CIDR (new VPC only)
       DeploymentSize:
         default: 'Deployment size (controls parallelism)'
+      AvailabilityMode:
+        default: 'Trade availability for cost (cost-optimized: 1 system node, 1 NAT gateway, ~$360/mo savings)'
       DeployPlatforma:
         default: 'Deploy Platforma (false = infrastructure + controllers only)'
       LicenseKey:
         default: Platforma license key (required when DeployPlatforma=true)
       PlatformaVersion:
-        default: Platforma chart version
+        default: 'Platforma chart version (empty = use built-in default)'
       PlatformaImage:
         default: Custom container image (leave empty for chart default)
       S3BucketName:
@@ -108,7 +109,7 @@ Metadata:
       AuthMethod:
         default: 'Authentication method (htpasswd or ldap)'
       EnableDemoLibrary:
-        default: 'Enable MiLaboratories'' demo data library'
+        default: 'Enable MiLaboratories demo data library'
       DataLibrary1Name:
         default: 'Library 1 name (shown in Desktop App)'
       DataLibrary1Bucket:
@@ -167,12 +168,6 @@ Parameters:
     ConstraintDescription: 'Alphanumeric, hyphens, underscores, 1-100 characters'
     Description: EKS cluster name
 
-  KubernetesVersion:
-    Type: String
-    Default: '1.34'
-    AllowedValues: ['1.34']
-    Description: EKS Kubernetes version
-
   PlatformaNamespace:
     Type: String
     Default: platforma
@@ -198,10 +193,13 @@ Parameters:
 
   PlatformaVersion:
     Type: String
-    Default: '3.0.1'
-    AllowedPattern: '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$'
-    ConstraintDescription: 'Must be a valid semver version (e.g. 3.0.1)'
-    Description: Platforma Helm chart version (oci://ghcr.io/milaboratory/platforma-helm/platforma)
+    Default: ''
+    AllowedPattern: '^([0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?)?$'
+    ConstraintDescription: 'Must be a valid semver version (e.g. 3.0.1) or empty for built-in default'
+    Description: >
+      Override Platforma Helm chart version. Leave empty to use the version built into this
+      template. On stack update, an empty value automatically picks up the new version from
+      the updated template.
 
   PlatformaImage:
     Type: String
@@ -452,6 +450,15 @@ Parameters:
       large:  ~16 large jobs, or 64 small — for large research groups (~1400 vCPU quota).
       xlarge: ~32 large jobs, or 128 small — for enterprise deployments (~2700 vCPU quota).
 
+  AvailabilityMode:
+    Type: String
+    Default: high-availability
+    AllowedValues: [high-availability, cost-optimized]
+    Description: >
+      high-availability: 2 system nodes across AZs + 2 NAT gateways for zero-downtime
+      resilience. cost-optimized: 1 system node + 1 NAT gateway, auto-recovers in ~3-5 min
+      on failure. Saves ~$360/month. Batch compute scales identically in both modes.
+
   # --- Storage ---
   S3BucketName:
     Type: String
@@ -496,6 +503,12 @@ Parameters:
 # Mappings
 # =============================================================================
 Mappings:
+  Constants:
+    EKS:
+      Version: '1.35'
+    Platforma:
+      Version: '3.0.1'
+
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
   # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r7i.16xl count) x 500Gi.
@@ -570,7 +583,12 @@ Conditions:
   HasLibrary3Irsa: !And
     - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
     - !Equals [!Ref DataLibrary3AccessKey, '']
+  UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
   IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
+  IsHighAvailability: !Equals [!Ref AvailabilityMode, 'high-availability']
+  CreateNewVpcHA: !And
+    - !Equals [!Ref VpcId, '']
+    - !Equals [!Ref AvailabilityMode, 'high-availability']
 
 # =============================================================================
 # Rules — fail fast on invalid parameter combinations
@@ -801,7 +819,8 @@ Resources:
       SubnetId: !Ref PublicSubnet3
       RouteTableId: !Ref PublicRouteTable
 
-  # NAT gateway (single — cost optimization, acceptable for dev/staging)
+  # NAT gateways: HA mode deploys 2 (one per AZ), cost-optimized deploys 1.
+  # In HA mode, AZ1 traffic → NatGateway, AZ2+AZ3 traffic → NatGateway2.
   NatEip:
     Type: AWS::EC2::EIP
     Condition: CreateNewVpc
@@ -846,6 +865,50 @@ Resources:
       DestinationCidrBlock: '0.0.0.0/0'
       NatGatewayId: !Ref NatGateway
 
+  # Second NAT gateway for HA mode (AZ2)
+  NatEip2:
+    Type: AWS::EC2::EIP
+    Condition: CreateNewVpcHA
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-nat-eip-2'
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Condition: CreateNewVpcHA
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt NatEip2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-nat-2'
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateNewVpcHA
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-private-rt-2'
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  PrivateRoute2:
+    Type: AWS::EC2::Route
+    Condition: CreateNewVpcHA
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGateway2
+
   PrivateSubnet1RouteTableAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Condition: CreateNewVpc
@@ -858,14 +921,20 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       SubnetId: !Ref PrivateSubnet2
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !If
+        - IsHighAvailability
+        - !Ref PrivateRouteTable2
+        - !Ref PrivateRouteTable
 
   PrivateSubnet3RouteTableAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Condition: CreateNewVpc
     Properties:
       SubnetId: !Ref PrivateSubnet3
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !If
+        - IsHighAvailability
+        - !Ref PrivateRouteTable2
+        - !Ref PrivateRouteTable
 
   # ---------------------------------------------------------------------------
   # 2. EKS Cluster
@@ -902,7 +971,7 @@ Resources:
     DependsOn: EksClusterLogGroup
     Properties:
       Name: !Ref ClusterName
-      Version: !Ref KubernetesVersion
+      Version: !FindInMap [Constants, EKS, Version]
       RoleArn: !GetAtt EksClusterRole.Arn
       ResourcesVpcConfig:
         SubnetIds: !If
@@ -1554,13 +1623,66 @@ Resources:
   # 4. Node groups
   # ---------------------------------------------------------------------------
 
-  # Launch template — propagates tags to EC2 instances and EBS volumes for
-  # cost tracking. EKS auto-tags ASGs for cluster-autoscaler discovery.
-  NodeGroupLaunchTemplate:
+  # Launch templates — propagate tags to EC2 instances and EBS volumes for
+  # cost tracking, and set root volume sizes per node type.
+  # EKS auto-tags ASGs for cluster-autoscaler discovery.
+  #
+  # SmallNodeLaunchTemplate:  system and ui nodes (50 GiB root)
+  # MediumNodeLaunchTemplate: batch 16c/32c nodes (100 GiB root)
+  # LargeNodeLaunchTemplate:  batch 64c and high-memory nodes (200 GiB root)
+  SmallNodeLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
         # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 50
+              VolumeType: gp3
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+          - ResourceType: volume
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+
+  MediumNodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 100
+              VolumeType: gp3
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+          - ResourceType: volume
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+
+  LargeNodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 200
+              VolumeType: gp3
+              Encrypted: true
         TagSpecifications:
           - ResourceType: instance
             Tags:
@@ -1576,12 +1698,12 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: system
-      Version: !Ref KubernetesVersion
+      Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m7i.2xlarge
       ScalingConfig:
-        DesiredSize: 2
+        DesiredSize: !If [IsHighAvailability, 2, 1]
         MinSize: 1
         MaxSize: 4
       Subnets: !If
@@ -1591,8 +1713,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref SmallNodeLaunchTemplate
+        Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: system
       Tags:
@@ -1604,7 +1726,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: ui
-      Version: !Ref KubernetesVersion
+      Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - t3.xlarge
@@ -1619,8 +1741,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref SmallNodeLaunchTemplate
+        Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: ui
       Taints:
@@ -1636,7 +1758,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-16c-64g
-      Version: !Ref KubernetesVersion
+      Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m7i.4xlarge
@@ -1651,8 +1773,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref MediumNodeLaunchTemplate
+        Version: !GetAtt MediumNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1668,7 +1790,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-32c-128g
-      Version: !Ref KubernetesVersion
+      Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m7i.8xlarge
@@ -1683,8 +1805,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref MediumNodeLaunchTemplate
+        Version: !GetAtt MediumNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1700,7 +1822,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-64c-256g
-      Version: !Ref KubernetesVersion
+      Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m7i.16xlarge
@@ -1715,8 +1837,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref LargeNodeLaunchTemplate
+        Version: !GetAtt LargeNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1732,7 +1854,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-32c-256g
-      Version: !Ref KubernetesVersion
+      Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - r7i.8xlarge
@@ -1747,8 +1869,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref LargeNodeLaunchTemplate
+        Version: !GetAtt LargeNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1764,7 +1886,7 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-64c-512g
-      Version: !Ref KubernetesVersion
+      Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - r7i.16xlarge
@@ -1779,8 +1901,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref LargeNodeLaunchTemplate
+        Version: !GetAtt LargeNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1975,13 +2097,13 @@ Resources:
           - Name: HOSTED_ZONE_ID
             Value: !Ref HostedZoneId
           - Name: KUBERNETES_VERSION
-            Value: !Ref KubernetesVersion
+            Value: !FindInMap [Constants, EKS, Version]
           - Name: KUEUE_VERSION
             Value: '0.16.1'
           - Name: APPWRAPPER_VERSION
             Value: 'v1.2.0'
           - Name: CLUSTER_AUTOSCALER_CHART_VERSION
-            Value: '9.53.0'
+            Value: '9.56.0'
           - Name: EXTERNAL_DNS_VERSION
             Value: '1.20.0'
           - Name: ALB_CONTROLLER_VERSION
@@ -2185,7 +2307,7 @@ Resources:
           - Name: NAMESPACE
             Value: !Ref PlatformaNamespace
           - Name: KUBERNETES_VERSION
-            Value: !Ref KubernetesVersion
+            Value: !FindInMap [Constants, EKS, Version]
           # NOTE: Secrets below are visible in CodeBuild console/API.
           # The auto-generated users password uses SSM SecureString (see buildspec).
           # For user-provided secrets, restrict codebuild:BatchGetBuilds/BatchGetProjects
@@ -2194,7 +2316,10 @@ Resources:
             Value: !Ref LicenseKey
             Type: PLAINTEXT
           - Name: PLATFORMA_VERSION
-            Value: !Ref PlatformaVersion
+            Value: !If
+              - UseDefaultPlatformaVersion
+              - !FindInMap [Constants, Platforma, Version]
+              - !Ref PlatformaVersion
           - Name: PLATFORMA_IMAGE
             Value: !Ref PlatformaImage
           - Name: DEPLOY_PLATFORMA
@@ -2752,7 +2877,7 @@ Resources:
       # Properties below trigger re-deployment when changed during stack update.
       # The Lambda reads CodeBuildProject; the rest exist only so CloudFormation
       # detects property changes and sends an UPDATE event.
-      KubernetesVersion: !Ref KubernetesVersion
+      KubernetesVersion: !FindInMap [Constants, EKS, Version]
       ForceUpdateInfra: "1"  # Bump to force infra re-deployment
 
   TriggerPlatformaDeploy:
@@ -2769,7 +2894,10 @@ Resources:
       CodeBuildProject: !Sub '${ClusterName}-platforma-deployer'
       # Properties below trigger re-deployment when changed during stack update.
       ForceUpdatePlatforma: "1"  # Bump to force Platforma re-deployment
-      PlatformaVersion: !Ref PlatformaVersion
+      PlatformaVersion: !If
+        - UseDefaultPlatformaVersion
+        - !FindInMap [Constants, Platforma, Version]
+        - !Ref PlatformaVersion
       PlatformaImage: !Ref PlatformaImage
       DeployPlatforma: !Ref DeployPlatforma
       LicenseKey: !Ref LicenseKey

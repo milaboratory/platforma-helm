@@ -1554,13 +1554,44 @@ Resources:
   # 4. Node groups
   # ---------------------------------------------------------------------------
 
-  # Launch template — propagates tags to EC2 instances and EBS volumes for
-  # cost tracking. EKS auto-tags ASGs for cluster-autoscaler discovery.
-  NodeGroupLaunchTemplate:
+  # Launch templates — propagate tags to EC2 instances and EBS volumes for
+  # cost tracking, and set root volume sizes per node type.
+  # EKS auto-tags ASGs for cluster-autoscaler discovery.
+  #
+  # SmallNodeLaunchTemplate: system and ui nodes (50 GiB root)
+  # BatchNodeLaunchTemplate: batch compute nodes (100 GiB root)
+  SmallNodeLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
         # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 50
+              VolumeType: gp3
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+          - ResourceType: volume
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+
+  BatchNodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 100
+              VolumeType: gp3
+              Encrypted: true
         TagSpecifications:
           - ResourceType: instance
             Tags:
@@ -1591,8 +1622,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref SmallNodeLaunchTemplate
+        Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: system
       Tags:
@@ -1619,8 +1650,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref SmallNodeLaunchTemplate
+        Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: ui
       Taints:
@@ -1651,8 +1682,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref BatchNodeLaunchTemplate
+        Version: !GetAtt BatchNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1683,8 +1714,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref BatchNodeLaunchTemplate
+        Version: !GetAtt BatchNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1715,8 +1746,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref BatchNodeLaunchTemplate
+        Version: !GetAtt BatchNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1747,8 +1778,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref BatchNodeLaunchTemplate
+        Version: !GetAtt BatchNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1779,8 +1810,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref BatchNodeLaunchTemplate
+        Version: !GetAtt BatchNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:

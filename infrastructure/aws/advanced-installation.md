@@ -93,7 +93,7 @@ sed "s/platforma-cluster/${CLUSTER_NAME}/g; s/eu-central-1/${AWS_REGION}/g" \
 ```
 
 This creates:
-- EKS 1.34 cluster with OIDC enabled
+- EKS 1.35 cluster with OIDC enabled
 - **System** node group: 2x m7i.2xlarge (8 vCPU / 32 GiB — Platforma server, Kueue, controllers)
 - **UI** node group: 0-4x t3.xlarge (interactive tasks, tainted `dedicated=ui`)
 - **Batch-16c-64g** node group: 0-4x m7i.4xlarge (16 vCPU / 64 GiB, tainted `dedicated=batch`)
@@ -269,12 +269,12 @@ helm repo add autoscaler https://kubernetes.github.io/autoscaler
 helm repo update
 
 helm install cluster-autoscaler autoscaler/cluster-autoscaler \
-  --version 9.53.0 \
+  --version 9.56.0 \
   --namespace kube-system \
   --set autoDiscovery.clusterName=$CLUSTER_NAME \
   --set "autoDiscovery.tags[0]=eks:cluster-name=$CLUSTER_NAME" \
   --set awsRegion=$AWS_REGION \
-  --set image.tag=v1.34.2 \
+  --set image.tag=v1.35.0 \
   --set rbac.serviceAccount.create=false \
   --set rbac.serviceAccount.name=cluster-autoscaler \
   --set extraArgs.scale-down-delay-after-add=10m \

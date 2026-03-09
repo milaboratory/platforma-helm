@@ -232,10 +232,52 @@ wait and retry.
 
 ## Updating Platforma
 
-Change the `PlatformaVersion` parameter in the CloudFormation Console and update the stack. Only the Platforma deployer
-CodeBuild project runs — infrastructure stays unchanged.
+1. Open **CloudFormation** in the AWS Console → select your stack → **Update**
+2. Select **Make a direct update** → **Next**
+3. **Prepare template** — choose one:
+   - **Use current template** — to change parameter values only (e.g. Platforma version, auth settings)
+   - **Replace current template** → **Amazon S3 URL** — to upgrade to a new template version. Paste the URL, e.g.:
+     `https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/cloudformation-v1.yaml`
+4. Click **Next** to reach the **Parameters** page. Each parameter shows its previous value.
+   Change what you need — for example, set **Platforma version** to `3.0.1`. New parameters added
+   by the template appear with their defaults; removed parameters disappear automatically.
 
-The auto-generated password persists across updates. The deployer reads it from SSM on each deploy.
+   > **Important:** CloudFormation always keeps previous parameter values on update, even when the new template
+   > has a different default. You must set **Platforma version** to the new value explicitly — it will not
+   > update automatically.
+5. Click **Next** → check **I acknowledge that AWS CloudFormation might create IAM resources with custom names** →
+   **Submit**
+
+Running jobs are not interrupted during updates.
+
+### How long does it take?
+
+CloudFormation detects which resources changed and only runs the affected deployers:
+
+- **Parameter-only changes** (Platforma version, auth, data libraries): **2-5 minutes** — only the Platforma deployer runs
+- **Infrastructure changes** (deployment size, availability mode, new template with EKS upgrade): **10-20 minutes** — both deployers run
+
+To monitor progress, open the CodeBuild project links from the **Outputs** tab:
+- `HelmDeployerBuildProject` — infrastructure controllers (Kueue, Autoscaler, ALB, DNS)
+- `PlatformaDeployerBuildProject` — Platforma Helm release
+
+### What you can change
+
+| Parameter | Effect |
+|-----------|--------|
+| Platforma version | Deploys the new Helm chart version |
+| Custom container image | Overrides the default container image |
+| License key | Updates the license secret |
+| Authentication settings | Updates auth method, credentials, or LDAP config |
+| Data libraries | Adds, removes, or reconfigures S3 data libraries |
+| Deploy Platforma | Set to `false` to uninstall Platforma while keeping infrastructure |
+| Deployment size | Changes node group scaling limits and Kueue quotas |
+| Availability mode | Switches between high-availability and cost-optimized |
+
+### Credentials
+
+The auto-generated password persists across updates — the deployer reads it from SSM Parameter Store on each deploy.
+If you provided `HtpasswdContent` initially, pass the same value (or a new one) on every update.
 
 ---
 

@@ -1706,12 +1706,13 @@ Resources:
         DesiredSize: !If [IsHighAvailability, 2, 1]
         MinSize: 1
         MaxSize: 4
+      # Pin system nodes to a single AZ (the first one). Platforma's EBS volumes
+      # (database, logs) are AZ-bound; spreading system nodes across AZs risks
+      # scheduling failures when a node lands in a different AZ than its PVs.
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
+        - - !Select [0, !Ref PrivateSubnetIds]
       LaunchTemplate:
         Id: !Ref SmallNodeLaunchTemplate
         Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber

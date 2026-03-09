@@ -52,6 +52,7 @@ Metadata:
         Parameters:
           - DeploymentSize
           - AvailabilityMode
+          - SystemNodeAZ
       - Label:
           default: Storage
         Parameters:
@@ -92,6 +93,8 @@ Metadata:
         default: 'Deployment size (controls parallelism)'
       AvailabilityMode:
         default: 'Trade availability for cost (cost-optimized: 1 system node, 1 NAT gateway, ~$360/mo savings)'
+      SystemNodeAZ:
+        default: 'System node AZ suffix (a/b/c — must match existing database volumes)'
       DeployPlatforma:
         default: 'Deploy Platforma (false = infrastructure + controllers only)'
       LicenseKey:
@@ -459,6 +462,18 @@ Parameters:
       resilience. cost-optimized: 1 system node + 1 NAT gateway, auto-recovers in ~3-5 min
       on failure. Saves ~$360/month. Batch compute scales identically in both modes.
 
+  SystemNodeAZ:
+    Type: String
+    Default: a
+    AllowedValues: [a, b, c]
+    Description: >
+      Availability zone suffix (a, b, or c) for system nodes. Platforma's
+      database and log volumes (EBS) are bound to a single AZ. System nodes
+      must be in the same AZ as these volumes. For new deployments the default
+      (a) is correct. For existing deployments, set this to match the AZ where
+      your platforma-database PV resides (e.g. if volumes are in eu-west-1b,
+      choose "b").
+
   # --- Storage ---
   S3BucketName:
     Type: String
@@ -586,6 +601,8 @@ Conditions:
   UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
   IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
   IsHighAvailability: !Equals [!Ref AvailabilityMode, 'high-availability']
+  SystemAZa: !Equals [!Ref SystemNodeAZ, 'a']
+  SystemAZb: !Equals [!Ref SystemNodeAZ, 'b']
   CreateNewVpcHA: !And
     - !Equals [!Ref VpcId, '']
     - !Equals [!Ref AvailabilityMode, 'high-availability']
@@ -1706,13 +1723,13 @@ Resources:
         DesiredSize: !If [IsHighAvailability, 2, 1]
         MinSize: 1
         MaxSize: 4
-      # Pin system nodes to a single AZ (the first one). Platforma's EBS volumes
-      # (database, logs) are AZ-bound; spreading system nodes across AZs risks
-      # scheduling failures when a node lands in a different AZ than its PVs.
+      # Pin system nodes to a single AZ. Platforma's EBS volumes (database, logs)
+      # are AZ-bound; spreading system nodes across AZs risks scheduling failures
+      # when a node lands in a different AZ than its PVs.
       Subnets: !If
         - CreateNewVpc
-        - - !Ref PrivateSubnet1
-        - - !Select [0, !Ref PrivateSubnetIds]
+        - - !If [SystemAZa, !Ref PrivateSubnet1, !If [SystemAZb, !Ref PrivateSubnet2, !Ref PrivateSubnet3]]
+        - - !If [SystemAZa, !Select [0, !Ref PrivateSubnetIds], !If [SystemAZb, !Select [1, !Ref PrivateSubnetIds], !Select [2, !Ref PrivateSubnetIds]]]
       LaunchTemplate:
         Id: !Ref SmallNodeLaunchTemplate
         Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber

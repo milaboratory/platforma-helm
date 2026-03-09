@@ -4,6 +4,7 @@ Description: >
   EFS, S3, IAM roles, and deploys Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
   and External DNS via CodeBuild. Optionally deploys Platforma (set DeployPlatforma=true).
   For infrastructure-only testing, leave DeployPlatforma=false and run tests/ scripts manually.
+  Updating: replace the template URL and keep PlatformaVersion empty to auto-upgrade.
 
 # =============================================================================
 # Metadata — controls parameter display order in AWS Console
@@ -96,7 +97,7 @@ Metadata:
       LicenseKey:
         default: Platforma license key (required when DeployPlatforma=true)
       PlatformaVersion:
-        default: Platforma chart version
+        default: 'Platforma chart version (empty = use built-in default)'
       PlatformaImage:
         default: Custom container image (leave empty for chart default)
       S3BucketName:
@@ -192,10 +193,13 @@ Parameters:
 
   PlatformaVersion:
     Type: String
-    Default: '3.0.1'
-    AllowedPattern: '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$'
-    ConstraintDescription: 'Must be a valid semver version (e.g. 3.0.1)'
-    Description: Platforma Helm chart version (oci://ghcr.io/milaboratory/platforma-helm/platforma)
+    Default: ''
+    AllowedPattern: '^([0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?)?$'
+    ConstraintDescription: 'Must be a valid semver version (e.g. 3.0.1) or empty for built-in default'
+    Description: >
+      Override Platforma Helm chart version. Leave empty to use the version built into this
+      template. On stack update, an empty value automatically picks up the new version from
+      the updated template.
 
   PlatformaImage:
     Type: String
@@ -502,6 +506,8 @@ Mappings:
   Constants:
     EKS:
       Version: '1.35'
+    Platforma:
+      Version: '3.0.1'
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
@@ -577,6 +583,7 @@ Conditions:
   HasLibrary3Irsa: !And
     - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
     - !Equals [!Ref DataLibrary3AccessKey, '']
+  UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
   IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
   IsHighAvailability: !Equals [!Ref AvailabilityMode, 'high-availability']
   CreateNewVpcHA: !And
@@ -2309,7 +2316,10 @@ Resources:
             Value: !Ref LicenseKey
             Type: PLAINTEXT
           - Name: PLATFORMA_VERSION
-            Value: !Ref PlatformaVersion
+            Value: !If
+              - UseDefaultPlatformaVersion
+              - !FindInMap [Constants, Platforma, Version]
+              - !Ref PlatformaVersion
           - Name: PLATFORMA_IMAGE
             Value: !Ref PlatformaImage
           - Name: DEPLOY_PLATFORMA
@@ -2884,7 +2894,10 @@ Resources:
       CodeBuildProject: !Sub '${ClusterName}-platforma-deployer'
       # Properties below trigger re-deployment when changed during stack update.
       ForceUpdatePlatforma: "1"  # Bump to force Platforma re-deployment
-      PlatformaVersion: !Ref PlatformaVersion
+      PlatformaVersion: !If
+        - UseDefaultPlatformaVersion
+        - !FindInMap [Constants, Platforma, Version]
+        - !Ref PlatformaVersion
       PlatformaImage: !Ref PlatformaImage
       DeployPlatforma: !Ref DeployPlatforma
       LicenseKey: !Ref LicenseKey

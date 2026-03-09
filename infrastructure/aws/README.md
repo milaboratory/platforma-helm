@@ -56,7 +56,7 @@ Open the AWS Console and navigate to **CloudFormation → Create Stack → With 
 - **Prerequisite - Prepare template** - Choose an existing template
 - **Specify template** - Amazon S3 URL
     - Paste the URL in "Amazon S3 URL" field:
-      `https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/cloudformation-v1.yaml`
+      `https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/cloudformation-eks-1-35.yaml`
 - Press "Next"
 
 ![create-stack-step-1.png](images/create-stack-step-1.png)
@@ -70,7 +70,6 @@ Enter a **stack name** (e.g. `platforma-prod`). This identifies the stack in the
 | Parameter           | Default             | Description                        |
 |---------------------|---------------------|------------------------------------|
 | Cluster name        | `platforma-cluster` | EKS cluster name                   |
-| Kubernetes version  | `1.34`              | EKS version                        |
 | Platforma namespace | `platforma`         | Kubernetes namespace for Platforma |
 
 ![CloudFormation parameters — cluster](images/cf-parameters-1.png)

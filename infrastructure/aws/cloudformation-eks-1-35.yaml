@@ -1616,13 +1616,66 @@ Resources:
   # 4. Node groups
   # ---------------------------------------------------------------------------
 
-  # Launch template — propagates tags to EC2 instances and EBS volumes for
-  # cost tracking. EKS auto-tags ASGs for cluster-autoscaler discovery.
-  NodeGroupLaunchTemplate:
+  # Launch templates — propagate tags to EC2 instances and EBS volumes for
+  # cost tracking, and set root volume sizes per node type.
+  # EKS auto-tags ASGs for cluster-autoscaler discovery.
+  #
+  # SmallNodeLaunchTemplate:  system and ui nodes (50 GiB root)
+  # MediumNodeLaunchTemplate: batch 16c/32c nodes (100 GiB root)
+  # LargeNodeLaunchTemplate:  batch 64c and high-memory nodes (200 GiB root)
+  SmallNodeLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
         # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 50
+              VolumeType: gp3
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+          - ResourceType: volume
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+
+  MediumNodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 100
+              VolumeType: gp3
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+          - ResourceType: volume
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+
+  LargeNodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # Do NOT set ImageId — EKS selects the optimised AMI automatically.
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 200
+              VolumeType: gp3
+              Encrypted: true
         TagSpecifications:
           - ResourceType: instance
             Tags:
@@ -1653,8 +1706,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref SmallNodeLaunchTemplate
+        Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: system
       Tags:
@@ -1681,8 +1734,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref SmallNodeLaunchTemplate
+        Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: ui
       Taints:
@@ -1713,8 +1766,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref MediumNodeLaunchTemplate
+        Version: !GetAtt MediumNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1745,8 +1798,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref MediumNodeLaunchTemplate
+        Version: !GetAtt MediumNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1777,8 +1830,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref LargeNodeLaunchTemplate
+        Version: !GetAtt LargeNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1809,8 +1862,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref LargeNodeLaunchTemplate
+        Version: !GetAtt LargeNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:
@@ -1841,8 +1894,8 @@ Resources:
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
       LaunchTemplate:
-        Id: !Ref NodeGroupLaunchTemplate
-        Version: !GetAtt NodeGroupLaunchTemplate.LatestVersionNumber
+        Id: !Ref LargeNodeLaunchTemplate
+        Version: !GetAtt LargeNodeLaunchTemplate.LatestVersionNumber
       Labels:
         node.kubernetes.io/pool: batch
       Taints:

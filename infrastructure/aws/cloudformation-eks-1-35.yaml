@@ -51,7 +51,7 @@ Metadata:
           default: 'Cluster sizing'
         Parameters:
           - DeploymentSize
-          - AvailabilityMode
+          - SystemNodeAZ
       - Label:
           default: Storage
         Parameters:
@@ -90,8 +90,8 @@ Metadata:
         default: VPC CIDR (new VPC only)
       DeploymentSize:
         default: 'Deployment size (controls parallelism)'
-      AvailabilityMode:
-        default: 'Trade availability for cost (cost-optimized: 1 system node, 1 NAT gateway, ~$360/mo savings)'
+      SystemNodeAZ:
+        default: 'System node AZ suffix (a/b/c — must match existing database volumes)'
       DeployPlatforma:
         default: 'Deploy Platforma (false = infrastructure + controllers only)'
       LicenseKey:
@@ -450,14 +450,17 @@ Parameters:
       large:  ~16 large jobs, or 64 small — for large research groups (~1400 vCPU quota).
       xlarge: ~32 large jobs, or 128 small — for enterprise deployments (~2700 vCPU quota).
 
-  AvailabilityMode:
+  SystemNodeAZ:
     Type: String
-    Default: high-availability
-    AllowedValues: [high-availability, cost-optimized]
+    Default: a
+    AllowedValues: [a, b, c]
     Description: >
-      high-availability: 2 system nodes across AZs + 2 NAT gateways for zero-downtime
-      resilience. cost-optimized: 1 system node + 1 NAT gateway, auto-recovers in ~3-5 min
-      on failure. Saves ~$360/month. Batch compute scales identically in both modes.
+      Availability zone suffix (a, b, or c) for system nodes. Platforma's
+      database and log volumes (EBS) are bound to a single AZ. System nodes
+      must be in the same AZ as these volumes. For new deployments the default
+      (a) is correct. For existing deployments, set this to match the AZ where
+      your platforma-database PV resides (e.g. if volumes are in eu-west-1b,
+      choose "b").
 
   # --- Storage ---
   S3BucketName:
@@ -585,10 +588,8 @@ Conditions:
     - !Equals [!Ref DataLibrary3AccessKey, '']
   UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
   IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
-  IsHighAvailability: !Equals [!Ref AvailabilityMode, 'high-availability']
-  CreateNewVpcHA: !And
-    - !Equals [!Ref VpcId, '']
-    - !Equals [!Ref AvailabilityMode, 'high-availability']
+  SystemAZa: !Equals [!Ref SystemNodeAZ, 'a']
+  SystemAZb: !Equals [!Ref SystemNodeAZ, 'b']
 
 # =============================================================================
 # Rules — fail fast on invalid parameter combinations
@@ -819,8 +820,7 @@ Resources:
       SubnetId: !Ref PublicSubnet3
       RouteTableId: !Ref PublicRouteTable
 
-  # NAT gateways: HA mode deploys 2 (one per AZ), cost-optimized deploys 1.
-  # In HA mode, AZ1 traffic → NatGateway, AZ2+AZ3 traffic → NatGateway2.
+  # NAT gateway (single — auto-recovers in ~3-5 min on failure)
   NatEip:
     Type: AWS::EC2::EIP
     Condition: CreateNewVpc
@@ -865,50 +865,6 @@ Resources:
       DestinationCidrBlock: '0.0.0.0/0'
       NatGatewayId: !Ref NatGateway
 
-  # Second NAT gateway for HA mode (AZ2)
-  NatEip2:
-    Type: AWS::EC2::EIP
-    Condition: CreateNewVpcHA
-    Properties:
-      Domain: vpc
-      Tags:
-        - Key: Name
-          Value: !Sub '${ClusterName}-nat-eip-2'
-        - Key: platforma
-          Value: !Ref ClusterName
-
-  NatGateway2:
-    Type: AWS::EC2::NatGateway
-    Condition: CreateNewVpcHA
-    DependsOn: VpcGatewayAttachment
-    Properties:
-      AllocationId: !GetAtt NatEip2.AllocationId
-      SubnetId: !Ref PublicSubnet2
-      Tags:
-        - Key: Name
-          Value: !Sub '${ClusterName}-nat-2'
-        - Key: platforma
-          Value: !Ref ClusterName
-
-  PrivateRouteTable2:
-    Type: AWS::EC2::RouteTable
-    Condition: CreateNewVpcHA
-    Properties:
-      VpcId: !Ref Vpc
-      Tags:
-        - Key: Name
-          Value: !Sub '${ClusterName}-private-rt-2'
-        - Key: platforma
-          Value: !Ref ClusterName
-
-  PrivateRoute2:
-    Type: AWS::EC2::Route
-    Condition: CreateNewVpcHA
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable2
-      DestinationCidrBlock: '0.0.0.0/0'
-      NatGatewayId: !Ref NatGateway2
-
   PrivateSubnet1RouteTableAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Condition: CreateNewVpc
@@ -921,20 +877,14 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       SubnetId: !Ref PrivateSubnet2
-      RouteTableId: !If
-        - IsHighAvailability
-        - !Ref PrivateRouteTable2
-        - !Ref PrivateRouteTable
+      RouteTableId: !Ref PrivateRouteTable
 
   PrivateSubnet3RouteTableAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Condition: CreateNewVpc
     Properties:
       SubnetId: !Ref PrivateSubnet3
-      RouteTableId: !If
-        - IsHighAvailability
-        - !Ref PrivateRouteTable2
-        - !Ref PrivateRouteTable
+      RouteTableId: !Ref PrivateRouteTable
 
   # ---------------------------------------------------------------------------
   # 2. EKS Cluster
@@ -1693,25 +1643,26 @@ Resources:
               - Key: platforma
                 Value: !Ref ClusterName
 
-  SystemNodeGroup:
+  SystemNodeGroupV3:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: system
+      NodegroupName: system-v3
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m7i.2xlarge
       ScalingConfig:
-        DesiredSize: !If [IsHighAvailability, 2, 1]
+        DesiredSize: 1
         MinSize: 1
         MaxSize: 4
+      # Pin system nodes to a single AZ. Platforma's EBS volumes (database, logs)
+      # are AZ-bound; spreading system nodes across AZs risks scheduling failures
+      # when a node lands in a different AZ than its PVs.
       Subnets: !If
         - CreateNewVpc
-        - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
+        - - !If [SystemAZa, !Ref PrivateSubnet1, !If [SystemAZb, !Ref PrivateSubnet2, !Ref PrivateSubnet3]]
+        - - !If [SystemAZa, !Select [0, !Ref PrivateSubnetIds], !If [SystemAZb, !Select [1, !Ref PrivateSubnetIds], !Select [2, !Ref PrivateSubnetIds]]]
       LaunchTemplate:
         Id: !Ref SmallNodeLaunchTemplate
         Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber
@@ -1721,11 +1672,11 @@ Resources:
         nodegroup-type: system
         platforma: !Sub "${ClusterName}"
 
-  UiNodeGroup:
+  UiNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: ui
+      NodegroupName: ui-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
@@ -1753,11 +1704,11 @@ Resources:
         nodegroup-type: ui
         platforma: !Sub "${ClusterName}"
 
-  Batch16c64gNodeGroup:
+  Batch16c64gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-16c-64g
+      NodegroupName: batch-16c-64g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
@@ -1785,11 +1736,11 @@ Resources:
         nodegroup-type: batch-16c-64g
         platforma: !Sub "${ClusterName}"
 
-  Batch32c128gNodeGroup:
+  Batch32c128gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-32c-128g
+      NodegroupName: batch-32c-128g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
@@ -1817,11 +1768,11 @@ Resources:
         nodegroup-type: batch-32c-128g
         platforma: !Sub "${ClusterName}"
 
-  Batch64c256gNodeGroup:
+  Batch64c256gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-64c-256g
+      NodegroupName: batch-64c-256g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
@@ -1849,11 +1800,11 @@ Resources:
         nodegroup-type: batch-64c-256g
         platforma: !Sub "${ClusterName}"
 
-  Batch32c256gNodeGroup:
+  Batch32c256gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-32c-256g
+      NodegroupName: batch-32c-256g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
@@ -1881,11 +1832,11 @@ Resources:
         nodegroup-type: batch-32c-256g
         platforma: !Sub "${ClusterName}"
 
-  Batch64c512gNodeGroup:
+  Batch64c512gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: batch-64c-512g
+      NodegroupName: batch-64c-512g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
@@ -1941,7 +1892,7 @@ Resources:
 
   CoreDnsAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroup
+    DependsOn: SystemNodeGroupV3
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: coredns
@@ -1950,10 +1901,10 @@ Resources:
         - Key: platforma
           Value: !Ref ClusterName
 
-  # CSI drivers (DependsOn: SystemNodeGroup for running pods)
+  # CSI drivers (DependsOn: SystemNodeGroupV3 for running pods)
   EbsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroup
+    DependsOn: SystemNodeGroupV3
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-ebs-csi-driver
@@ -1965,7 +1916,7 @@ Resources:
 
   EfsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroup
+    DependsOn: SystemNodeGroupV3
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-efs-csi-driver

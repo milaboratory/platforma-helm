@@ -1,0 +1,43 @@
+# =============================================================================
+# Kueue Helm Values for AWS EKS
+# =============================================================================
+# Validated in experiment: 2026-02-05-status-propagation-appwrapper
+# Install:
+#   helm install kueue oci://registry.k8s.io/kueue/charts/kueue \
+#     --version 0.16.1 \
+#     -n kueue-system --create-namespace \
+#     -f kueue-values.yaml
+# =============================================================================
+
+controllerManager:
+  manager:
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+
+# -- AppWrapper support
+# Requires separate AppWrapper controller installation:
+#   kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.2.0/install.yaml
+featureGates:
+  AppWrapper: true
+
+# -- Framework integrations
+integrations:
+  frameworks:
+    - "batch/job"
+    - "jobset.x-k8s.io/jobset"
+    - "workload.codeflare.dev/appwrapper"
+  podOptions:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: [kube-system, kueue-system]
+
+# -- Metrics for observability
+metrics:
+  enableClusterQueueResources: true

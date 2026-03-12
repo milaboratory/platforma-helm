@@ -1,0 +1,167 @@
+# =============================================================================
+# AWS EKS Cluster Configuration (eksctl)
+# =============================================================================
+# Creates EKS cluster with:
+# - System node group (Platforma server, Kueue, controllers)
+# - UI node group (interactive tasks, scale-from-zero)
+# - 5 batch node groups: 16c-64g, 32c-128g, 64c-256g, 32c-256g, 64c-512g
+# - EFS CSI driver addon (for RWX workspace storage)
+# - EBS CSI driver addon (for gp3 database/main storage)
+#
+# Usage:
+#   sed "s/platforma-cluster/${CLUSTER_NAME}/g; s/eu-central-1/${AWS_REGION}/g" \
+#     eksctl-cluster.yaml | eksctl create cluster -f -
+#
+# Cluster Autoscaler discovery uses EKS auto-tag (eks:cluster-name).
+# No manual autoscaler tags needed for managed node groups.
+# =============================================================================
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: platforma-cluster
+  region: eu-central-1
+  version: "1.35"
+
+iam:
+  withOIDC: true
+
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+  - name: aws-ebs-csi-driver
+    version: latest
+    attachPolicyARNs:
+      - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+  - name: aws-efs-csi-driver
+    version: latest
+    attachPolicyARNs:
+      - arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy
+
+managedNodeGroups:
+  # System nodes — Platforma server, Kueue, controllers
+  # m7i.2xlarge: 8 vCPU / 32 GiB
+  - name: system
+    instanceType: m7i.2xlarge
+    desiredCapacity: 2
+    minSize: 1
+    maxSize: 4
+    labels:
+      node.kubernetes.io/pool: system
+    tags:
+      nodegroup-type: system
+      platforma: platforma-cluster
+
+  # UI nodes — interactive tasks, scale from zero
+  # t3.xlarge: 4 vCPU / 16 GiB
+  - name: ui
+    instanceType: t3.xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 4
+    labels:
+      node.kubernetes.io/pool: ui
+    taints:
+      - key: dedicated
+        value: ui
+        effect: NoSchedule
+    tags:
+      nodegroup-type: ui
+      platforma: platforma-cluster
+
+  # Batch: 16 vCPU / 64 GiB (scale from zero)
+  # m7i.4xlarge
+  - name: batch-16c-64g
+    instanceType: m7i.4xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 4
+    labels:
+      node.kubernetes.io/pool: batch
+    taints:
+      - key: dedicated
+        value: batch
+        effect: NoSchedule
+    tags:
+      nodegroup-type: batch-16c-64g
+      platforma: platforma-cluster
+
+  # Batch: 32 vCPU / 128 GiB (scale from zero)
+  # m7i.8xlarge
+  - name: batch-32c-128g
+    instanceType: m7i.8xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 2
+    labels:
+      node.kubernetes.io/pool: batch
+    taints:
+      - key: dedicated
+        value: batch
+        effect: NoSchedule
+    tags:
+      nodegroup-type: batch-32c-128g
+      platforma: platforma-cluster
+
+  # Batch: 64 vCPU / 256 GiB (scale from zero)
+  # m7i.16xlarge
+  - name: batch-64c-256g
+    instanceType: m7i.16xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 1
+    labels:
+      node.kubernetes.io/pool: batch
+    taints:
+      - key: dedicated
+        value: batch
+        effect: NoSchedule
+    tags:
+      nodegroup-type: batch-64c-256g
+      platforma: platforma-cluster
+
+  # Batch: 32 vCPU / 256 GiB — high memory (scale from zero)
+  # r7i.8xlarge
+  - name: batch-32c-256g
+    instanceType: r7i.8xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 2
+    labels:
+      node.kubernetes.io/pool: batch
+    taints:
+      - key: dedicated
+        value: batch
+        effect: NoSchedule
+    tags:
+      nodegroup-type: batch-32c-256g
+      platforma: platforma-cluster
+
+  # Batch: 64 vCPU / 512 GiB — largest high memory (scale from zero)
+  # r7i.16xlarge
+  - name: batch-64c-512g
+    instanceType: r7i.16xlarge
+    desiredCapacity: 0
+    minSize: 0
+    maxSize: 1
+    labels:
+      node.kubernetes.io/pool: batch
+    taints:
+      - key: dedicated
+        value: batch
+        effect: NoSchedule
+    tags:
+      nodegroup-type: batch-64c-512g
+      platforma: platforma-cluster
+
+cloudWatch:
+  clusterLogging:
+    enableTypes:
+      - api
+      - audit
+      - authenticator

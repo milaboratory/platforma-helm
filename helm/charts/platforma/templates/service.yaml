@@ -1,0 +1,71 @@
+# =============================================================================
+# Platforma Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platforma.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: 6345
+      targetPort: grpc
+      protocol: TCP
+    - name: http
+      port: 6347
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "platforma.selectorLabels" . | nindent 4 }}
+---
+# =============================================================================
+# Metrics Service (always created — Platforma exposes metrics on port 9090)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platforma.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with .Values.app.monitoring.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "platforma.selectorLabels" . | nindent 4 }}
+{{- if .Values.app.debug.enabled }}
+---
+# =============================================================================
+# Debug Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platforma.fullname" . }}-debug
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: debug
+spec:
+  type: ClusterIP
+  ports:
+    - name: debug
+      port: 9091
+      targetPort: debug
+      protocol: TCP
+  selector:
+    {{- include "platforma.selectorLabels" . | nindent 4 }}
+{{- end }}

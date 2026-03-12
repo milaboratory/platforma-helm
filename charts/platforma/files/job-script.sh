@@ -58,14 +58,6 @@ sh -c "$PL_JOB_CMD_AND_ARGS"
 # otherwise, shell script will always exit with 0
 EXIT_CODE=$?
 
-# --- Report non-zero exit code ---
-if [ "$EXIT_CODE" -ne 0 ]; then
-  echo "[job-script] Process exited with code ${EXIT_CODE}" >&2
-  if [ "$EXIT_CODE" -eq 137 ]; then
-    echo "[job-script] The process was killed (likely out of memory). Consider running this job with more memory." >&2
-  fi
-fi
-
 # --- Cleanup ---
 
 # Close additional descriptors we had. If we had 'tee' attached to them, they will get

@@ -26,26 +26,4 @@ data:
       isRunning:   "resource?.status?.phase == 'Running'"
       isFailed:    "resource?.status?.phase == 'Failed'"
       isCompleted: "resource?.status?.phase == 'Succeeded'"
-      failureDetail: |
-        let conditions = resource?.status?.conditions;
-        let annotations = resource?.metadata?.annotations;
-
-        let lastCondition = last(conditions);
-        let warmupGracePeriodDuration = annotations?.["workload.codeflare.dev.appwrapper/warmupGracePeriodDuration"];
-        let hasWarmapGracePeriod = warmupGracePeriodDuration != nil && warmupGracePeriodDuration != "";
-
-        if (lastCondition == nil) {
-          "AppWrapper resource state is unknown. See AppWrapper logs for more details."
-        } else {
-          // Special cases handling for user-friendly error messages
-          if (lastCondition.reason == "InsufficientPodsReady") {
-            let imagePullTimeoutSuffix = hasWarmapGracePeriod ? " within "+warmupGracePeriodDuration+" after pod scheduling." : ".";
-
-            "AppWrapper failed to wait for command to start.\n"+
-            "This is likely due to slow network on kubernetes node side: node failed to pull"+
-            " software docker image" + imagePullTimeoutSuffix
-          } else {
-            // In general case, return all conditions to be displayed to the user as JSON string
-            conditions
-          }
-        }
+      failureDetail: "resource?.status?.conditions"

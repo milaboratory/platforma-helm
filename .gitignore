@@ -1,6 +1,2 @@
-.idea
-.DS_Store
-# personal values files
-values-* 
-# review notes / scratch docs
-docs/
+values-dev.yaml
+values-dev.yml

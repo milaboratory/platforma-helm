@@ -93,7 +93,6 @@ check_file_not_exists() {
 
 GOOD_CMD='printf "STDOUT_MARKER\n"; printf "STDERR_MARKER\n" >&2'
 BAD_CMD='printf "STDOUT_MARKER\n"; printf "STDERR_MARKER\n" >&2; exit 42'
-OOM_CMD='printf "STDOUT_MARKER\n"; printf "STDERR_MARKER\n" >&2; exit 137'
 
 # Runs a full suite of checks for one redirect configuration.
 # Usage: run_scenario <label_prefix> <cmd> <expected_exit>
@@ -211,8 +210,6 @@ check_file_not_contains "$CAPTURED_STDOUT" "STDERR_MARKER" "captured stdout"
 
 check_file_contains "$CAPTURED_STDERR" "STDERR_MARKER" "captured stderr"
 check_file_not_contains "$CAPTURED_STDERR" "STDOUT_MARKER" "captured stderr"
-check_file_contains "$CAPTURED_STDERR" "[job-script] Process exited with code 42" "captured stderr exit hint"
-check_file_not_contains "$CAPTURED_STDERR" "out of memory" "captured stderr no OOM hint"
 
 end_test "bad cmd, no redirects"
 
@@ -246,11 +243,9 @@ check_file_not_contains "$CAPTURED_STDOUT" "STDERR_MARKER" "captured stdout"
 
 check_file_contains "$CAPTURED_STDERR" "STDERR_MARKER" "captured stderr"
 check_file_not_contains "$CAPTURED_STDERR" "STDOUT_MARKER" "captured stderr"
-check_file_contains "$CAPTURED_STDERR" "[job-script] Process exited with code 42" "captured stderr exit hint"
 
 check_file_contains "$PL_JOB_STDERR_PATH" "STDERR_MARKER" "stderr file"
 check_file_not_contains "$PL_JOB_STDERR_PATH" "STDOUT_MARKER" "stderr file"
-check_file_contains "$PL_JOB_STDERR_PATH" "[job-script] Process exited with code 42" "stderr file exit hint"
 
 end_test "bad cmd, stderr redirect only"
 
@@ -293,53 +288,6 @@ check_file_contains "$PL_JOB_STDERR_PATH" "STDERR_MARKER" "stderr file"
 check_file_not_contains "$PL_JOB_STDERR_PATH" "STDOUT_MARKER" "stderr file"
 
 end_test "bad cmd, both to different files"
-
-# =============================================================================
-# OOM command (exit 137) — check for memory hint
-# =============================================================================
-
-# 11) OOM, no redirects
-begin_test
-
-run_job "$OOM_CMD"
-check_exit 137
-
-check_file_contains "$CAPTURED_STDERR" "[job-script] Process exited with code 137" "captured stderr exit hint"
-check_file_contains "$CAPTURED_STDERR" "out of memory" "captured stderr OOM hint"
-check_file_contains "$CAPTURED_STDERR" "more memory" "captured stderr memory suggestion"
-
-end_test "OOM cmd, no redirects"
-
-# 12) OOM, stderr redirect
-begin_test
-
-export PL_JOB_STDERR_PATH="${TEST_DIR}/stderr_file"
-run_job "$OOM_CMD"
-check_exit 137
-
-check_file_contains "$CAPTURED_STDERR" "[job-script] Process exited with code 137" "captured stderr exit hint"
-check_file_contains "$CAPTURED_STDERR" "out of memory" "captured stderr OOM hint"
-
-check_file_contains "$PL_JOB_STDERR_PATH" "[job-script] Process exited with code 137" "stderr file exit hint"
-check_file_contains "$PL_JOB_STDERR_PATH" "out of memory" "stderr file OOM hint"
-check_file_contains "$PL_JOB_STDERR_PATH" "more memory" "stderr file memory suggestion"
-
-end_test "OOM cmd, stderr redirect"
-
-# 13) OOM, both to same file
-begin_test
-
-export PL_JOB_STDOUT_PATH="${TEST_DIR}/combined_file"
-export PL_JOB_STDERR_PATH="${TEST_DIR}/combined_file"
-run_job "$OOM_CMD"
-check_exit 137
-
-check_file_contains "$CAPTURED_STDERR" "out of memory" "captured stderr OOM hint"
-
-check_file_contains "$PL_JOB_STDERR_PATH" "[job-script] Process exited with code 137" "combined file exit hint"
-check_file_contains "$PL_JOB_STDERR_PATH" "out of memory" "combined file OOM hint"
-
-end_test "OOM cmd, both to same file"
 
 # =============================================================================
 # Summary

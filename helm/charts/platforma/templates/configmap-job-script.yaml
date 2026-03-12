@@ -1,0 +1,16 @@
+# =============================================================================
+# Job Script ConfigMap
+# =============================================================================
+# Shell script mounted into job containers. Executes the command passed via
+# PL_JOB_CMD_AND_ARGS environment variable.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "platforma.fullname" . }}-job-script
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+data:
+  job_script.sh: |
+{{ .Files.Get "files/job-script.sh" | indent 4 }}

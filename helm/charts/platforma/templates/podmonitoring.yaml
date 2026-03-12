@@ -1,0 +1,19 @@
+{{- if .Values.app.monitoring.gkeMonitoring.enabled }}
+# =============================================================================
+# PodMonitoring for GKE/GMP (Google Managed Prometheus)
+# =============================================================================
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: {{ include "platforma.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "platforma.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.app.monitoring.gkeMonitoring.interval }}
+{{- end }}

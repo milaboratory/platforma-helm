@@ -12,6 +12,7 @@ keywords:
   - kubernetes
   - kueue
 
+icon: "https://raw.githubusercontent.com/milaboratory/platforma-helm/main/charts/platforma/logo.svg"
 home: https://platforma.bio
 sources:
   - https://github.com/milaboratory/platforma-helm

@@ -1,0 +1,34 @@
+name: Protect synced folder
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-protected-folder:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check for unauthorized changes
+        if: github.actor != 'github-actions[bot]'
+        env:
+          PROTECTED_FOLDER: charts/platforma
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CHANGED_FILES=$(gh api \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+            --paginate --jq '.[].filename')
+
+          VIOLATIONS=$(echo "${CHANGED_FILES}" | grep "^${PROTECTED_FOLDER}/" || true)
+
+          if [ -n "${VIOLATIONS}" ]; then
+            echo "::error::Changes to '${PROTECTED_FOLDER}/' are only allowed from the sync bot."
+            echo ""
+            echo "The following files were modified:"
+            echo "${VIOLATIONS}"
+            echo ""
+            echo "This folder is managed automatically. Please do not modify it directly."
+            exit 1
+          fi
+
+          echo "No unauthorized changes to '${PROTECTED_FOLDER}/'."

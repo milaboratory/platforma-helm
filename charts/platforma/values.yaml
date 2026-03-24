@@ -472,6 +472,57 @@ jobServiceAccount:
   annotations: {}
 
 # =============================================================================
+# MIGRATION (from single-server installation)
+# =============================================================================
+# One-time migration from an existing Platforma server to this EKS deployment.
+# When enabled, init containers restore the database and sync primary storage
+# before Platforma starts.
+#
+# Prerequisites:
+#   1. Create database dump on source server (requires --debug-enabled):
+#      curl -s http://<source>:9091/db/state_raw | gzip > backup.gz
+#   2. Upload dump to an S3 bucket:
+#      aws s3 cp backup.gz s3://<bucket>/backup.gz
+#   3. Set migration values below and deploy
+#   4. After successful start, set migration.enabled: false and redeploy
+# =============================================================================
+
+migration:
+  # -- Enable migration init containers
+  enabled: false
+
+  # -- Image for S3 operations (download dump, sync storage)
+  awsCliImage:
+    repository: amazon/aws-cli
+    tag: "2.27.22"
+
+  # -- Database restore from gzipped dump
+  database:
+    # -- S3 URI to database dump (created via /db/state_raw endpoint)
+    s3Uri: ""  # e.g. s3://my-bucket/migration/backup.gz
+
+  # -- Primary storage sync (copy data from old S3 bucket to new one)
+  storageSync:
+    # -- Enable storage sync (disable if you already copied data manually)
+    enabled: false
+    # -- Source S3 bucket name
+    sourceBucket: ""
+    # -- Source prefix within the bucket
+    sourcePrefix: ""
+    # -- Source bucket region (defaults to chart's storage.main.s3.region)
+    sourceRegion: ""
+
+  # -- Credentials for accessing the source S3 bucket (database dump + old storage)
+  # These are used only during migration and can be removed after.
+  # Create the secret before deploying:
+  #   kubectl create secret generic platforma-migration-creds \
+  #     --from-literal=aws-access-key-id=AKIA... \
+  #     --from-literal=aws-secret-access-key=...
+  credentials:
+    # -- Name of existing secret with aws-access-key-id and aws-secret-access-key keys
+    secretName: ""
+
+# =============================================================================
 # JOB CONFIGURATION
 # =============================================================================
 

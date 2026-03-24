@@ -57,6 +57,15 @@ Metadata:
         Parameters:
           - S3BucketName
       - Label:
+          default: 'Migration (optional, one-time restore from existing server)'
+        Parameters:
+          - MigrationDatabaseS3Uri
+          - MigrationSourceBucket
+          - MigrationSourcePrefix
+          - MigrationSourceRegion
+          - MigrationAccessKey
+          - MigrationSecretKey
+      - Label:
           default: 'Data libraries (optional, up to 3 external read-only S3 buckets)'
         Parameters:
           - EnableDemoLibrary
@@ -108,6 +117,18 @@ Metadata:
         default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
       AuthMethod:
         default: 'Authentication method (htpasswd or ldap)'
+      MigrationDatabaseS3Uri:
+        default: 'Database dump S3 URI (e.g. s3://bucket/backup.gz)'
+      MigrationSourceBucket:
+        default: 'Source primary storage S3 bucket name'
+      MigrationSourcePrefix:
+        default: 'Source bucket prefix (leave empty for root)'
+      MigrationSourceRegion:
+        default: 'Source bucket region (leave empty = cluster region)'
+      MigrationAccessKey:
+        default: 'AWS access key for source bucket'
+      MigrationSecretKey:
+        default: 'AWS secret key for source bucket'
       EnableDemoLibrary:
         default: 'Enable MiLaboratories demo data library'
       DataLibrary1Name:
@@ -273,6 +294,53 @@ Parameters:
     Default: ''
     NoEcho: true
     Description: Password for the LDAP search user. Required when LdapSearchUser is set.
+
+  # --- Migration (from existing server) ---
+  MigrationDatabaseS3Uri:
+    Type: String
+    Default: ''
+    Description: >
+      S3 URI to the database dump file (e.g. s3://my-bucket/backup.gz).
+      Created on the source server: curl -s http://localhost:9091/db/state_raw | gzip > backup.gz
+      Leave empty to skip migration (fresh install).
+
+  MigrationSourceBucket:
+    Type: String
+    Default: ''
+    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
+    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
+    Description: >
+      Source S3 bucket for primary storage migration. Data will be synced
+      to the new bucket created by this stack. Leave empty to skip storage sync.
+
+  MigrationSourcePrefix:
+    Type: String
+    Default: ''
+    Description: Prefix within the source bucket. Leave empty for the bucket root.
+
+  MigrationSourceRegion:
+    Type: String
+    Default: ''
+    AllowedPattern: '^([a-z]{2}(-[a-z]+)+-\d{1,2})?$'
+    ConstraintDescription: 'Must be a valid AWS region or empty'
+    Description: >
+      Region of the source S3 bucket. Defaults to cluster region if empty.
+
+  MigrationAccessKey:
+    Type: String
+    Default: ''
+    AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
+    ConstraintDescription: 'Must be a valid AWS access key ID or empty'
+    Description: >
+      AWS access key for the source S3 bucket (database dump and primary storage).
+      Required if the source bucket is in a different AWS account.
+
+  MigrationSecretKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >
+      AWS secret key for the source S3 bucket. Required when MigrationAccessKey is set.
 
   # --- Data libraries ---
   EnableDemoLibrary:
@@ -2347,6 +2415,18 @@ Resources:
             Value: !Ref DataLibrary3AccessKey
           - Name: DATA_LIBRARY_3_SECRET_KEY
             Value: !Ref DataLibrary3SecretKey
+          - Name: MIGRATION_DATABASE_S3_URI
+            Value: !Ref MigrationDatabaseS3Uri
+          - Name: MIGRATION_SOURCE_BUCKET
+            Value: !Ref MigrationSourceBucket
+          - Name: MIGRATION_SOURCE_PREFIX
+            Value: !Ref MigrationSourcePrefix
+          - Name: MIGRATION_SOURCE_REGION
+            Value: !Ref MigrationSourceRegion
+          - Name: MIGRATION_ACCESS_KEY
+            Value: !Ref MigrationAccessKey
+          - Name: MIGRATION_SECRET_KEY
+            Value: !Ref MigrationSecretKey
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2689,6 +2769,39 @@ Resources:
                     fi
                   fi
 
+                  # --- Migration values ---
+                  if [ -n "$MIGRATION_DATABASE_S3_URI" ]; then
+                    # Create migration credentials secret
+                    if [ -n "$MIGRATION_ACCESS_KEY" ]; then
+                      kubectl create secret generic platforma-migration-creds \
+                        -n $NAMESPACE \
+                        --from-literal=aws-access-key-id="$MIGRATION_ACCESS_KEY" \
+                        --from-literal=aws-secret-access-key="$MIGRATION_SECRET_KEY" \
+                        --dry-run=client -o yaml | kubectl apply -f -
+                    fi
+                    cat >> /tmp/platforma-values.yaml << MIGRATION_BLOCK
+                  migration:
+                    enabled: true
+                    database:
+                      s3Uri: "${MIGRATION_DATABASE_S3_URI}"
+                  MIGRATION_BLOCK
+                    if [ -n "$MIGRATION_ACCESS_KEY" ]; then
+                      cat >> /tmp/platforma-values.yaml << MIGRATION_CREDS
+                    credentials:
+                      secretName: platforma-migration-creds
+                  MIGRATION_CREDS
+                    fi
+                    if [ -n "$MIGRATION_SOURCE_BUCKET" ]; then
+                      cat >> /tmp/platforma-values.yaml << MIGRATION_SYNC
+                    storageSync:
+                      enabled: true
+                      sourceBucket: "${MIGRATION_SOURCE_BUCKET}"
+                      sourcePrefix: "${MIGRATION_SOURCE_PREFIX}"
+                      sourceRegion: "${MIGRATION_SOURCE_REGION}"
+                  MIGRATION_SYNC
+                    fi
+                  fi
+
                   if [ -n "$PLATFORMA_IMAGE" ]; then
                     IMG_REPO=$(echo "$PLATFORMA_IMAGE" | sed 's/:.*//')
                     IMG_TAG=$(echo "$PLATFORMA_IMAGE" | sed 's/.*://')
@@ -2699,11 +2812,17 @@ Resources:
                   IMAGE_BLOCK
                   fi
 
+                  # Increase timeout when migration is active (S3 sync can take hours)
+                  HELM_TIMEOUT="15m"
+                  if [ -n "$MIGRATION_DATABASE_S3_URI" ]; then
+                    HELM_TIMEOUT="120m"
+                  fi
+
                   helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
                     --version $PLATFORMA_VERSION \
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
-                    --atomic --timeout 15m
+                    --atomic --timeout $HELM_TIMEOUT
             post_build:
               commands:
                 - |

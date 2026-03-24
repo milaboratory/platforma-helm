@@ -75,6 +75,196 @@ spec:
       securityContext:
         fsGroup: 1010
         runAsNonRoot: true
+      {{- if .Values.migration.enabled }}
+      initContainers:
+        # ---------------------------------------------------------------
+        # Init 1: Download database dump from S3
+        # ---------------------------------------------------------------
+        {{- if .Values.migration.database.s3Uri }}
+        - name: download-dump
+          image: "{{ .Values.migration.awsCliImage.repository }}:{{ .Values.migration.awsCliImage.tag }}"
+          securityContext:
+            runAsUser: 1010
+            runAsGroup: 1010
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              MARKER="/data/main/.migration-complete"
+              if [ -f "$MARKER" ]; then
+                echo "Migration already completed (marker exists), skipping download"
+                exit 0
+              fi
+              echo "Downloading database dump from {{ .Values.migration.database.s3Uri }}..."
+              aws s3 cp "{{ .Values.migration.database.s3Uri }}" /tmp/migration/backup.gz
+              echo "Download complete"
+          {{- if .Values.migration.credentials.secretName }}
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.credentials.secretName }}
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.credentials.secretName }}
+                  key: aws-secret-access-key
+          {{- end }}
+          volumeMounts:
+            - name: main-storage
+              mountPath: /data/main
+            - name: migration-tmp
+              mountPath: /tmp/migration
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+        # ---------------------------------------------------------------
+        # Init 2: Restore database using Platforma --restore-db
+        # ---------------------------------------------------------------
+        - name: restore-database
+          image: {{ include "platforma.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: 1010
+            runAsGroup: 1010
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              MARKER="/data/main/.migration-complete"
+              if [ -f "$MARKER" ]; then
+                echo "Migration already completed (marker exists), skipping restore"
+                exit 0
+              fi
+              echo "Restoring database..."
+              platforma --restore-db=/tmp/migration/backup.gz --db-dir={{ include "platforma.path.database" . }} --force
+              echo "Database restored"
+          env:
+            - name: PL_LICENSE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.secretName }}
+                  key: {{ .Values.license.secretKey }}
+          volumeMounts:
+            - name: database
+              mountPath: {{ include "platforma.path.database" . }}
+            - name: main-storage
+              mountPath: /data/main
+            - name: migration-tmp
+              mountPath: /tmp/migration
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+        # ---------------------------------------------------------------
+        # Init 3: Invalidate caches (required after restore)
+        # ---------------------------------------------------------------
+        - name: invalidate-caches
+          image: {{ include "platforma.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: 1010
+            runAsGroup: 1010
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              MARKER="/data/main/.migration-complete"
+              if [ -f "$MARKER" ]; then
+                echo "Migration already completed (marker exists), skipping invalidation"
+                exit 0
+              fi
+              echo "Invalidating caches..."
+              platforma --invalidate-caches --main-root=/data/main --db-dir={{ include "platforma.path.database" . }}
+              echo "Caches invalidated"
+              date -u > "$MARKER"
+              echo "Migration marker written"
+          env:
+            - name: PL_LICENSE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.secretName }}
+                  key: {{ .Values.license.secretKey }}
+          volumeMounts:
+            - name: database
+              mountPath: {{ include "platforma.path.database" . }}
+            - name: main-storage
+              mountPath: /data/main
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+        {{- end }}
+        # ---------------------------------------------------------------
+        # Init 4: Sync primary storage from old S3 bucket
+        # ---------------------------------------------------------------
+        {{- if .Values.migration.storageSync.enabled }}
+        - name: sync-storage
+          image: "{{ .Values.migration.awsCliImage.repository }}:{{ .Values.migration.awsCliImage.tag }}"
+          securityContext:
+            runAsUser: 1010
+            runAsGroup: 1010
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              SOURCE="s3://{{ .Values.migration.storageSync.sourceBucket }}/{{ .Values.migration.storageSync.sourcePrefix }}"
+              DEST="s3://{{ .Values.storage.main.s3.bucket }}/{{ .Values.storage.main.s3.prefix }}"
+              SOURCE_REGION="{{ .Values.migration.storageSync.sourceRegion | default .Values.storage.main.s3.region }}"
+              DEST_REGION="{{ .Values.storage.main.s3.region }}"
+
+              echo "Syncing primary storage..."
+              echo "  Source: $SOURCE (region: $SOURCE_REGION)"
+              echo "  Dest:   $DEST (region: $DEST_REGION)"
+
+              aws s3 sync "$SOURCE" "$DEST" \
+                --source-region "$SOURCE_REGION" \
+                --region "$DEST_REGION" \
+                --no-progress
+
+              echo "Storage sync complete"
+          env:
+            {{- if .Values.migration.credentials.secretName }}
+            # Source bucket credentials
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.credentials.secretName }}
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.credentials.secretName }}
+                  key: aws-secret-access-key
+            {{- end }}
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 4Gi
+        {{- end }}
+      {{- end }}
       containers:
         - name: platforma
           image: {{ include "platforma.image" . }}
@@ -387,6 +577,11 @@ spec:
             claimName: {{ include "platforma.workspacePvcName" . }}
         - name: main-storage
           emptyDir: {}
+        {{- if .Values.migration.enabled }}
+        - name: migration-tmp
+          emptyDir:
+            sizeLimit: 10Gi
+        {{- end }}
         - name: job-templates
           configMap:
             name: {{ include "platforma.fullname" . }}-job-template

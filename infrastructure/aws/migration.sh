@@ -28,7 +28,7 @@ wait_pod() {
   kubectl wait pod/"$name" -n "$NAMESPACE" --for=condition=Ready --timeout=120s 2>/dev/null || true
   kubectl logs -f "$name" -n "$NAMESPACE" || true
   kubectl wait pod/"$name" -n "$NAMESPACE" --for=jsonpath='{.status.phase}'=Succeeded --timeout="${timeout}s"
-  kubectl delete pod/"$name" -n "$NAMESPACE"
+  kubectl delete pod/"$name" -n "$NAMESPACE" --ignore-not-found
   echo "  Pod $name completed"
 }
 

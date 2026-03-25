@@ -104,6 +104,8 @@ spec:
     - name: db
       persistentVolumeClaim:
         claimName: ${PVC}
+    - name: main
+      emptyDir: {}
   containers:
     - name: ${name}
       image: ${PL_IMG}
@@ -120,6 +122,8 @@ ${indented_script}
       volumeMounts:
         - name: db
           mountPath: ${DB_DIR}
+        - name: main
+          mountPath: /data/main
 ENDPOD
 }
 

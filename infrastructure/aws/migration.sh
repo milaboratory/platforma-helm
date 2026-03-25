@@ -9,6 +9,11 @@ if [ -z "${MIGRATION_DATABASE_S3_URI:-}" ]; then
   exit 0
 fi
 
+if [ -z "${PLATFORMA_IMAGE:-}" ] && [ -z "${PLATFORMA_VERSION:-}" ]; then
+  echo "ERROR: PLATFORMA_IMAGE or PLATFORMA_VERSION must be set"
+  exit 1
+fi
+
 echo "=== Platforma data migration ==="
 
 PVC="platforma-database"

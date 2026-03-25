@@ -254,6 +254,8 @@ Parameters:
     NoEcho: true
     Description: >
       htpasswd file content (one line per user, e.g. "user:$apr1$...").
+      Supports up to ~45 users due to CloudFormation parameter size limit (4096 chars).
+      For more users, create the 'platforma-htpasswd' secret manually and restart the backend.
       When empty and AuthMethod=htpasswd, a random users password is auto-generated
       and stored in SSM Parameter Store (see outputs).
       Generate manually with: htpasswd -nB username
@@ -2608,6 +2610,9 @@ Resources:
                     --dry-run=client -o yaml | kubectl apply -f -
 
                   if [ "$AUTH_METHOD" = "htpasswd" ]; then
+                    # CloudFormation console collapses multiline input to spaces;
+                    # htpasswd entries never contain spaces, so restore newlines.
+                    HTPASSWD_CONTENT=$(echo "$HTPASSWD_CONTENT" | tr ' ' '\n')
                     if [ -z "$HTPASSWD_CONTENT" ]; then
                       EXISTING=$(aws ssm get-parameter \
                         --name "/${CLUSTER_NAME}/platforma/users-password" \

@@ -75,14 +75,15 @@ spec:
       securityContext:
         fsGroup: 1010
         runAsNonRoot: true
-      {{- if .Values.migration.enabled }}
+      {{- $dbPath := include "platforma.path.database" . -}}
+      {{- if and .Values.dataMigration.enabled (or .Values.dataMigration.database.s3Uri .Values.dataMigration.storageSync.enabled) }}
       initContainers:
         # ---------------------------------------------------------------
         # Init 1: Download database dump from S3
         # ---------------------------------------------------------------
-        {{- if .Values.migration.database.s3Uri }}
+        {{- if .Values.dataMigration.database.s3Uri }}
         - name: download-dump
-          image: "{{ .Values.migration.awsCliImage.repository }}:{{ .Values.migration.awsCliImage.tag }}"
+          image: "{{ .Values.dataMigration.awsCliImage.repository }}:{{ .Values.dataMigration.awsCliImage.tag }}"
           securityContext:
             runAsUser: 1010
             runAsGroup: 1010
@@ -93,30 +94,32 @@ spec:
             - /bin/sh
             - -ec
             - |
-              MARKER="/data/main/.migration-complete"
+              MARKER="${DB_DIR}/.migration-complete"
               if [ -f "$MARKER" ]; then
-                echo "Migration already completed (marker exists), skipping download"
+                echo "Import already completed (marker exists), skipping download"
                 exit 0
               fi
-              echo "Downloading database dump from {{ .Values.migration.database.s3Uri }}..."
-              aws s3 cp "{{ .Values.migration.database.s3Uri }}" /tmp/migration/backup.gz
+              echo "Downloading database dump from {{ .Values.dataMigration.database.s3Uri }}..."
+              aws s3 cp "{{ .Values.dataMigration.database.s3Uri }}" /tmp/migration/backup.gz
               echo "Download complete"
-          {{- if .Values.migration.credentials.secretName }}
           env:
+            - name: DB_DIR
+              value: {{ $dbPath }}
+            {{- if .Values.dataMigration.database.credentialsSecret }}
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.migration.credentials.secretName }}
+                  name: {{ .Values.dataMigration.database.credentialsSecret }}
                   key: aws-access-key-id
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.migration.credentials.secretName }}
+                  name: {{ .Values.dataMigration.database.credentialsSecret }}
                   key: aws-secret-access-key
-          {{- end }}
+            {{- end }}
           volumeMounts:
-            - name: main-storage
-              mountPath: /data/main
+            - name: database
+              mountPath: {{ $dbPath }}
             - name: migration-tmp
               mountPath: /tmp/migration
           resources:
@@ -141,15 +144,17 @@ spec:
             - /bin/sh
             - -ec
             - |
-              MARKER="/data/main/.migration-complete"
+              MARKER="${DB_DIR}/.migration-complete"
               if [ -f "$MARKER" ]; then
-                echo "Migration already completed (marker exists), skipping restore"
+                echo "Import already completed (marker exists), skipping restore"
                 exit 0
               fi
               echo "Restoring database..."
-              platforma --restore-db=/tmp/migration/backup.gz --db-dir={{ include "platforma.path.database" . }} --force
+              platforma --restore-db=/tmp/migration/backup.gz --db-dir="${DB_DIR}" --force
               echo "Database restored"
           env:
+            - name: DB_DIR
+              value: {{ $dbPath }}
             - name: PL_LICENSE
               valueFrom:
                 secretKeyRef:
@@ -157,7 +162,7 @@ spec:
                   key: {{ .Values.license.secretKey }}
           volumeMounts:
             - name: database
-              mountPath: {{ include "platforma.path.database" . }}
+              mountPath: {{ $dbPath }}
             - name: main-storage
               mountPath: /data/main
             - name: migration-tmp
@@ -169,7 +174,70 @@ spec:
             limits:
               memory: 2Gi
         # ---------------------------------------------------------------
-        # Init 3: Invalidate caches (required after restore)
+        # Init 3: Sync primary storage from old S3 bucket
+        # (must complete before cache invalidation)
+        # ---------------------------------------------------------------
+        {{- if .Values.dataMigration.storageSync.enabled }}
+        - name: sync-storage
+          image: "{{ .Values.dataMigration.awsCliImage.repository }}:{{ .Values.dataMigration.awsCliImage.tag }}"
+          securityContext:
+            runAsUser: 1010
+            runAsGroup: 1010
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              MARKER="${DB_DIR}/.migration-complete"
+              if [ -f "$MARKER" ]; then
+                echo "Import already completed (marker exists), skipping sync"
+                exit 0
+              fi
+
+              SOURCE="s3://{{ .Values.dataMigration.storageSync.sourceBucket }}/{{ .Values.dataMigration.storageSync.sourcePrefix }}"
+              DEST="s3://{{ .Values.storage.main.s3.bucket }}/{{ .Values.storage.main.s3.prefix }}"
+              SOURCE_REGION="{{ .Values.dataMigration.storageSync.sourceRegion | default .Values.storage.main.s3.region }}"
+              DEST_REGION="{{ .Values.storage.main.s3.region }}"
+
+              echo "Syncing primary storage..."
+              echo "  Source: $SOURCE (region: $SOURCE_REGION)"
+              echo "  Dest:   $DEST (region: $DEST_REGION)"
+
+              aws s3 sync "$SOURCE" "$DEST" \
+                --source-region "$SOURCE_REGION" \
+                --region "$DEST_REGION" \
+                --no-progress
+
+              echo "Storage sync complete"
+          env:
+            - name: DB_DIR
+              value: {{ $dbPath }}
+            {{- if .Values.dataMigration.storageSync.credentialsSecret }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dataMigration.storageSync.credentialsSecret }}
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dataMigration.storageSync.credentialsSecret }}
+                  key: aws-secret-access-key
+            {{- end }}
+          volumeMounts:
+            - name: database
+              mountPath: {{ $dbPath }}
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 4Gi
+        {{- end }}
+        # ---------------------------------------------------------------
+        # Init 4: Invalidate caches (after storage sync, before start)
         # ---------------------------------------------------------------
         - name: invalidate-caches
           image: {{ include "platforma.image" . }}
@@ -184,17 +252,19 @@ spec:
             - /bin/sh
             - -ec
             - |
-              MARKER="/data/main/.migration-complete"
+              MARKER="${DB_DIR}/.migration-complete"
               if [ -f "$MARKER" ]; then
-                echo "Migration already completed (marker exists), skipping invalidation"
+                echo "Import already completed (marker exists), skipping invalidation"
                 exit 0
               fi
               echo "Invalidating caches..."
-              platforma --invalidate-caches --main-root=/data/main --db-dir={{ include "platforma.path.database" . }}
+              platforma --invalidate-caches --main-root=/data/main --db-dir="${DB_DIR}"
               echo "Caches invalidated"
               date -u > "$MARKER"
-              echo "Migration marker written"
+              echo "Import marker written"
           env:
+            - name: DB_DIR
+              value: {{ $dbPath }}
             - name: PL_LICENSE
               valueFrom:
                 secretKeyRef:
@@ -202,7 +272,7 @@ spec:
                   key: {{ .Values.license.secretKey }}
           volumeMounts:
             - name: database
-              mountPath: {{ include "platforma.path.database" . }}
+              mountPath: {{ $dbPath }}
             - name: main-storage
               mountPath: /data/main
           resources:
@@ -211,58 +281,6 @@ spec:
               memory: 512Mi
             limits:
               memory: 2Gi
-        {{- end }}
-        # ---------------------------------------------------------------
-        # Init 4: Sync primary storage from old S3 bucket
-        # ---------------------------------------------------------------
-        {{- if .Values.migration.storageSync.enabled }}
-        - name: sync-storage
-          image: "{{ .Values.migration.awsCliImage.repository }}:{{ .Values.migration.awsCliImage.tag }}"
-          securityContext:
-            runAsUser: 1010
-            runAsGroup: 1010
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          command:
-            - /bin/sh
-            - -ec
-            - |
-              SOURCE="s3://{{ .Values.migration.storageSync.sourceBucket }}/{{ .Values.migration.storageSync.sourcePrefix }}"
-              DEST="s3://{{ .Values.storage.main.s3.bucket }}/{{ .Values.storage.main.s3.prefix }}"
-              SOURCE_REGION="{{ .Values.migration.storageSync.sourceRegion | default .Values.storage.main.s3.region }}"
-              DEST_REGION="{{ .Values.storage.main.s3.region }}"
-
-              echo "Syncing primary storage..."
-              echo "  Source: $SOURCE (region: $SOURCE_REGION)"
-              echo "  Dest:   $DEST (region: $DEST_REGION)"
-
-              aws s3 sync "$SOURCE" "$DEST" \
-                --source-region "$SOURCE_REGION" \
-                --region "$DEST_REGION" \
-                --no-progress
-
-              echo "Storage sync complete"
-          env:
-            {{- if .Values.migration.credentials.secretName }}
-            # Source bucket credentials
-            - name: AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.migration.credentials.secretName }}
-                  key: aws-access-key-id
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.migration.credentials.secretName }}
-                  key: aws-secret-access-key
-            {{- end }}
-          resources:
-            requests:
-              cpu: 500m
-              memory: 512Mi
-            limits:
-              memory: 4Gi
         {{- end }}
       {{- end }}
       containers:
@@ -577,10 +595,10 @@ spec:
             claimName: {{ include "platforma.workspacePvcName" . }}
         - name: main-storage
           emptyDir: {}
-        {{- if .Values.migration.enabled }}
+        {{- if and .Values.dataMigration.enabled .Values.dataMigration.database.s3Uri }}
         - name: migration-tmp
           emptyDir:
-            sizeLimit: 10Gi
+            sizeLimit: 30Gi
         {{- end }}
         - name: job-templates
           configMap:

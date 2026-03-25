@@ -126,6 +126,28 @@ ENDPOD
 # Ensure namespace exists
 kubectl create namespace "$NAMESPACE" 2>/dev/null || true
 
+# Ensure gp3 storage class exists (helm chart creates it, but hasn't run yet)
+if ! kubectl get sc gp3 2>/dev/null; then
+  echo "Creating gp3 storage class..."
+  kubectl apply -f - <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  labels:
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: platforma
+    meta.helm.sh/release-namespace: ${NAMESPACE}
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+EOF
+fi
+
 # Ensure database PVC exists with Helm labels
 if ! kubectl get pvc "$PVC" -n "$NAMESPACE" 2>/dev/null; then
   echo "Creating database PVC..."

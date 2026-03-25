@@ -2490,9 +2490,6 @@ Resources:
                     --dry-run=client -o yaml | kubectl apply -f -
 
                   if [ "$AUTH_METHOD" = "htpasswd" ]; then
-                    # CloudFormation console collapses multiline input to spaces;
-                    # htpasswd entries never contain spaces, so restore newlines.
-                    HTPASSWD_CONTENT=$(echo "$HTPASSWD_CONTENT" | tr ' ' '\n')
                     if [ -z "$HTPASSWD_CONTENT" ]; then
                       EXISTING=$(aws ssm get-parameter \
                         --name "/${CLUSTER_NAME}/platforma/users-password" \
@@ -2513,10 +2510,14 @@ Resources:
                       fi
                       HTPASSWD_CONTENT="platforma:$(openssl passwd -apr1 "$USERS_PASSWORD")"
                     fi
+                    # CloudFormation console collapses multiline input to spaces;
+                    # htpasswd entries never contain spaces, so restore newlines.
+                    echo "$HTPASSWD_CONTENT" | tr ' ' '\n' > /tmp/htpasswd
                     kubectl create secret generic platforma-htpasswd \
                       -n $NAMESPACE \
-                      --from-literal=htpasswd="$HTPASSWD_CONTENT" \
+                      --from-file=htpasswd=/tmp/htpasswd \
                       --dry-run=client -o yaml | kubectl apply -f -
+                    rm -f /tmp/htpasswd
                   fi
                   # Build dataSources for configured data libraries
                   DATASOURCES_YAML=""

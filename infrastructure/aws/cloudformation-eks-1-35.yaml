@@ -67,6 +67,7 @@ Metadata:
           - MigrationSourceRegion
           - MigrationStorageAccessKey
           - MigrationStorageSecretKey
+          - MigrationStorageUserArn
       - Label:
           default: 'Data libraries (optional, up to 3 external read-only S3 buckets)'
         Parameters:
@@ -135,6 +136,8 @@ Metadata:
         default: 'AWS access key for source primary storage bucket'
       MigrationStorageSecretKey:
         default: 'AWS secret key for source primary storage bucket'
+      MigrationStorageUserArn:
+        default: 'IAM ARN for cross-account write access to destination bucket'
       EnableDemoLibrary:
         default: 'Enable MiLaboratories demo data library'
       DataLibrary1Name:
@@ -363,6 +366,16 @@ Parameters:
     NoEcho: true
     Description: >
       AWS secret key for the source primary storage S3 bucket.
+
+  MigrationStorageUserArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(arn:aws:iam::\d{12}:(user|role)/[a-zA-Z0-9_./@-]+)?$'
+    ConstraintDescription: 'Must be a valid IAM user or role ARN, or empty'
+    Description: >
+      IAM ARN of the user/role that will sync data to the new S3 bucket.
+      Required for cross-account migration — grants write access on the
+      destination bucket. Example: arn:aws:iam::123456789012:user/migration-user
 
   # --- Data libraries ---
   EnableDemoLibrary:
@@ -676,6 +689,7 @@ Conditions:
   HasLibrary3Irsa: !And
     - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
     - !Equals [!Ref DataLibrary3AccessKey, '']
+  HasMigrationStorageUserArn: !Not [!Equals [!Ref MigrationStorageUserArn, '']]
   UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
   IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
   SystemAZa: !Equals [!Ref SystemNodeAZ, 'a']
@@ -2795,49 +2809,181 @@ Resources:
                     fi
                   fi
 
-                  # --- Migration values ---
+                  # --- Data migration (runs before helm install) ---
                   if [ -n "$MIGRATION_DATABASE_S3_URI" ]; then
-                    # Create database dump credentials secret
+                    echo "=== Data migration: restoring from existing installation ==="
+                    PVC_NAME="platforma-database"
+                    DB_DIR="/data/database"
+                    MARKER_FILE="${DB_DIR}/.migration-complete"
+                    PLATFORMA_IMG="${PLATFORMA_IMAGE:-quay.io/milaboratories/platforma:${PLATFORMA_VERSION}}"
+                    AWS_CLI_IMG="amazon/aws-cli:2.27.22"
+
+                    # Ensure the database PVC exists (helm hasn't run yet)
+                    kubectl get pvc $PVC_NAME -n $NAMESPACE 2>/dev/null || \
+                      kubectl apply -n $NAMESPACE -f - <<PVC_YAML
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: $PVC_NAME
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    storageClassName: gp3
+                    resources:
+                      requests:
+                        storage: 50Gi
+                  PVC_YAML
+
+                    # Create credentials secrets
+                    DB_ENV_ARGS=""
                     if [ -n "$MIGRATION_DB_ACCESS_KEY" ]; then
                       kubectl create secret generic platforma-migration-db-creds \
                         -n $NAMESPACE \
                         --from-literal=aws-access-key-id="$MIGRATION_DB_ACCESS_KEY" \
                         --from-literal=aws-secret-access-key="$MIGRATION_DB_SECRET_KEY" \
                         --dry-run=client -o yaml | kubectl apply -f -
+                      DB_ENV_ARGS="--env=AWS_ACCESS_KEY_ID=$MIGRATION_DB_ACCESS_KEY --env=AWS_SECRET_ACCESS_KEY=$MIGRATION_DB_SECRET_KEY"
                     fi
-                    cat >> /tmp/platforma-values.yaml << MIGRATION_BLOCK
-                  dataMigration:
-                    enabled: true
-                    database:
-                      s3Uri: "${MIGRATION_DATABASE_S3_URI}"
-                  MIGRATION_BLOCK
-                    if [ -n "$MIGRATION_DB_ACCESS_KEY" ]; then
-                      cat >> /tmp/platforma-values.yaml << MIGRATION_DB_CREDS
-                      credentialsSecret: platforma-migration-db-creds
-                  MIGRATION_DB_CREDS
+
+                    STORAGE_ENV_ARGS=""
+                    if [ -n "$MIGRATION_STORAGE_ACCESS_KEY" ]; then
+                      STORAGE_ENV_ARGS="--env=AWS_ACCESS_KEY_ID=$MIGRATION_STORAGE_ACCESS_KEY --env=AWS_SECRET_ACCESS_KEY=$MIGRATION_STORAGE_SECRET_KEY"
                     fi
+
+                    # Step 1: Download database dump
+                    echo "--- Step 1/4: Downloading database dump ---"
+                    kubectl run migration-download \
+                      -n $NAMESPACE \
+                      --image=$AWS_CLI_IMG \
+                      --restart=Never \
+                      --overrides='{
+                        "spec": {
+                          "securityContext": {"fsGroup": 1010, "runAsUser": 1010, "runAsGroup": 1010},
+                          "containers": [{
+                            "name": "migration-download",
+                            "image": "'$AWS_CLI_IMG'",
+                            "command": ["/bin/sh", "-ec",
+                              "if [ -f '$MARKER_FILE' ]; then echo Migration already done; exit 0; fi; echo Downloading...; aws s3 cp '$MIGRATION_DATABASE_S3_URI' '$DB_DIR'/backup.gz; echo Done"],
+                            "volumeMounts": [{"name": "database", "mountPath": "'$DB_DIR'"}]
+                            '$( [ -n "$MIGRATION_DB_ACCESS_KEY" ] && echo ",\"env\": [{\"name\":\"AWS_ACCESS_KEY_ID\",\"value\":\"$MIGRATION_DB_ACCESS_KEY\"},{\"name\":\"AWS_SECRET_ACCESS_KEY\",\"value\":\"$MIGRATION_DB_SECRET_KEY\"}]" )'
+                          }],
+                          "volumes": [{"name": "database", "persistentVolumeClaim": {"claimName": "'$PVC_NAME'"}}],
+                          "restartPolicy": "Never"
+                        }
+                      }' \
+                      -- /bin/sh -c "true"
+                    kubectl wait pod/migration-download -n $NAMESPACE --for=condition=Ready --timeout=60s 2>/dev/null || true
+                    kubectl logs -f migration-download -n $NAMESPACE
+                    kubectl wait pod/migration-download -n $NAMESPACE --for=jsonpath='{.status.phase}'=Succeeded --timeout=600s
+                    kubectl delete pod migration-download -n $NAMESPACE
+
+                    # Step 2: Restore database
+                    echo "--- Step 2/4: Restoring database ---"
+                    kubectl run migration-restore \
+                      -n $NAMESPACE \
+                      --image=$PLATFORMA_IMG \
+                      --restart=Never \
+                      --overrides='{
+                        "spec": {
+                          "securityContext": {"fsGroup": 1010, "runAsUser": 1010, "runAsGroup": 1010},
+                          "containers": [{
+                            "name": "migration-restore",
+                            "image": "'$PLATFORMA_IMG'",
+                            "command": ["/bin/sh", "-ec",
+                              "if [ -f '$MARKER_FILE' ]; then echo Migration already done; exit 0; fi; echo Restoring database...; platforma --restore-db='$DB_DIR'/backup.gz --db-dir='$DB_DIR' --force; echo Database restored"],
+                            "env": [{"name": "PL_LICENSE", "valueFrom": {"secretKeyRef": {"name": "platforma-license", "key": "MI_LICENSE"}}}],
+                            "volumeMounts": [{"name": "database", "mountPath": "'$DB_DIR'"}]
+                          }],
+                          "volumes": [{"name": "database", "persistentVolumeClaim": {"claimName": "'$PVC_NAME'"}}],
+                          "restartPolicy": "Never"
+                        }
+                      }' \
+                      -- /bin/sh -c "true"
+                    kubectl wait pod/migration-restore -n $NAMESPACE --for=condition=Ready --timeout=120s 2>/dev/null || true
+                    kubectl logs -f migration-restore -n $NAMESPACE
+                    kubectl wait pod/migration-restore -n $NAMESPACE --for=jsonpath='{.status.phase}'=Succeeded --timeout=1800s
+                    kubectl delete pod migration-restore -n $NAMESPACE
+
+                    # Step 3: Sync primary storage (if configured)
                     if [ -n "$MIGRATION_SOURCE_BUCKET" ]; then
-                      # Create storage credentials secret
-                      if [ -n "$MIGRATION_STORAGE_ACCESS_KEY" ]; then
-                        kubectl create secret generic platforma-migration-storage-creds \
-                          -n $NAMESPACE \
-                          --from-literal=aws-access-key-id="$MIGRATION_STORAGE_ACCESS_KEY" \
-                          --from-literal=aws-secret-access-key="$MIGRATION_STORAGE_SECRET_KEY" \
-                          --dry-run=client -o yaml | kubectl apply -f -
-                      fi
-                      cat >> /tmp/platforma-values.yaml << MIGRATION_SYNC
-                    storageSync:
-                      enabled: true
-                      sourceBucket: "${MIGRATION_SOURCE_BUCKET}"
-                      sourcePrefix: "${MIGRATION_SOURCE_PREFIX}"
-                      sourceRegion: "${MIGRATION_SOURCE_REGION}"
-                  MIGRATION_SYNC
-                      if [ -n "$MIGRATION_STORAGE_ACCESS_KEY" ]; then
-                        cat >> /tmp/platforma-values.yaml << MIGRATION_STORAGE_CREDS
-                      credentialsSecret: platforma-migration-storage-creds
-                  MIGRATION_STORAGE_CREDS
-                      fi
+                      echo "--- Step 3/4: Syncing primary storage ---"
+                      SOURCE_REGION="${MIGRATION_SOURCE_REGION:-$REGION}"
+                      kubectl run migration-sync \
+                        -n $NAMESPACE \
+                        --image=$AWS_CLI_IMG \
+                        --restart=Never \
+                        --overrides='{
+                          "spec": {
+                            "securityContext": {"fsGroup": 1010, "runAsUser": 1010, "runAsGroup": 1010},
+                            "containers": [{
+                              "name": "migration-sync",
+                              "image": "'$AWS_CLI_IMG'",
+                              "command": ["/bin/sh", "-ec",
+                                "echo Syncing s3://'$MIGRATION_SOURCE_BUCKET'/'$MIGRATION_SOURCE_PREFIX' to s3://'$S3_BUCKET'/...; aws s3 sync s3://'$MIGRATION_SOURCE_BUCKET'/'$MIGRATION_SOURCE_PREFIX' s3://'$S3_BUCKET'/ --source-region '$SOURCE_REGION' --region '$REGION' --no-progress; echo Sync complete"]
+                              '$( [ -n "$MIGRATION_STORAGE_ACCESS_KEY" ] && echo ",\"env\": [{\"name\":\"AWS_ACCESS_KEY_ID\",\"value\":\"$MIGRATION_STORAGE_ACCESS_KEY\"},{\"name\":\"AWS_SECRET_ACCESS_KEY\",\"value\":\"$MIGRATION_STORAGE_SECRET_KEY\"}]" )'
+                            }],
+                            "restartPolicy": "Never"
+                          }
+                        }' \
+                        -- /bin/sh -c "true"
+                      kubectl wait pod/migration-sync -n $NAMESPACE --for=condition=Ready --timeout=60s 2>/dev/null || true
+                      kubectl logs -f migration-sync -n $NAMESPACE
+                      kubectl wait pod/migration-sync -n $NAMESPACE --for=jsonpath='{.status.phase}'=Succeeded --timeout=86400s
+                      kubectl delete pod migration-sync -n $NAMESPACE
+                    else
+                      echo "--- Step 3/4: Skipping storage sync (no source bucket) ---"
                     fi
+
+                    # Step 4: Invalidate caches
+                    echo "--- Step 4/4: Invalidating caches ---"
+                    kubectl run migration-invalidate \
+                      -n $NAMESPACE \
+                      --image=$PLATFORMA_IMG \
+                      --restart=Never \
+                      --overrides='{
+                        "spec": {
+                          "securityContext": {"fsGroup": 1010, "runAsUser": 1010, "runAsGroup": 1010},
+                          "containers": [{
+                            "name": "migration-invalidate",
+                            "image": "'$PLATFORMA_IMG'",
+                            "command": ["/bin/sh", "-ec",
+                              "if [ -f '$MARKER_FILE' ]; then echo Migration already done; exit 0; fi; echo Invalidating caches...; platforma --invalidate-caches --main-root=/data/main --db-dir='$DB_DIR'; date -u > '$MARKER_FILE'; echo Caches invalidated; echo Migration complete"],
+                            "env": [{"name": "PL_LICENSE", "valueFrom": {"secretKeyRef": {"name": "platforma-license", "key": "MI_LICENSE"}}}],
+                            "volumeMounts": [{"name": "database", "mountPath": "'$DB_DIR'"}]
+                          }],
+                          "volumes": [{"name": "database", "persistentVolumeClaim": {"claimName": "'$PVC_NAME'"}}],
+                          "restartPolicy": "Never"
+                        }
+                      }' \
+                      -- /bin/sh -c "true"
+                    kubectl wait pod/migration-invalidate -n $NAMESPACE --for=condition=Ready --timeout=120s 2>/dev/null || true
+                    kubectl logs -f migration-invalidate -n $NAMESPACE
+                    kubectl wait pod/migration-invalidate -n $NAMESPACE --for=jsonpath='{.status.phase}'=Succeeded --timeout=1800s
+                    kubectl delete pod migration-invalidate -n $NAMESPACE
+
+                    # Clean up dump file
+                    echo "--- Cleaning up dump file ---"
+                    kubectl run migration-cleanup \
+                      -n $NAMESPACE \
+                      --image=$AWS_CLI_IMG \
+                      --restart=Never \
+                      --overrides='{
+                        "spec": {
+                          "securityContext": {"fsGroup": 1010, "runAsUser": 1010, "runAsGroup": 1010},
+                          "containers": [{
+                            "name": "migration-cleanup",
+                            "image": "'$AWS_CLI_IMG'",
+                            "command": ["/bin/sh", "-ec", "rm -f '$DB_DIR'/backup.gz; echo Cleanup done"],
+                            "volumeMounts": [{"name": "database", "mountPath": "'$DB_DIR'"}]
+                          }],
+                          "volumes": [{"name": "database", "persistentVolumeClaim": {"claimName": "'$PVC_NAME'"}}],
+                          "restartPolicy": "Never"
+                        }
+                      }' \
+                      -- /bin/sh -c "true"
+                    kubectl wait pod/migration-cleanup -n $NAMESPACE --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
+                    kubectl delete pod migration-cleanup -n $NAMESPACE
+
+                    echo "=== Data migration complete ==="
                   fi
 
                   if [ -n "$PLATFORMA_IMAGE" ]; then
@@ -2850,17 +2996,11 @@ Resources:
                   IMAGE_BLOCK
                   fi
 
-                  # Increase timeout when migration is active (S3 sync can take hours)
-                  HELM_TIMEOUT="15m"
-                  if [ -n "$MIGRATION_DATABASE_S3_URI" ]; then
-                    HELM_TIMEOUT="120m"
-                  fi
-
                   helm upgrade --install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
                     --version $PLATFORMA_VERSION \
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
-                    --atomic --timeout $HELM_TIMEOUT
+                    --atomic --timeout 15m
             post_build:
               commands:
                 - |
@@ -3145,6 +3285,20 @@ Resources:
           # the previous deny-all-except-role pattern because it locked out
           # account administrators from cleanup after stack deletion
           # (the IRSA role is deleted with the stack, leaving no one with access).
+          - !If
+            - HasMigrationStorageUserArn
+            - Sid: AllowMigrationUserWrite
+              Effect: Allow
+              Principal:
+                AWS: !Ref MigrationStorageUserArn
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
+                - !GetAtt S3Bucket.Arn
+                - !Sub '${S3Bucket.Arn}/*'
+            - !Ref AWS::NoValue
 
   # ---------------------------------------------------------------------------
   # 8. ACM Certificate (DNS-validated via Route53)

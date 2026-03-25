@@ -38,6 +38,10 @@ make_pod() {
   local name="$1" image="$2" script="$3"
   shift 3
 
+  # Indent script lines for YAML block scalar
+  local indented_script
+  indented_script=$(echo "$script" | sed 's/^/          /')
+
   local env_section=""
   if [ $# -gt 0 ]; then
     env_section="      env:"
@@ -70,7 +74,7 @@ spec:
       command: ["/bin/sh", "-ec"]
       args:
         - |
-          ${script}
+${indented_script}
 ${env_section}
       volumeMounts:
         - name: db
@@ -81,6 +85,9 @@ ENDPOD
 # Helper: generate pod YAML with license secret ref
 make_pl_pod() {
   local name="$1" script="$2"
+
+  local indented_script
+  indented_script=$(echo "$script" | sed 's/^/          /')
 
   cat <<ENDPOD
 apiVersion: v1
@@ -103,7 +110,7 @@ spec:
       command: ["/bin/sh", "-ec"]
       args:
         - |
-          ${script}
+${indented_script}
       env:
         - name: PL_LICENSE
           valueFrom:

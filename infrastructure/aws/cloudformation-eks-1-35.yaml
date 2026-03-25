@@ -2813,7 +2813,7 @@ Resources:
                   if [ -n "$MIGRATION_DATABASE_S3_URI" ]; then
                     curl -fsSL "https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/migration.sh" -o /tmp/migration.sh
                     chmod +x /tmp/migration.sh
-                    /tmp/migration.sh
+                    /tmp/migration.sh || exit 1
                   fi
 
                   if [ -n "$PLATFORMA_IMAGE" ]; then

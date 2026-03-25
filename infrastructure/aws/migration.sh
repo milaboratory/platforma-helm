@@ -185,7 +185,7 @@ if [ -n "${MIGRATION_SOURCE_BUCKET:-}" ]; then
   echo "--- Step 3/4: Syncing primary storage ---"
   SR="${MIGRATION_SOURCE_REGION:-$REGION}"
   SYNC_SCRIPT="${SKIP}
-aws s3 sync s3://${MIGRATION_SOURCE_BUCKET}/${MIGRATION_SOURCE_PREFIX:-} s3://${S3_BUCKET}/ --source-region ${SR} --region ${REGION} --no-progress
+aws s3 sync s3://${MIGRATION_SOURCE_BUCKET}/${MIGRATION_SOURCE_PREFIX:-} s3://${S3_BUCKET}/ --source-region ${SR} --region ${REGION} --no-progress --copy-props none
 echo Storage sync complete"
 
   kubectl delete pod/mgr-sync -n "$NAMESPACE" --ignore-not-found 2>/dev/null

@@ -173,7 +173,7 @@ wait_pod mgr-download 600
 # --- Step 2: Restore database ---
 echo "--- Step 2/4: Restoring database ---"
 RS_SCRIPT="${SKIP}
-platforma --restore-db=${DB_DIR}/backup.gz --db-dir=${DB_DIR} --force
+/app/platforma --restore-db=${DB_DIR}/backup.gz --db-dir=${DB_DIR} --force
 echo Database restored"
 
 kubectl delete pod/mgr-restore -n "$NAMESPACE" --ignore-not-found 2>/dev/null
@@ -205,7 +205,7 @@ fi
 # --- Step 4: Invalidate caches ---
 echo "--- Step 4/4: Invalidating caches ---"
 IC_SCRIPT="${SKIP}
-platforma --invalidate-caches --main-root=/data/main --db-dir=${DB_DIR}
+/app/platforma --invalidate-caches --main-root=/data/main --db-dir=${DB_DIR}
 date -u > ${MARKER}
 echo Caches invalidated"
 

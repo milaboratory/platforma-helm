@@ -257,6 +257,11 @@ run_post_helm() {
   echo "--- Waiting for Platforma to be ready ---"
   kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=platforma -n "$NAMESPACE" --timeout=300s
 
+  # Scale down Platforma to release database PVC (RWO)
+  echo "--- Scaling down Platforma for cache invalidation ---"
+  kubectl scale deployment/platforma -n "$NAMESPACE" --replicas=0
+  kubectl wait --for=delete pod -l app.kubernetes.io/name=platforma -n "$NAMESPACE" --timeout=120s 2>/dev/null || true
+
   # Invalidate caches
   echo "--- Invalidating caches ---"
   IC_SCRIPT="${SKIP}
@@ -268,9 +273,9 @@ echo Caches invalidated"
   make_pl_pod mgr-invalidate "$IC_SCRIPT" | kubectl apply -n "$NAMESPACE" -f -
   wait_pod mgr-invalidate 1800
 
-  # Restart Platforma to pick up invalidated caches
-  echo "--- Restarting Platforma ---"
-  kubectl rollout restart deployment/platforma -n "$NAMESPACE"
+  # Scale Platforma back up
+  echo "--- Starting Platforma ---"
+  kubectl scale deployment/platforma -n "$NAMESPACE" --replicas=1
   kubectl rollout status deployment/platforma -n "$NAMESPACE" --timeout=300s
 
   echo "=== Migration fully complete ==="

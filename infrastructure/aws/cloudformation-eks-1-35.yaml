@@ -2814,11 +2814,11 @@ Resources:
                     fi
                   fi
 
-                  # --- Data migration (download script and run) ---
+                  # --- Data migration (pre-helm: download, restore, sync) ---
                   if [ -n "$MIGRATION_DATABASE_S3_URI" ]; then
                     curl -fsSL "https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/migration.sh" -o /tmp/migration.sh
                     chmod +x /tmp/migration.sh
-                    /tmp/migration.sh || exit 1
+                    /tmp/migration.sh pre-helm || exit 1
                   fi
 
                   if [ -n "$PLATFORMA_IMAGE" ]; then
@@ -2836,6 +2836,11 @@ Resources:
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
                     --atomic --timeout 15m
+
+                  # --- Data migration (post-helm: invalidate caches after migrations) ---
+                  if [ -n "$MIGRATION_DATABASE_S3_URI" ]; then
+                    /tmp/migration.sh post-helm || exit 1
+                  fi
             post_build:
               commands:
                 - |

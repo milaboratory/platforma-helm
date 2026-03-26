@@ -2,6 +2,11 @@
 # =============================================================================
 # Platforma data migration script
 # =============================================================================
+# Usage:
+#   migration.sh pre-helm    — download dump, restore DB, sync storage
+#   migration.sh post-helm   — invalidate caches, write marker, restart
+#   migration.sh             — run both phases (for standalone use)
+# =============================================================================
 set -euo pipefail
 
 if [ -z "${MIGRATION_DATABASE_S3_URI:-}" ]; then
@@ -14,8 +19,7 @@ if [ -z "${PLATFORMA_IMAGE:-}" ] && [ -z "${PLATFORMA_VERSION:-}" ]; then
   exit 1
 fi
 
-echo "=== Platforma data migration ==="
-
+PHASE="${1:-all}"
 PVC="platforma-database"
 DB_DIR="/data/database"
 MARKER="$DB_DIR/.migration-complete"
@@ -32,13 +36,11 @@ wait_pod() {
   echo "  Pod $name completed"
 }
 
-# Helper: generate pod YAML
-# Usage: make_pod <name> <image> <script> [<env_name1> <env_val1> <env_name2> <env_val2> ...]
+# Helper: generate pod YAML (aws-cli image, optional env vars)
 make_pod() {
   local name="$1" image="$2" script="$3"
   shift 3
 
-  # Indent script lines for YAML block scalar
   local indented_script
   indented_script=$(echo "$script" | sed 's/^/          /')
 
@@ -82,7 +84,7 @@ ${env_section}
 ENDPOD
 }
 
-# Helper: generate pod YAML with license secret ref
+# Helper: generate pod YAML (platforma image, license secret, +main emptyDir)
 make_pl_pod() {
   local name="$1" script="$2"
 
@@ -127,13 +129,21 @@ ${indented_script}
 ENDPOD
 }
 
-# Ensure namespace exists
-kubectl create namespace "$NAMESPACE" 2>/dev/null || true
+# =========================================================================
+# Phase: pre-helm (download, restore, sync, cleanup dump)
+# =========================================================================
+run_pre_helm() {
+  echo "=== Platforma data migration (pre-helm) ==="
 
-# Ensure gp3 storage class exists (helm chart creates it, but hasn't run yet)
-if ! kubectl get sc gp3 2>/dev/null; then
-  echo "Creating gp3 storage class..."
-  kubectl apply -f - <<EOF
+  SKIP="if [ -f ${MARKER} ]; then echo Already completed; exit 0; fi"
+
+  # Ensure namespace exists
+  kubectl create namespace "$NAMESPACE" 2>/dev/null || true
+
+  # Ensure gp3 storage class exists
+  if ! kubectl get sc gp3 2>/dev/null; then
+    echo "Creating gp3 storage class..."
+    kubectl apply -f - <<EOF
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -150,12 +160,12 @@ volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Delete
 allowVolumeExpansion: true
 EOF
-fi
+  fi
 
-# Ensure database PVC exists with Helm labels
-if ! kubectl get pvc "$PVC" -n "$NAMESPACE" 2>/dev/null; then
-  echo "Creating database PVC..."
-  kubectl apply -n "$NAMESPACE" -f - <<EOF
+  # Ensure database PVC exists with Helm labels
+  if ! kubectl get pvc "$PVC" -n "$NAMESPACE" 2>/dev/null; then
+    echo "Creating database PVC..."
+    kubectl apply -n "$NAMESPACE" -f - <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -172,77 +182,120 @@ spec:
     requests:
       storage: 50Gi
 EOF
-else
-  # Fix labels if PVC exists from a previous failed run
-  kubectl label pvc "$PVC" -n "$NAMESPACE" app.kubernetes.io/managed-by=Helm --overwrite 2>/dev/null || true
-  kubectl annotate pvc "$PVC" -n "$NAMESPACE" meta.helm.sh/release-name=platforma meta.helm.sh/release-namespace="$NAMESPACE" --overwrite 2>/dev/null || true
-fi
+  else
+    kubectl label pvc "$PVC" -n "$NAMESPACE" app.kubernetes.io/managed-by=Helm --overwrite 2>/dev/null || true
+    kubectl annotate pvc "$PVC" -n "$NAMESPACE" meta.helm.sh/release-name=platforma meta.helm.sh/release-namespace="$NAMESPACE" --overwrite 2>/dev/null || true
+  fi
 
-# --- Step 1: Download database dump ---
-echo "--- Step 1/4: Downloading database dump ---"
-SKIP="if [ -f ${MARKER} ]; then echo Already completed; exit 0; fi"
-DL_SCRIPT="${SKIP}
+  # Step 1: Download database dump
+  echo "--- Step 1/3: Downloading database dump ---"
+  DL_SCRIPT="${SKIP}
 aws s3 cp ${MIGRATION_DATABASE_S3_URI} ${DB_DIR}/backup.gz
 echo Download complete"
 
-kubectl delete pod/mgr-download -n "$NAMESPACE" --ignore-not-found 2>/dev/null
-if [ -n "${MIGRATION_DB_ACCESS_KEY:-}" ]; then
-  make_pod mgr-download "$AWS_IMG" "$DL_SCRIPT" \
-    AWS_ACCESS_KEY_ID "$MIGRATION_DB_ACCESS_KEY" \
-    AWS_SECRET_ACCESS_KEY "$MIGRATION_DB_SECRET_KEY" \
-    | kubectl apply -n "$NAMESPACE" -f -
-else
-  make_pod mgr-download "$AWS_IMG" "$DL_SCRIPT" | kubectl apply -n "$NAMESPACE" -f -
-fi
-wait_pod mgr-download 600
+  kubectl delete pod/mgr-download -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+  if [ -n "${MIGRATION_DB_ACCESS_KEY:-}" ]; then
+    make_pod mgr-download "$AWS_IMG" "$DL_SCRIPT" \
+      AWS_ACCESS_KEY_ID "$MIGRATION_DB_ACCESS_KEY" \
+      AWS_SECRET_ACCESS_KEY "$MIGRATION_DB_SECRET_KEY" \
+      | kubectl apply -n "$NAMESPACE" -f -
+  else
+    make_pod mgr-download "$AWS_IMG" "$DL_SCRIPT" | kubectl apply -n "$NAMESPACE" -f -
+  fi
+  wait_pod mgr-download 600
 
-# --- Step 2: Restore database ---
-echo "--- Step 2/4: Restoring database ---"
-RS_SCRIPT="${SKIP}
+  # Step 2: Restore database
+  echo "--- Step 2/3: Restoring database ---"
+  RS_SCRIPT="${SKIP}
 /app/platforma --restore-db=${DB_DIR}/backup.gz --db-dir=${DB_DIR} --force
 echo Database restored"
 
-kubectl delete pod/mgr-restore -n "$NAMESPACE" --ignore-not-found 2>/dev/null
-make_pl_pod mgr-restore "$RS_SCRIPT" | kubectl apply -n "$NAMESPACE" -f -
-wait_pod mgr-restore 1800
+  kubectl delete pod/mgr-restore -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+  make_pl_pod mgr-restore "$RS_SCRIPT" | kubectl apply -n "$NAMESPACE" -f -
+  wait_pod mgr-restore 1800
 
-# --- Step 3: Sync primary storage ---
-if [ -n "${MIGRATION_SOURCE_BUCKET:-}" ]; then
-  echo "--- Step 3/4: Syncing primary storage ---"
-  SR="${MIGRATION_SOURCE_REGION:-$REGION}"
-  SYNC_SCRIPT="${SKIP}
+  # Step 3: Sync primary storage
+  if [ -n "${MIGRATION_SOURCE_BUCKET:-}" ]; then
+    echo "--- Step 3/3: Syncing primary storage ---"
+    SR="${MIGRATION_SOURCE_REGION:-$REGION}"
+    SYNC_SCRIPT="${SKIP}
 aws s3 sync s3://${MIGRATION_SOURCE_BUCKET}/${MIGRATION_SOURCE_PREFIX:-} s3://${S3_BUCKET}/ --source-region ${SR} --region ${REGION} --no-progress --copy-props none
 echo Storage sync complete"
 
-  kubectl delete pod/mgr-sync -n "$NAMESPACE" --ignore-not-found 2>/dev/null
-  if [ -n "${MIGRATION_STORAGE_ACCESS_KEY:-}" ]; then
-    make_pod mgr-sync "$AWS_IMG" "$SYNC_SCRIPT" \
-      AWS_ACCESS_KEY_ID "$MIGRATION_STORAGE_ACCESS_KEY" \
-      AWS_SECRET_ACCESS_KEY "$MIGRATION_STORAGE_SECRET_KEY" \
-      | kubectl apply -n "$NAMESPACE" -f -
+    kubectl delete pod/mgr-sync -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+    if [ -n "${MIGRATION_STORAGE_ACCESS_KEY:-}" ]; then
+      make_pod mgr-sync "$AWS_IMG" "$SYNC_SCRIPT" \
+        AWS_ACCESS_KEY_ID "$MIGRATION_STORAGE_ACCESS_KEY" \
+        AWS_SECRET_ACCESS_KEY "$MIGRATION_STORAGE_SECRET_KEY" \
+        | kubectl apply -n "$NAMESPACE" -f -
+    else
+      make_pod mgr-sync "$AWS_IMG" "$SYNC_SCRIPT" | kubectl apply -n "$NAMESPACE" -f -
+    fi
+    wait_pod mgr-sync 86400
   else
-    make_pod mgr-sync "$AWS_IMG" "$SYNC_SCRIPT" | kubectl apply -n "$NAMESPACE" -f -
+    echo "--- Step 3/3: Skipping storage sync (no source bucket) ---"
   fi
-  wait_pod mgr-sync 86400
-else
-  echo "--- Step 3/4: Skipping storage sync (no source bucket) ---"
-fi
 
-# --- Step 4: Invalidate caches ---
-echo "--- Step 4/4: Invalidating caches ---"
-IC_SCRIPT="${SKIP}
+  # Cleanup dump file
+  echo "--- Cleaning up dump file ---"
+  kubectl delete pod/mgr-cleanup -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+  make_pod mgr-cleanup "$AWS_IMG" "rm -f ${DB_DIR}/backup.gz; echo Cleanup done" | kubectl apply -n "$NAMESPACE" -f -
+  wait_pod mgr-cleanup 120
+
+  echo "=== Pre-helm migration complete ==="
+}
+
+# =========================================================================
+# Phase: post-helm (invalidate caches after Platforma applies migrations)
+# =========================================================================
+run_post_helm() {
+  echo "=== Platforma cache invalidation (post-helm) ==="
+
+  SKIP="if [ -f ${MARKER} ]; then echo Already completed; exit 0; fi"
+
+  # Wait for Platforma to be ready (migrations applied)
+  echo "--- Waiting for Platforma to be ready ---"
+  kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=platforma -n "$NAMESPACE" --timeout=300s
+
+  # Invalidate caches
+  echo "--- Invalidating caches ---"
+  IC_SCRIPT="${SKIP}
 /app/platforma --invalidate-caches --main-root=/data/main --db-dir=${DB_DIR}
 date -u > ${MARKER}
 echo Caches invalidated"
 
-kubectl delete pod/mgr-invalidate -n "$NAMESPACE" --ignore-not-found 2>/dev/null
-make_pl_pod mgr-invalidate "$IC_SCRIPT" | kubectl apply -n "$NAMESPACE" -f -
-wait_pod mgr-invalidate 1800
+  kubectl delete pod/mgr-invalidate -n "$NAMESPACE" --ignore-not-found 2>/dev/null
+  make_pl_pod mgr-invalidate "$IC_SCRIPT" | kubectl apply -n "$NAMESPACE" -f -
+  wait_pod mgr-invalidate 1800
 
-# Cleanup dump file
-echo "--- Cleaning up ---"
-kubectl delete pod/mgr-cleanup -n "$NAMESPACE" --ignore-not-found 2>/dev/null
-make_pod mgr-cleanup "$AWS_IMG" "rm -f ${DB_DIR}/backup.gz; echo Cleanup done" | kubectl apply -n "$NAMESPACE" -f -
-wait_pod mgr-cleanup 120
+  # Restart Platforma to pick up invalidated caches
+  echo "--- Restarting Platforma ---"
+  kubectl rollout restart deployment/platforma -n "$NAMESPACE"
+  kubectl rollout status deployment/platforma -n "$NAMESPACE" --timeout=300s
 
-echo "=== Platforma data migration complete ==="
+  echo "=== Migration fully complete ==="
+}
+
+# =========================================================================
+# Main
+# =========================================================================
+case "$PHASE" in
+  pre-helm)
+    run_pre_helm
+    ;;
+  post-helm)
+    run_post_helm
+    ;;
+  all)
+    run_pre_helm
+    echo ""
+    echo "WARNING: 'all' mode requires Platforma to be running between phases."
+    echo "Use 'pre-helm' and 'post-helm' separately in CF deployments."
+    echo ""
+    run_post_helm
+    ;;
+  *)
+    echo "Usage: $0 [pre-helm|post-helm|all]"
+    exit 1
+    ;;
+esac

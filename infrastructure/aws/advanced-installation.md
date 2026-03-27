@@ -692,6 +692,8 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set-json 'ingress.annotations."alb\.ingress\.kubernetes\.io/listen-ports"=[{"HTTPS":443}]' \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"=$CERT_ARN \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/healthcheck-path"=/grpc.health.v1.Health/Check \
+  --set ingress.annotations."alb\.ingress\.kubernetes\.io/success-codes"=0 \
   --atomic --timeout 15m
 ```
 

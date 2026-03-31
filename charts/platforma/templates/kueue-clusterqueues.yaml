@@ -66,4 +66,16 @@ spec:
             - name: memory
               nominalQuota: {{ .Values.kueue.dedicated.resources.batch.memory | quote }}
               borrowingLimit: {{ .Values.kueue.dedicated.resources.ui.memory | quote }}
+{{- if .Values.kueue.pools.gpu.enabled }}
+    - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
+      flavors:
+        - name: {{ include "platforma.kueue.clusterResourceName" . }}-gpu-flavor
+          resources:
+            - name: cpu
+              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.cpu | quote }}
+            - name: memory
+              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.memory | quote }}
+            - name: "nvidia.com/gpu"
+              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.gpu | quote }}
+{{- end }}
 {{- end }}

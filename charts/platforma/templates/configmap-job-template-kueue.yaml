@@ -78,6 +78,17 @@ data:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
                   <<- else >>
+                  {{- if .Values.kueue.pools.gpu.enabled }}
+                  <<- if and .Resources .Resources.GPU >>
+                  {{- with .Values.kueue.pools.gpu.nodeSelector }}
+                  nodeSelector:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  {{- with .Values.kueue.pools.gpu.tolerations }}
+                  tolerations:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  <<- else >>
                   {{- with .Values.kueue.pools.batch.nodeSelector }}
                   nodeSelector:
                     {{- toYaml . | nindent 20 }}
@@ -85,6 +96,17 @@ data:
                   {{- with .Values.kueue.pools.batch.tolerations }}
                   tolerations:
                     {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  <<- end >>
+                  {{- else }}
+                  {{- with .Values.kueue.pools.batch.nodeSelector }}
+                  nodeSelector:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  {{- with .Values.kueue.pools.batch.tolerations }}
+                  tolerations:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
                   {{- end }}
                   <<- end >>
                   containers:
@@ -142,6 +164,9 @@ data:
                           <<- end >>
                           <<- if .Resources.Memory >>
                           memory: "<< .Resources.Memory >>"
+                          <<- end >>
+                          <<- if .Resources.GPU >>
+                          nvidia.com/gpu: "<< .Resources.GPU >>"
                           <<- end >>
                       <<- end >>
                       volumeMounts:

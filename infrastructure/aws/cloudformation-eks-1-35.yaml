@@ -531,6 +531,7 @@ Mappings:
       MaxBatch64c256g: '1'
       MaxBatch32c256g: '2'
       MaxBatch64c512g: '1'
+      MaxGpu: '1'
       MaxUi: '4'
     medium:
       # Kueue quotas (derived: 4x63=252 CPU, 2x500=1000Gi)
@@ -543,6 +544,7 @@ Mappings:
       MaxBatch64c256g: '2'
       MaxBatch32c256g: '4'
       MaxBatch64c512g: '2'
+      MaxGpu: '2'
       MaxUi: '8'
     large:
       # Kueue quotas (derived: 8x63=504 CPU, 4x500=2000Gi)
@@ -555,6 +557,7 @@ Mappings:
       MaxBatch64c256g: '4'
       MaxBatch32c256g: '8'
       MaxBatch64c512g: '4'
+      MaxGpu: '4'
       MaxUi: '16'
     xlarge:
       # Kueue quotas (derived: 16x63=1008 CPU, 8x500=4000Gi)
@@ -567,6 +570,7 @@ Mappings:
       MaxBatch64c256g: '8'
       MaxBatch32c256g: '16'
       MaxBatch64c512g: '8'
+      MaxGpu: '8'
       MaxUi: '16'
 
 # =============================================================================
@@ -1864,6 +1868,40 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: batch-64c-512g
+        platforma: !Sub "${ClusterName}"
+
+  GpuNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: gpu-g4dn-xlarge
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      AmiType: AL2023_x86_64_NVIDIA
+      InstanceTypes:
+        - g4dn.xlarge
+      CapacityType: SPOT
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu]
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref MediumNodeLaunchTemplate
+        Version: !GetAtt MediumNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: gpu
+      Taints:
+        - Key: nvidia.com/gpu
+          Value: present
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: gpu
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------

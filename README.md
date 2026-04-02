@@ -302,6 +302,8 @@ ingress:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+    alb.ingress.kubernetes.io/healthcheck-path: /grpc.health.v1.Health/Check
+    alb.ingress.kubernetes.io/success-codes: "0"
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
     alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:..."
 ```

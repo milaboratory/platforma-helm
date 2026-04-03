@@ -301,6 +301,18 @@ kueue:
         #   value: batch
         #   effect: NoSchedule
 
+    # -- GPU node pool (optional)
+    # Enable to route GPU jobs to dedicated GPU nodes.
+    # GPU jobs use the batch queue but land on GPU-flavored nodes.
+    gpu:
+      enabled: false
+      nodeSelector: {}
+        # node.milab.io/compute: gpu-amd64
+      tolerations: []
+        # - key: nvidia.com/gpu
+        #   value: present
+        #   effect: NoSchedule
+
   # -- Dedicated mode configuration
   # Controls how much compute can run simultaneously in each queue.
   # UI queue has guaranteed resources (never shares with batch).
@@ -329,6 +341,12 @@ kueue:
       batch:
         cpu: 256
         memory: 1024Gi
+      # -- GPU quota (only used when kueue.pools.gpu.enabled=true)
+      gpu:
+        # nvidia.com/gpu resource quota for the GPU flavor
+        gpu: 4
+        cpu: 32
+        memory: 128Gi
 
   # -- Shared mode configuration
   # Point at existing Kueue resources managed outside this chart.

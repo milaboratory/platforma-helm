@@ -231,16 +231,51 @@ wait and retry.
 
 ## Updating Platforma
 
-To update Platforma, replace the CloudFormation template URL with the new version and update the stack:
+1. Open **CloudFormation** in the AWS Console → select your stack → **Update**
+2. Select **Make a direct update** → **Next**
+3. **Prepare template** — choose one:
+   - **Use current template** — to change parameter values only (e.g. auth settings, data libraries)
+   - **Replace current template** → **Amazon S3 URL** — to upgrade to a new template version. Paste the new URL.
+4. Click **Next** to reach the **Parameters** page. Each parameter shows its previous value.
+   Change what you need. New parameters added by the template appear with their defaults;
+   removed parameters disappear automatically.
 
-1. Go to **CloudFormation → Stacks → select your stack → Update → Replace current template**
-2. Paste the new template S3 URL
-3. Click through the parameters — if `PlatformaVersion` is empty (the default), the new template's built-in
-   version is used automatically. No need to type anything.
-4. To pin a specific version instead, enter it explicitly in the `PlatformaVersion` field.
+   > **Platforma version auto-upgrade:** If you left `PlatformaVersion` empty (the default), the new template's
+   > built-in version is used automatically — no manual input needed. To pin a specific version, enter it
+   > explicitly in the `PlatformaVersion` field.
 
-Only the Platforma deployer CodeBuild project runs — infrastructure stays unchanged.
-The auto-generated password persists across updates. The deployer reads it from SSM on each deploy.
+5. Click **Next** → check **I acknowledge that AWS CloudFormation might create IAM resources with custom names** →
+   **Submit**
+
+Running jobs are not interrupted during updates.
+
+### How long does it take?
+
+CloudFormation detects which resources changed and only runs the affected deployers:
+
+- **Parameter-only changes** (auth, data libraries): **2-5 minutes** — only the Platforma deployer runs
+- **Template upgrade** (new Platforma version, deployment size, new EKS version): **10-20 minutes** — both deployers may run
+
+To monitor progress, open the CodeBuild project links from the **Outputs** tab:
+- `HelmDeployerBuildProject` — infrastructure controllers (Kueue, Autoscaler, ALB, DNS)
+- `PlatformaDeployerBuildProject` — Platforma Helm release
+
+### What you can change
+
+| Parameter | Effect |
+|-----------|--------|
+| Platforma version | Leave empty for auto-upgrade with template, or set explicitly to pin a version |
+| Custom container image | Overrides the default container image |
+| License key | Updates the license secret |
+| Authentication settings | Updates auth method, credentials, or LDAP config |
+| Data libraries | Adds, removes, or reconfigures S3 data libraries |
+| Deploy Platforma | Set to `false` to uninstall Platforma while keeping infrastructure |
+| Deployment size | Changes node group scaling limits and Kueue quotas |
+
+### Credentials
+
+The auto-generated password persists across updates — the deployer reads it from SSM Parameter Store on each deploy.
+If you provided `HtpasswdContent` initially, pass the same value (or a new one) on every update.
 
 ---
 

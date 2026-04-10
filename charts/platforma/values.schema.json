@@ -408,6 +408,9 @@
               "prefix": {
                 "type": "string"
               },
+              "endpoint": {
+                "type": "string"
+              },
               "secretRef": {
                 "type": "object",
                 "properties": {
@@ -818,6 +821,9 @@
             }
           },
           "additionalProperties": false
+        },
+        "serviceAnnotations": {
+          "type": "object"
         }
       },
       "additionalProperties": false

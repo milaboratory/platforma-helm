@@ -19,11 +19,16 @@ controllerManager:
         cpu: 100m
         memory: 256Mi
 
-# -- AppWrapper support
-# Requires separate AppWrapper controller installation:
+# -- Feature gates
+# AppWrapper: Required for job wrapping. Requires separate AppWrapper controller:
 #   kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/v1.2.0/install.yaml
+# ProvisioningACC: Enables ProvisioningRequest-based admission checks.
+#   Prevents resource fragmentation by checking with the autoscaler whether pods
+#   can actually be scheduled before admitting workloads.
+#   Enabled by default in Kueue v0.10+. Listed explicitly for visibility.
 featureGates:
   AppWrapper: true
+  ProvisioningACC: true
 
 # -- Framework integrations
 integrations:

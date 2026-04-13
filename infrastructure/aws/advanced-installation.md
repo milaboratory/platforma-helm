@@ -284,6 +284,7 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
   --set extraArgs.max-node-provision-time=5m \
   --set extraArgs.initial-node-group-backoff-duration=1m \
   --set extraArgs.max-node-group-backoff-duration=5m \
+  --set extraArgs.provisioning-request-enabled=true \
   --atomic --timeout 5m
 ```
 
@@ -298,6 +299,7 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
 | `max-node-provision-time` | 5m | 5m | Max time to wait for a node to become ready (default 15m is too long for EKS) |
 | `initial-node-group-backoff-duration` | 1m | 1m | Initial backoff after failed scale-up (default 5m) |
 | `max-node-group-backoff-duration` | 5m | 5m | Max backoff after repeated failures (default 30m) |
+| `provisioning-request-enabled` | true | true | Enable ProvisioningRequest API for Kueue integration (prevents resource fragmentation) |
 
 Verify:
 
@@ -694,8 +696,11 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/healthcheck-path"=/grpc.health.v1.Health/Check \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/success-codes"=0 \
+  --set kueue.provisioningRequest.enabled=true \
   --atomic --timeout 15m
 ```
+
+> **ProvisioningRequest** (`kueue.provisioningRequest.enabled=true`): Prevents resource fragmentation by asking the Cluster Autoscaler whether pods can actually be scheduled before Kueue admits them. Without this, Kueue may admit jobs based on aggregate free capacity even when no single node can fit the job. Requires `--provisioning-request-enabled=true` on the Cluster Autoscaler (Step 3).
 
 Verify:
 

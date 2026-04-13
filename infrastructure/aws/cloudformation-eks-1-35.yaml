@@ -2120,6 +2120,7 @@ Resources:
                     --set controllerManager.manager.resources.requests.cpu=100m \
                     --set controllerManager.manager.resources.requests.memory=256Mi \
                     --set featureGates.AppWrapper=true \
+                    --set featureGates.ProvisioningACC=true \
                     --set 'integrations.frameworks[0]=batch/job' \
                     --set 'integrations.frameworks[1]=jobset.x-k8s.io/jobset' \
                     --set 'integrations.frameworks[2]=workload.codeflare.dev/appwrapper' \
@@ -2157,6 +2158,7 @@ Resources:
                     --set extraArgs.max-node-provision-time=5m \
                     --set extraArgs.initial-node-group-backoff-duration=1m \
                     --set extraArgs.max-node-group-backoff-duration=5m \
+                    --set extraArgs.provisioning-request-enabled=true \
                     --atomic --timeout 5m
 
                 # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---
@@ -2634,6 +2636,8 @@ Resources:
                           - key: dedicated
                             value: batch
                             effect: NoSchedule
+                    provisioningRequest:
+                      enabled: true
                     dedicated:
                       resources:
                         ui:

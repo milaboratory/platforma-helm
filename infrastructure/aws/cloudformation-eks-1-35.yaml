@@ -2112,6 +2112,7 @@ Resources:
                 - |
                   [ "${TEARDOWN:-false}" = "true" ] && exit 0
                   echo "=== [2/5] KUEUE + APPWRAPPER ==="
+                  kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
                     --version $KUEUE_VERSION \
                     -n kueue-system --create-namespace \
@@ -2158,7 +2159,7 @@ Resources:
                     --set extraArgs.max-node-provision-time=5m \
                     --set extraArgs.initial-node-group-backoff-duration=1m \
                     --set extraArgs.max-node-group-backoff-duration=5m \
-                    --set extraArgs.provisioning-request-enabled=true \
+                    --set extraArgs.enable-provisioning-requests=true \
                     --atomic --timeout 5m
 
                 # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---

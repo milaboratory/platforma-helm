@@ -284,7 +284,7 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
   --set extraArgs.max-node-provision-time=5m \
   --set extraArgs.initial-node-group-backoff-duration=1m \
   --set extraArgs.max-node-group-backoff-duration=5m \
-  --set extraArgs.provisioning-request-enabled=true \
+  --set extraArgs.enable-provisioning-requests=true \
   --atomic --timeout 5m
 ```
 
@@ -299,7 +299,7 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
 | `max-node-provision-time` | 5m | 5m | Max time to wait for a node to become ready (default 15m is too long for EKS) |
 | `initial-node-group-backoff-duration` | 1m | 1m | Initial backoff after failed scale-up (default 5m) |
 | `max-node-group-backoff-duration` | 5m | 5m | Max backoff after repeated failures (default 30m) |
-| `provisioning-request-enabled` | true | true | Enable ProvisioningRequest API for Kueue integration (prevents resource fragmentation) |
+| `enable-provisioning-requests` | true | true | Enable ProvisioningRequest API for Kueue integration (prevents resource fragmentation) |
 
 Verify:
 
@@ -600,7 +600,17 @@ echo "Certificate validated: $CERT_ARN"
 
 ---
 
-## Step 8: Install Kueue with AppWrapper support
+## Step 8: Install Kueue With AppWrapper Support
+
+### Install ProvisioningRequest CRD
+
+The ProvisioningRequest CRD is required for Kueue to check with the Cluster Autoscaler whether pods can actually be scheduled before admitting workloads. It is not bundled with either the CA or Kueue Helm charts — it must be installed separately.
+
+```bash
+kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
+```
+
+### Install Kueue
 
 ```bash
 helm install kueue oci://registry.k8s.io/kueue/charts/kueue \

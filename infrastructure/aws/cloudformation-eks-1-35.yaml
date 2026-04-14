@@ -2160,7 +2160,37 @@ Resources:
                     --set extraArgs.initial-node-group-backoff-duration=1m \
                     --set extraArgs.max-node-group-backoff-duration=5m \
                     --set extraArgs.enable-provisioning-requests=true \
+                    --set extraArgs.kube-api-content-type=application/json \
                     --atomic --timeout 5m
+
+                  # Grant CA access to ProvisioningRequest and PodTemplate resources
+                  # (not included in the Helm chart's built-in ClusterRole)
+                  kubectl apply -f - <<'RBAC'
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRole
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  rules:
+                    - apiGroups: ["autoscaling.x-k8s.io"]
+                      resources: ["provisioningrequests", "provisioningrequests/status"]
+                      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+                    - apiGroups: [""]
+                      resources: ["podtemplates"]
+                      verbs: ["get", "list", "watch"]
+                  ---
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRoleBinding
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  subjects:
+                    - kind: ServiceAccount
+                      name: cluster-autoscaler
+                      namespace: $NAMESPACE
+                  roleRef:
+                    kind: ClusterRole
+                    name: cluster-autoscaler-provisioning-requests
+                    apiGroup: rbac.authorization.k8s.io
+                  RBAC
 
                 # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---
                 - |
@@ -2639,6 +2669,7 @@ Resources:
                             effect: NoSchedule
                     provisioningRequest:
                       enabled: true
+                      provisioningClassName: best-effort-atomic-scale-up.autoscaling.x-k8s.io
                     dedicated:
                       resources:
                         ui:

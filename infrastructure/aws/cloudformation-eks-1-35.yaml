@@ -2700,13 +2700,20 @@ Resources:
                       secretName: platforma-htpasswd
                   AUTH_VALUES
                   elif [ "$AUTH_METHOD" = "ldap" ]; then
+                    # StartTLS upgrades a plain ldap:// connection to TLS.
+                    # It is incompatible with ldaps:// which is already encrypted.
+                    # Force startTLS=false when using ldaps:// to prevent startup failure.
+                    EFFECTIVE_START_TLS="${LDAP_START_TLS}"
+                    if echo "$LDAP_SERVER" | grep -qi '^ldaps://'; then
+                      EFFECTIVE_START_TLS="false"
+                    fi
                     # Write LDAP values directly into YAML to avoid Helm --set
                     # comma-splitting issues (LDAP DNs always contain commas).
                     cat >> /tmp/platforma-values.yaml << LDAP_BLOCK
                   auth:
                     ldap:
                       server: "${LDAP_SERVER}"
-                      startTLS: ${LDAP_START_TLS}
+                      startTLS: ${EFFECTIVE_START_TLS}
                   LDAP_BLOCK
                     if [ -n "$LDAP_BIND_DN" ]; then
                       cat >> /tmp/platforma-values.yaml << LDAP_BIND

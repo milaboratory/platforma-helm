@@ -11,7 +11,11 @@ The chart now creates:
 - `AdmissionCheck` referencing the config
 - `admissionChecksStrategy` on the batch `ClusterQueue` (not UI — UI tasks are small)
 
-## Prerequisites
+## CloudFormation Deployments
+
+If you deployed via CloudFormation, **no manual steps are needed**. Update the CF template and run a stack update — all prerequisites (CRD, CA flags, RBAC, Kueue memory) are handled automatically in the correct order. The rest of this guide is for reference and for manual (non-CF) deployments.
+
+## Manual Deployments
 
 The following must be in place **before** upgrading the Platforma chart. The order matters.
 

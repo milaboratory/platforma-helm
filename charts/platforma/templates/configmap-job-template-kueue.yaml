@@ -128,6 +128,14 @@ data:
                         - name: PL_JOB_STDERR_PATH
                           value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .StdErrRelativePath >>
                         <<- end >>
+                        {{- if .Values.kueue.pools.gpu.enabled }}
+                        <<- if and .Resources .Resources.GPU >>
+                        - name: NVIDIA_VISIBLE_DEVICES
+                          value: "all"
+                        - name: NVIDIA_DRIVER_CAPABILITIES
+                          value: "compute,utility"
+                        <<- end >>
+                        {{- end }}
                         <<- range .Env >>
                         - name: << .Name >>
                           <<- if .SecretKey >>

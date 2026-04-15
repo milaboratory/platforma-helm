@@ -14,10 +14,10 @@ controllerManager:
     resources:
       limits:
         cpu: 500m
-        memory: 512Mi
+        memory: 1Gi
       requests:
         cpu: 100m
-        memory: 256Mi
+        memory: 512Mi
 
 # -- Feature gates
 # AppWrapper: Required for job wrapping. Requires separate AppWrapper controller:

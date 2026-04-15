@@ -2117,9 +2117,9 @@ Resources:
                     --version $KUEUE_VERSION \
                     -n kueue-system --create-namespace \
                     --set controllerManager.manager.resources.limits.cpu=500m \
-                    --set controllerManager.manager.resources.limits.memory=512Mi \
+                    --set controllerManager.manager.resources.limits.memory=1Gi \
                     --set controllerManager.manager.resources.requests.cpu=100m \
-                    --set controllerManager.manager.resources.requests.memory=256Mi \
+                    --set controllerManager.manager.resources.requests.memory=512Mi \
                     --set featureGates.AppWrapper=true \
                     --set featureGates.ProvisioningACC=true \
                     --set 'integrations.frameworks[0]=batch/job' \

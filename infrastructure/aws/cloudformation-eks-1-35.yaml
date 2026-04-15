@@ -2112,7 +2112,7 @@ Resources:
                 - |
                   [ "${TEARDOWN:-false}" = "true" ] && exit 0
                   echo "=== [2/5] KUEUE + APPWRAPPER ==="
-                  kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
+                  kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/cluster-autoscaler-${KUBERNETES_VERSION}.0/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
                     --version $KUEUE_VERSION \
                     -n kueue-system --create-namespace \
@@ -2668,7 +2668,6 @@ Resources:
                             value: batch
                             effect: NoSchedule
                     provisioningRequest:
-                      enabled: true
                       provisioningClassName: best-effort-atomic-scale-up.autoscaling.x-k8s.io
                     dedicated:
                       resources:

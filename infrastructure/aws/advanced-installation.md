@@ -642,7 +642,8 @@ echo "Certificate validated: $CERT_ARN"
 The ProvisioningRequest CRD is required for Kueue to check with the Cluster Autoscaler whether pods can actually be scheduled before admitting workloads. It is not bundled with either the CA or Kueue Helm charts — it must be installed separately.
 
 ```bash
-kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
+CA_VERSION="1.35.0"  # Must match Cluster Autoscaler image.tag (Step 3)
+kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/cluster-autoscaler-${CA_VERSION}/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
 ```
 
 ### Install Kueue
@@ -741,11 +742,10 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/backend-protocol-version"=GRPC \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/healthcheck-path"=/grpc.health.v1.Health/Check \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/success-codes"=0 \
-  --set kueue.provisioningRequest.enabled=true \
   --atomic --timeout 15m
 ```
 
-> **ProvisioningRequest** (`kueue.provisioningRequest.enabled=true`): Prevents resource fragmentation by asking the Cluster Autoscaler whether pods can actually be scheduled before Kueue admits them. Without this, Kueue may admit jobs based on aggregate free capacity even when no single node can fit the job. Requires `--enable-provisioning-requests=true` and `--kube-api-content-type=application/json` on the Cluster Autoscaler (Step 3), plus the ProvisioningRequest RBAC.
+> **ProvisioningRequest**: The chart automatically creates ProvisioningRequest admission checks that prevent resource fragmentation — Kueue asks the Cluster Autoscaler whether pods can actually be scheduled before admitting them. This requires the ProvisioningRequest CRD (Step 8), `--enable-provisioning-requests=true` and `--kube-api-content-type=application/json` on the Cluster Autoscaler (Step 3), and the ProvisioningRequest RBAC (Step 3).
 
 Verify:
 

@@ -63,29 +63,31 @@ jobs:
           fi
           mv packages/index.yaml index.yaml
 
-      - name: Push updated index to branch
+      - name: Create branch and PR
         if: steps.detect.outputs.found == 'true'
         env:
           GH_CI_HELM: ${{ secrets.GH_CI_HELM }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Create branch
           BRANCH="auto/update-helm-index-$(date +%s)"
           echo "branch=${BRANCH}" >> "$GITHUB_ENV"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GH_CI_HELM}@github.com/${{ github.repository }}.git"
           git checkout -b "${BRANCH}"
-          git add index.yaml
-          git commit -m "release: update helm repository index"
+          git commit --allow-empty -m "release: update helm repository index"
           git push origin "${BRANCH}"
 
-      - name: Create and auto-merge PR
-        if: steps.detect.outputs.found == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
+          # Create PR
           gh pr create \
             --title "release: update helm repository index" \
             --body "Auto-generated: updates index.yaml after new package addition." \
             --base main \
-            --head "${branch}"
-          gh pr merge "${branch}" --auto --merge
+            --head "${BRANCH}"
+          gh pr merge "${BRANCH}" --auto --merge
+
+          # Push index update to trigger PR checks
+          git add index.yaml
+          git commit --amend --no-edit
+          git push origin "${branch}"

@@ -1,0 +1,72 @@
+name: Publish Helm Chart
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/*.tgz'
+
+jobs:
+  publish:
+    name: Publish to GHCR and update index
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: 'v3.18.4'
+
+      - name: Detect new packages
+        id: detect
+        run: |
+          NEW_PACKAGES=$(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'packages/*.tgz' || true)
+          if [ -z "${NEW_PACKAGES}" ]; then
+            echo "No new packages detected"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "New packages:"
+          echo "${NEW_PACKAGES}"
+
+      - name: Log in to GitHub Container Registry
+        if: steps.detect.outputs.found == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push new packages to GHCR
+        if: steps.detect.outputs.found == 'true'
+        run: |
+          NEW_PACKAGES=$(git diff --name-only --diff-filter=A HEAD~1 HEAD -- 'packages/*.tgz')
+          for pkg in ${NEW_PACKAGES}; do
+            echo "Pushing ${pkg} to GHCR..."
+            helm push "${pkg}" oci://ghcr.io/${{ github.repository }}
+          done
+
+      - name: Update Helm repository index
+        if: steps.detect.outputs.found == 'true'
+        run: |
+          if [ -f index.yaml ]; then
+            helm repo index packages/ --url https://milaboratory.github.io/platforma-helm/packages/ --merge index.yaml
+          else
+            helm repo index packages/ --url https://milaboratory.github.io/platforma-helm/packages/
+          fi
+          mv packages/index.yaml index.yaml
+
+      - name: Commit and push updated index
+        if: steps.detect.outputs.found == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.yaml
+          git commit -m "release: update helm repository index"
+          git push origin main

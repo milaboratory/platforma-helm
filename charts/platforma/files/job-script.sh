@@ -7,6 +7,25 @@ if [ -n "${PL_JOB_PATH:-}" ]; then
   export PATH="${PL_JOB_PATH}:${PATH}"
 fi
 
+# --- Prune unexpected files from workdir ---
+# Removes leftover output from OOM-killed retries so they don't consume memory.
+# PL_JOB_EXPECTED_FILES is a newline-separated list of relative paths.
+# When unset, no pruning occurs (backward compat).
+if [ -n "${PL_JOB_EXPECTED_FILES:-}" ] && [ -n "${PL_JOB_WORKDIR:-}" ] && [ -d "${PL_JOB_WORKDIR}" ]; then
+  _expected_file=$(mktemp)
+  trap 'rm -f "$_expected_file"' EXIT INT TERM
+  printf '%s\n' "$PL_JOB_EXPECTED_FILES" > "$_expected_file"
+
+  find "$PL_JOB_WORKDIR" -type f | while IFS= read -r _abs_path; do
+    _rel_path="${_abs_path#"${PL_JOB_WORKDIR}/"}"
+    if ! grep -qxF "$_rel_path" "$_expected_file"; then
+      echo "[job-script] Pruning unexpected file: ${_rel_path}" >&2
+      rm -f "$_abs_path"
+    fi
+  done
+
+fi
+
 # Save 'real stdout' and 'real stderr' of current script in descriptors 3 and 4
 exec 3>&1 4>&2
 
@@ -57,6 +76,11 @@ sh -c "$PL_JOB_CMD_AND_ARGS"
 # As we disabled 'errexit' shell option, we need to save exit code for later explicit 'exit' call
 # otherwise, shell script will always exit with 0
 EXIT_CODE=$?
+
+# Write completion marker (signals script was NOT OOM-killed)
+if [ -n "${PL_JOB_COMPLETION_MARKER_PATH:-}" ]; then
+  echo "$EXIT_CODE" > "$PL_JOB_COMPLETION_MARKER_PATH"
+fi
 
 # --- Report non-zero exit code ---
 if [ "$EXIT_CODE" -ne 0 ]; then

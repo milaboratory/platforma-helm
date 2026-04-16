@@ -239,6 +239,7 @@ dataSources: []
   #     bucket: "company-sequencing"
   #     region: "us-east-1"
   #     prefix: ""
+  #     endpoint: ""         # S3-compatible endpoint (e.g. https://s3.example.com). Omit for AWS S3
   #     secretRef:           # Optional: omit for IRSA/workload-identity
   #       name: "my-s3-creds"
   #       accessKeyField: "access-key"   # default: "access-key"
@@ -380,6 +381,9 @@ additionalIngress:
 # =============================================================================
 
 app:
+  # -- Annotations added to the main Service resource
+  serviceAnnotations: {}
+
   # -- Pod resources
   resources:
     requests:
@@ -470,6 +474,19 @@ jobServiceAccount:
   create: true
   name: ""
   annotations: {}
+
+# =============================================================================
+# CLEANUP
+# =============================================================================
+
+cleanup:
+  appwrappers:
+    # -- Enable periodic cleanup of old AppWrapper resources in final status
+    enabled: true
+    # -- Cron schedule (default: daily at 3:00 AM)
+    schedule: "0 3 * * *"
+    # -- Max age in seconds for AppWrappers in Succeeded/Failed status (default: 432000 = 5 days)
+    maxAgeSeconds: 432000
 
 # =============================================================================
 # JOB CONFIGURATION

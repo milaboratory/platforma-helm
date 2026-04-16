@@ -106,6 +106,14 @@ data:
                         - name: PL_JOB_STDERR_PATH
                           value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .StdErrRelativePath >>
                         <<- end >>
+                        <<- if .ExpectedFiles >>
+                        - name: PL_JOB_EXPECTED_FILES
+                          value: << join "\n" .ExpectedFiles | quote >>
+                        <<- if .CompletionMarkerRelativePath >>
+                        - name: PL_JOB_COMPLETION_MARKER_PATH
+                          value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .CompletionMarkerRelativePath >>
+                        <<- end >>
+                        <<- end >>
                         <<- range .Env >>
                         - name: << .Name >>
                           <<- if .SecretKey >>

@@ -408,6 +408,9 @@
               "prefix": {
                 "type": "string"
               },
+              "endpoint": {
+                "type": "string"
+              },
               "secretRef": {
                 "type": "object",
                 "properties": {
@@ -818,6 +821,9 @@
             }
           },
           "additionalProperties": false
+        },
+        "serviceAnnotations": {
+          "type": "object"
         }
       },
       "additionalProperties": false
@@ -857,6 +863,28 @@
       "properties": {
         "secretName": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "cleanup": {
+      "type": "object",
+      "properties": {
+        "appwrappers": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "schedule": {
+              "type": "string"
+            },
+            "maxAgeSeconds": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

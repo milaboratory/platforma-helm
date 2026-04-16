@@ -72,8 +72,8 @@ jobs:
           # Create branch
           BRANCH="auto/update-helm-index-$(date +%s)"
           echo "branch=${BRANCH}" >> "$GITHUB_ENV"
-          git config user.name "Packages index automation"
-          git config user.email "noreply@milaboratories.com"
+          git config user.name "zen-artisan-of-integration[bot]"
+          git config user.email "zen-artisan-of-integration[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GH_CI_HELM}@github.com/${{ github.repository }}.git"
           git checkout -b "${BRANCH}"
           git commit --allow-empty -m "release: update helm repository index"

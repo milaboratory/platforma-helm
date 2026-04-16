@@ -90,4 +90,4 @@ jobs:
           # Push index update to trigger PR checks
           git add index.yaml
           git commit --amend --no-edit
-          git push origin "${BRANCH}"
+          git push origin --force-with-lease "${BRANCH}"

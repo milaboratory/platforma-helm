@@ -2,6 +2,1243 @@ apiVersion: v1
 entries:
   platforma:
   - annotations:
+      artifacthub.io/license: Proprietary
+      artifacthub.io/operator: "false"
+    apiVersion: v2
+    appVersion: 3.2.1
+    created: "2026-04-17T00:47:45.071824+02:00"
+    description: Platforma - Bioinformatics platform for Kubernetes
+    digest: f7e538f7309893883b884d5cb360ff70d29514aec9f6f8fe8aef6aa772fbff11
+    home: https://platforma.bio
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm/main/charts/platforma/logo.svg
+    keywords:
+    - platforma
+    - bioinformatics
+    - kubernetes
+    - kueue
+    kubeVersion: '>=1.28.0-0'
+    maintainers:
+    - email: support@milaboratories.com
+      name: MiLaboratories
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-3.2.1.tgz
+    version: 3.2.1
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.44.1
+    created: "2026-04-17T00:47:45.070477+02:00"
+    description: A Helm chart for Platforma application
+    digest: d8d9d1782307c71865b2cc5f9899e4177c0db549e6e400532efc5fac63b2454d
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.2.3.tgz
+    version: 2.2.3
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.44.1
+    created: "2026-04-17T00:47:45.067686+02:00"
+    description: A Helm chart for Platforma application
+    digest: 5bf6ffdfcab8126f7fe18aeefc71517d8d650d0bcc0661262ffff9afd468f603
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.2.2.tgz
+    version: 2.2.2
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.44.1
+    created: "2026-04-17T00:47:45.065852+02:00"
+    description: A Helm chart for Platforma application
+    digest: 85effc50e5505c9e7d3f635bac0c261fa7a47f87dbb7fe925b7cea229195e44a
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.2.1.tgz
+    version: 2.2.1
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.44.1
+    created: "2026-04-17T00:47:45.063655+02:00"
+    description: A Helm chart for Platforma application
+    digest: 7157bb26dd9268cee9a02a6ae798daf48b493cbe806a0e96c753d7d7bd7ac2a2
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.2.0.tgz
+    version: 2.2.0
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.44.1
+    created: "2026-04-17T00:47:45.061792+02:00"
+    description: A Helm chart for Platforma application
+    digest: fbcdabff9913a3b75efa4a1bbce46cfe48e3f96491ec535d21c2169d670102b4
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.9.tgz
+    version: 2.1.9
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.44.1
+    created: "2026-04-17T00:47:45.058907+02:00"
+    description: A Helm chart for Platforma application
+    digest: b4c472c83f017e019c05835038dc388b71bed67c8a5a9f5a0e60ff017e812fe7
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.8.tgz
+    version: 2.1.8
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.44.1
+    created: "2026-04-17T00:47:45.056783+02:00"
+    description: A Helm chart for Platforma application
+    digest: 324e3d9220a53a98d85fff26de3e9a53cd6a97ef66674db64c1f26062aa380c4
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.7.tgz
+    version: 2.1.7
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.42.2
+    created: "2026-04-17T00:47:45.054516+02:00"
+    description: A Helm chart for Platforma application
+    digest: 87e74dd8ea20a4bd46dd582a430b4f5df265ffa20a936f0bbb32108bc20e4246
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.6.tgz
+    version: 2.1.6
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.42.2
+    created: "2026-04-17T00:47:45.052261+02:00"
+    description: A Helm chart for Platforma application
+    digest: 02d75222ed70e9a1e1214073c36df3136463cc33de49bd0e31f8e75b9837a9aa
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.5.tgz
+    version: 2.1.5
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.42.2
+    created: "2026-04-17T00:47:45.05032+02:00"
+    description: A Helm chart for Platforma application
+    digest: b86639d1b525a7ed108378496765bede126a2d0fbc02c4fb99e6ce5f2a8698f8
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.4.tgz
+    version: 2.1.4
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.42.2
+    created: "2026-04-17T00:47:45.048119+02:00"
+    description: A Helm chart for Platforma application
+    digest: 53e384e51624673a55401b3dad37185005d5e46205c04acfbfb43372361b5717
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.3.tgz
+    version: 2.1.3
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.42.2
+    created: "2026-04-17T00:47:45.046288+02:00"
+    description: A Helm chart for Platforma application
+    digest: 47fed793cd48f919dc721b0a84546b7d773fee1f9bbf81fc88f30f34e15099c1
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.2.tgz
+    version: 2.1.2
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.42.2
+    created: "2026-04-17T00:47:45.044646+02:00"
+    description: A Helm chart for Platforma application
+    digest: a64771d92a35795c76b2b3b504c4e6ec7e1ad9bc0fbe13c1c86ee1fefce802a0
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.1.tgz
+    version: 2.1.1
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.42.2
+    created: "2026-04-17T00:47:45.042936+02:00"
+    description: A Helm chart for Platforma application
+    digest: 611d0f587fee428697e2d4cf85fc245a9ef49cdc03ce91092380bcd7a72d2334
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.1.0.tgz
+    version: 2.1.0
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repository
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.41.2
+    created: "2026-04-17T00:47:45.040706+02:00"
+    description: A Helm chart for Platforma application
+    digest: 07e0d83151f733bbe38fd78e7311c4a304c4c35aea452ec0f5c8e1078f6c9c53
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.0.6.tgz
+    version: 2.0.6
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.41.1
+    created: "2026-04-17T00:47:45.039036+02:00"
+    description: A Helm chart for Platforma application
+    digest: c06e9460059319d04aef42cc1b1ae331bbbff4b35b6bac3c19fad576238011a8
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.0.5.tgz
+    version: 2.0.5
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.41.1
+    created: "2026-04-17T00:47:45.037342+02:00"
+    description: A Helm chart for Platforma application
+    digest: d3cb70253f8ba7302a086d5a312de0d0f52c2f36cf97b8f0fccd9da3f02f5688
+    home: https://github.com/milaboratory/platforma-helm-charts
+    icon: https://raw.githubusercontent.com/milaboratory/platforma-helm-charts/main/charts/platforma/logo.svg
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.0.4.tgz
+    version: 2.0.4
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.41.1
+    created: "2026-04-17T00:47:45.035685+02:00"
+    description: A Helm chart for Platforma application
+    digest: e076f0f5958db5d0a74dfb32bcd437c021ae82756c4ca22fae0035dac51dafa6
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.0.3.tgz
+    version: 2.0.3
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.41.1
+    created: "2026-04-17T00:47:45.034133+02:00"
+    description: A Helm chart for Platforma application
+    digest: 56f4f812855bebf31105e98b347f3b552c1e5de4de64cdf0d693e29ac616dd5e
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.0.2.tgz
+    version: 2.0.2
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.41.1
+    created: "2026-04-17T00:47:45.032625+02:00"
+    description: A Helm chart for Platforma application
+    digest: e78b17667aa106130085a99dd88aa63767c875dc63ba8f7d01b643358aeb12f1
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.0.1.tgz
+    version: 2.0.1
+  - annotations:
+      artifacthub.io/links: |-
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.41.0
+    created: "2026-04-17T00:47:45.030521+02:00"
+    description: A Helm chart for Platforma application
+    digest: 4d32cc851ceedb1d40116d98bef572cb77c4a77d5409769970699ad3c6f1cdee
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-2.0.0.tgz
+    version: 2.0.0
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.36.0
+    created: "2026-04-17T00:47:45.025669+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: cdc3a1be849f98457d58b312297e38fec4a9fc833b66a71a634df91dd335a6ce
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.21.0.tgz
+    version: 1.21.0
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.33.9
+    created: "2026-04-17T00:47:45.02293+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: ddb07dc5da98610c3b95f70540525fce3c7c681eadf0ea5bdabf39dddfe333c6
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.18.9.tgz
+    version: 1.18.9
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.33.8
+    created: "2026-04-17T00:47:45.020845+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 5dde56241b6ac9d7352e8133438dc77f9db3952e26fe31438a76821f0a572d1a
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.18.8.tgz
+    version: 1.18.8
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.33.7
+    created: "2026-04-17T00:47:45.019702+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 0f95c6bc0d94111e768a3c471f0eb5a399f6b0e491c22405859ded9bf792496f
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.18.7.tgz
+    version: 1.18.7
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.33.6
+    created: "2026-04-17T00:47:45.018439+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: a15075c78ae18234856d282ded1562b4c5e3b4522e10c664537c63d21ab292a3
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.18.6.tgz
+    version: 1.18.6
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.33.5
+    created: "2026-04-17T00:47:45.017402+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: a12a8e973977129f54a7b69b7799036bdfe59e2165659fdec4993915b5fda934
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.18.5.tgz
+    version: 1.18.5
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.33.2
+    created: "2026-04-17T00:47:45.016229+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: a51284edfbd45fe711634b0812856dc6d55c64aed42b182e078b4230ec92b083
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.18.2.tgz
+    version: 1.18.2
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.33.1
+    created: "2026-04-17T00:47:45.015059+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 02ecdcd0bc2b1bfa2ee2d4049bce909d29cb84b5e90fc21dab898ee468821e9b
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.18.1.tgz
+    version: 1.18.1
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.33.0
+    created: "2026-04-17T00:47:45.013336+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 6920429f240ddb351b419b13cc6e5624b91723fa1d6f56e0019f0d602e9042ef
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.18.0.tgz
+    version: 1.18.0
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.32.1
+    created: "2026-04-17T00:47:45.012226+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 299d6fe4b43a5a4c28f1e7f4db0b5c2f133e4f0460843cb055e4b8ffce7cfd69
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.17.1.tgz
+    version: 1.17.1
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.31.4
+    created: "2026-04-17T00:47:45.011215+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 75ba8c0740612b9c7ae902d9328659a12a31dd4ae6ffe326deb38650fbc9f200
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.16.4.tgz
+    version: 1.16.4
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.31.1
+    created: "2026-04-17T00:47:45.010185+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 112e2d286b763368a20ca81d221a098bd2ba5dfbd4b448f22e2e049963db652f
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.16.1.tgz
+    version: 1.16.1
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.29.3
+    created: "2026-04-17T00:47:45.009041+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: e72e1784f9c180557777943dc17b53b43633b80c3d193c7df6b93ad8083a7d10
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.14.3.tgz
+    version: 1.14.3
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.29.2
+    created: "2026-04-17T00:47:45.008002+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 4f797dcf0cf7da09170ecf5b003bd3a0aa1e7962096e9f4e7450b6d61656510f
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.14.2.tgz
+    version: 1.14.2
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.28.0
+    created: "2026-04-17T00:47:45.006899+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: cae1108f826e1dde4d28e063b48a94d20602a98eee734b9df84a57ce74fd0ef8
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.13.0.tgz
+    version: 1.13.0
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.27.0
+    created: "2026-04-17T00:47:45.004913+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 7b2272b00684d494e5aa394a8272bd5933123e8b4898669fba93419010b46f32
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.12.0.tgz
+    version: 1.12.0
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.26.2
+    created: "2026-04-17T00:47:45.003833+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 29db86ce15016086586252449794a162a7adddfe9e62e39128165928fdf01af0
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.11.0.tgz
+    version: 1.11.0
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.25.0
+    created: "2026-04-17T00:47:45.002641+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 1da0e031ce9e1b3b3a05bfcd8f66a99eaeaab0bc1e64a68b304d041fae046eaa
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.10.0.tgz
+    version: 1.10.0
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.24.0
+    created: "2026-04-17T00:47:45.029174+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 7b3dfe480bc9e58bf92d740a135df8444acc54740bfaccd76f7ae5bab452cf09
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.9.0.tgz
+    version: 1.9.0
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.18.3
+    created: "2026-04-17T00:47:45.028136+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 0f744eb30f4b887e12a3b20d5768d679692f18c3e5a7f445b3e495f442b63ea6
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.3.3.tgz
+    version: 1.3.3
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.18.2
+    created: "2026-04-17T00:47:45.027042+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 34d6b377afdd51a95df51295b15a658033696bc936c217816ad1aa68b43adae0
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.3.2.tgz
+    version: 1.3.2
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.17.0
+    created: "2026-04-17T00:47:45.024388+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 28abee078de7fc80f0c14d39912e9412287b56647517c67659a6b1c57b9fff37
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.2.0.tgz
+    version: 1.2.0
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.16.2
+    created: "2026-04-17T00:47:45.001499+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 627c1f75de2a618fdad09ebdb421c4ef31d087d62f80138ff4b4ef5edb55a455
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.1.2.tgz
+    version: 1.1.2
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.15.8
+    created: "2026-04-17T00:47:44.989448+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 439a708869ffbe9826a4a9eb7459a75f725f7f34ac551c9244e6dc8aa2cbcae6
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.0.10.tgz
+    version: 1.0.10
+  - annotations:
+      artifacthub.io/links: |
+        - name: Sources
+          url: https://platforma.bio/downloads/
+        - name: Charts repo
+          url: https://github.com/milaboratory/platforma-helm-charts
+        - name: Docs
+          url: https://docs.platforma.bio/
+    apiVersion: v2
+    appVersion: 1.15.6
+    created: "2026-04-17T00:47:45.000361+02:00"
+    description: MiLaboratories Platforma Helm Chart
+    digest: 0f73d7c866268cf4adcacfb12db3c38ac75652374663eace25f2134acc73cedc
+    home: https://github.com/milaboratory/platforma-helm-charts
+    keywords:
+    - milaboratories
+    - platforma
+    - kubernetes
+    kubeVersion: '>=1.25.0-0'
+    name: platforma
+    sources:
+    - https://github.com/milaboratory/platforma-helm-charts/charts/platforma
+    type: application
+    urls:
+    - https://milaboratory.github.io/platforma-helm/packages/platforma-1.0.9.tgz
+    version: 1.0.9
+  - annotations:
       artifacthub.io/links: |
         - name: Sources
           url: https://platforma.bio/downloads/
@@ -11,7 +1248,7 @@ entries:
           url: https://docs.platforma.bio/
     apiVersion: v2
     appVersion: 1.14.15
-    created: "2026-04-16T22:13:01.551316199Z"
+    created: "2026-04-17T00:47:44.998779+02:00"
     description: MiLaboratories Platforma Helm Chart
     digest: 6531df8530f56395e977753d6301fe4e99068669a9795fb7e652355655d7106e
     home: https://github.com/milaboratory/platforma-helm-charts
@@ -37,7 +1274,7 @@ entries:
           url: https://docs.platforma.bio/
     apiVersion: v2
     appVersion: 1.14.14
-    created: "2026-04-16T22:13:01.550307427Z"
+    created: "2026-04-17T00:47:44.997545+02:00"
     description: MiLaboratories Platforma Helm Chart
     digest: 29eaf33ab51bdcd3721f234f84fc244b5fc94bf1e1d1fd9c03acb1dc0244f69a
     home: https://github.com/milaboratory/platforma-helm-charts
@@ -63,7 +1300,7 @@ entries:
           url: https://docs.platforma.bio/
     apiVersion: v2
     appVersion: 1.14.13
-    created: "2026-04-16T22:13:01.548434744Z"
+    created: "2026-04-17T00:47:44.995595+02:00"
     description: MiLaboratories Platforma Helm Chart
     digest: d04c5d844b0d41ff2afb0ac632162390959960990f7475d30b2ebd6fa4be7496
     home: https://github.com/milaboratory/platforma-helm-charts
@@ -89,7 +1326,7 @@ entries:
           url: https://docs.platforma.bio/
     apiVersion: v2
     appVersion: 1.14.12
-    created: "2026-04-16T22:13:01.547413489Z"
+    created: "2026-04-17T00:47:44.994517+02:00"
     description: MiLaboratories Platforma Helm Chart
     digest: 810ddd6edc633a0d3575cd827d899ed57892d85f9a7e9c915053b8ff80db8521
     home: https://github.com/milaboratory/platforma-helm-charts
@@ -115,7 +1352,7 @@ entries:
           url: https://docs.platforma.bio/
     apiVersion: v2
     appVersion: 1.14.10
-    created: "2026-04-16T22:13:01.546372828Z"
+    created: "2026-04-17T00:47:44.993474+02:00"
     description: MiLaboratories Platforma Helm Chart
     digest: 34f9236f19df982a3223b9342fb5916efcc6b0bca7a015360dae3f890412a242
     home: https://github.com/milaboratory/platforma-helm-charts
@@ -141,7 +1378,7 @@ entries:
           url: https://docs.platforma.bio/
     apiVersion: v2
     appVersion: 1.14.10
-    created: "2026-04-16T22:13:01.545349059Z"
+    created: "2026-04-17T00:47:44.992119+02:00"
     description: MiLaboratories Platforma Helm Chart
     digest: 2e7be87d38f3c27ff0eb668005ee0c0c44f8d07bd7c0ae6b26cd44bb10ec1305
     home: https://github.com/milaboratory/platforma-helm-charts
@@ -167,7 +1404,7 @@ entries:
           url: https://docs.platforma.bio/
     apiVersion: v2
     appVersion: 1.14.9
-    created: "2026-04-16T22:13:01.544284152Z"
+    created: "2026-04-17T00:47:44.990597+02:00"
     description: MiLaboratories Platforma Helm Chart
     digest: 763626f18362091d2face22e59e905333162a8759a36bb5549c4c382a1982456
     home: https://github.com/milaboratory/platforma-helm-charts
@@ -193,7 +1430,7 @@ entries:
           url: https://docs.platforma.bio/
     apiVersion: v2
     appVersion: 1.14.8
-    created: "2026-04-16T22:13:01.543231609Z"
+    created: "2026-04-17T00:47:44.98739+02:00"
     description: MiLaboratories Platforma Helm Chart
     digest: e16a56c0e60ca7f431b8fb65867efdb705f4a67232fc59288357d9e417a50b4f
     home: https://github.com/milaboratory/platforma-helm-charts
@@ -209,4 +1446,4 @@ entries:
     urls:
     - https://milaboratory.github.io/platforma-helm/packages/platforma-1.0.1.tgz
     version: 1.0.1
-generated: "2026-04-16T22:13:01.54127282Z"
+generated: "2026-04-17T00:47:44.98595+02:00"

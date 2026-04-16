@@ -476,6 +476,19 @@ jobServiceAccount:
   annotations: {}
 
 # =============================================================================
+# CLEANUP
+# =============================================================================
+
+cleanup:
+  appwrappers:
+    # -- Enable periodic cleanup of old AppWrapper resources in final status
+    enabled: true
+    # -- Cron schedule (default: daily at 3:00 AM)
+    schedule: "0 3 * * *"
+    # -- Max age in seconds for AppWrappers in Succeeded/Failed status (default: 432000 = 5 days)
+    maxAgeSeconds: 432000
+
+# =============================================================================
 # JOB CONFIGURATION
 # =============================================================================
 

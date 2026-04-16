@@ -1,0 +1,66 @@
+{{- if and .Values.cleanup .Values.cleanup.appwrappers .Values.cleanup.appwrappers.enabled }}
+# =============================================================================
+# CronJob: Cleanup old AppWrapper resources
+# =============================================================================
+# Deletes AppWrappers in final status (Succeeded, Failed) older than the
+# configured retention period.
+# =============================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "platforma.fullname" . }}-cleanup-appwrappers
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.cleanup.appwrappers.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            {{- include "platforma.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: cleanup-appwrappers
+        spec:
+          serviceAccountName: {{ include "platforma.serviceAccountName" . }}
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  MAX_AGE_SECONDS={{ .Values.cleanup.appwrappers.maxAgeSeconds }}
+                  NOW=$(date +%s)
+
+                  echo "Cleaning up AppWrappers older than ${MAX_AGE_SECONDS}s in namespace {{ .Release.Namespace }}"
+
+                  kubectl get appwrappers.workload.codeflare.dev \
+                    -n {{ .Release.Namespace }} \
+                    -o json | \
+                  jq -r --argjson now "$NOW" --argjson max "$MAX_AGE_SECONDS" '
+                    .items[] |
+                    select(.status.phase == "Succeeded" or .status.phase == "Failed") |
+                    select(
+                      ($now - (.metadata.creationTimestamp | rtrimstr("Z") | strptime("%Y-%m-%dT%H:%M:%S") | mktime)) > $max
+                    ) |
+                    .metadata.name
+                  ' | while read -r name; do
+                    echo "Deleting AppWrapper: ${name}"
+                    kubectl delete appwrapper.workload.codeflare.dev "${name}" -n {{ .Release.Namespace }}
+                  done
+
+                  echo "Cleanup complete"
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 512Mi
+                limits:
+                  cpu: 500m
+                  memory: 2Gi
+{{- end }}

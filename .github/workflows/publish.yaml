@@ -13,6 +13,7 @@ jobs:
     permissions:
       contents: write
       packages: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,11 +63,21 @@ jobs:
           fi
           mv packages/index.yaml index.yaml
 
-      - name: Commit and push updated index
+      - name: Create PR with updated index
         if: steps.detect.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          BRANCH="auto/update-helm-index-$(date +%s)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${BRANCH}"
           git add index.yaml
           git commit -m "release: update helm repository index"
-          git push origin main
+          git push origin "${BRANCH}"
+          gh pr create \
+            --title "release: update helm repository index" \
+            --body "Auto-generated: updates index.yaml after new package addition." \
+            --base main \
+            --head "${BRANCH}"
+          gh pr merge "${BRANCH}" --auto --merge

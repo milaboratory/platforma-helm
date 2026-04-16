@@ -43,25 +43,4 @@ spec:
   {{- end }}
   {{- else }} {}
   {{- end }}
-{{- if .Values.kueue.pools.gpu.enabled }}
----
-apiVersion: kueue.x-k8s.io/v1beta2
-kind: ResourceFlavor
-metadata:
-  name: {{ include "platforma.kueue.clusterResourceName" . }}-gpu-flavor
-  labels:
-    {{- include "platforma.labels" . | nindent 4 }}
-spec:
-  {{- if or .Values.kueue.pools.gpu.nodeSelector .Values.kueue.pools.gpu.tolerations }}
-  {{- with .Values.kueue.pools.gpu.nodeSelector }}
-  nodeLabels:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-  {{- with .Values.kueue.pools.gpu.tolerations }}
-  tolerations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-  {{- else }} {}
-  {{- end }}
-{{- end }}
 {{- end }}

@@ -48,6 +48,10 @@ Metadata:
           - LdapSearchUser
           - LdapSearchPassword
       - Label:
+          default: 'GPU (optional)'
+        Parameters:
+          - EnableGPU
+      - Label:
           default: 'Cluster sizing'
         Parameters:
           - DeploymentSize
@@ -88,6 +92,8 @@ Metadata:
         default: Public subnet IDs (3, one per AZ)
       VpcCidr:
         default: VPC CIDR (new VPC only)
+      EnableGPU:
+        default: Enable NVIDIA GPU node groups
       DeploymentSize:
         default: 'Deployment size (controls parallelism)'
       SystemNodeAZ:
@@ -438,6 +444,17 @@ Parameters:
     AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
     Description: CIDR block for new VPC (ignored if VpcId is provided)
 
+  # --- GPU ---
+  EnableGPU:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Enable GPU node groups for CUDA/ML workloads. Creates 3 GPU node groups
+      (gpu-small, gpu-medium, gpu-large) that scale from 0 on demand.
+      Uses g4dn (T4 16GB) and g5 (A10G 24GB) instance types.
+      GPU node count per tier is controlled by the DeploymentSize parameter.
+
   # --- Cluster sizing ---
   DeploymentSize:
     Type: String
@@ -531,6 +548,7 @@ Mappings:
       MaxBatch64c256g: '1'
       MaxBatch32c256g: '2'
       MaxBatch64c512g: '1'
+      MaxGpu: '1'
       MaxUi: '4'
     medium:
       # Kueue quotas (derived: 4x63=252 CPU, 2x500=1000Gi)
@@ -543,6 +561,7 @@ Mappings:
       MaxBatch64c256g: '2'
       MaxBatch32c256g: '4'
       MaxBatch64c512g: '2'
+      MaxGpu: '2'
       MaxUi: '8'
     large:
       # Kueue quotas (derived: 8x63=504 CPU, 4x500=2000Gi)
@@ -555,6 +574,7 @@ Mappings:
       MaxBatch64c256g: '4'
       MaxBatch32c256g: '8'
       MaxBatch64c512g: '4'
+      MaxGpu: '4'
       MaxUi: '16'
     xlarge:
       # Kueue quotas (derived: 16x63=1008 CPU, 8x500=4000Gi)
@@ -567,6 +587,7 @@ Mappings:
       MaxBatch64c256g: '8'
       MaxBatch32c256g: '16'
       MaxBatch64c512g: '8'
+      MaxGpu: '8'
       MaxUi: '16'
 
 # =============================================================================
@@ -588,6 +609,7 @@ Conditions:
   HasLibrary3Irsa: !And
     - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
     - !Equals [!Ref DataLibrary3AccessKey, '']
+  GpuEnabled: !Equals [!Ref EnableGPU, 'true']
   UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
   IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
   SystemAZa: !Equals [!Ref SystemNodeAZ, 'a']
@@ -1867,6 +1889,138 @@ Resources:
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
+  # 4b. GPU node groups (conditional — only when EnableGPU=true)
+  # ---------------------------------------------------------------------------
+  # Three GPU tiers: small (g4dn.xlarge), medium (g4dn.2xlarge), large (g5.xlarge).
+  # Cluster Autoscaler with --expander=least-waste selects the smallest tier.
+
+  GpuNodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Condition: GpuEnabled
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 100
+              VolumeType: gp3
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+          - ResourceType: volume
+            Tags:
+              - Key: platforma
+                Value: !Ref ClusterName
+
+  GpuSmallNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Condition: GpuEnabled
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: gpu-small
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      AmiType: AL2023_x86_64_NVIDIA
+      InstanceTypes:
+        - g4dn.xlarge
+      CapacityType: SPOT
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu]
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref GpuNodeLaunchTemplate
+        Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: gpu
+      Taints:
+        - Key: nvidia.com/gpu
+          Value: present
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: gpu-small
+        platforma: !Sub "${ClusterName}"
+
+  GpuMediumNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Condition: GpuEnabled
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: gpu-medium
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      AmiType: AL2023_x86_64_NVIDIA
+      InstanceTypes:
+        - g4dn.2xlarge
+      CapacityType: SPOT
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu]
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref GpuNodeLaunchTemplate
+        Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: gpu
+      Taints:
+        - Key: nvidia.com/gpu
+          Value: present
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: gpu-medium
+        platforma: !Sub "${ClusterName}"
+
+  GpuLargeNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Condition: GpuEnabled
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: gpu-large
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      AmiType: AL2023_x86_64_NVIDIA
+      InstanceTypes:
+        - g5.xlarge
+      CapacityType: SPOT
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu]
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref GpuNodeLaunchTemplate
+        Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: gpu
+      Taints:
+        - Key: nvidia.com/gpu
+          Value: present
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: gpu-large
+        platforma: !Sub "${ClusterName}"
+
+  # ---------------------------------------------------------------------------
   # 5. EKS managed addons
   # ---------------------------------------------------------------------------
 
@@ -2291,6 +2445,8 @@ Resources:
             Value: !GetAtt PlatformaJobsIrsaRole.Arn
           - Name: VPC_ID
             Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
+          - Name: ENABLE_GPU
+            Value: !Ref EnableGPU
           - Name: DEPLOYMENT_SIZE
             Value: !Ref DeploymentSize
           - Name: UI_QUEUE_CPU
@@ -2634,6 +2790,14 @@ Resources:
                           - key: dedicated
                             value: batch
                             effect: NoSchedule
+                      gpu:
+                        enabled: ${ENABLE_GPU}
+                        nodeSelector:
+                          node.kubernetes.io/pool: gpu
+                        tolerations:
+                          - key: nvidia.com/gpu
+                            value: present
+                            effect: NoSchedule
                     dedicated:
                       resources:
                         ui:
@@ -2642,6 +2806,10 @@ Resources:
                         batch:
                           cpu: $BATCH_QUEUE_CPU
                           memory: ${BATCH_QUEUE_MEMORY_GI}Gi
+                        gpu:
+                          gpu: 12
+                          cpu: 48
+                          memory: 192Gi
                   app:
                     resources:
                       requests:
@@ -2662,13 +2830,20 @@ Resources:
                       secretName: platforma-htpasswd
                   AUTH_VALUES
                   elif [ "$AUTH_METHOD" = "ldap" ]; then
+                    # StartTLS upgrades a plain ldap:// connection to TLS.
+                    # It is incompatible with ldaps:// which is already encrypted.
+                    # Force startTLS=false when using ldaps:// to prevent startup failure.
+                    EFFECTIVE_START_TLS="${LDAP_START_TLS}"
+                    if echo "$LDAP_SERVER" | grep -qi '^ldaps://'; then
+                      EFFECTIVE_START_TLS="false"
+                    fi
                     # Write LDAP values directly into YAML to avoid Helm --set
                     # comma-splitting issues (LDAP DNs always contain commas).
                     cat >> /tmp/platforma-values.yaml << LDAP_BLOCK
                   auth:
                     ldap:
                       server: "${LDAP_SERVER}"
-                      startTLS: ${LDAP_START_TLS}
+                      startTLS: ${EFFECTIVE_START_TLS}
                   LDAP_BLOCK
                     if [ -n "$LDAP_BIND_DN" ]; then
                       cat >> /tmp/platforma-values.yaml << LDAP_BIND

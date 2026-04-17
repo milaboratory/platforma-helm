@@ -84,6 +84,16 @@ kueue:
         - key: dedicated
           value: batch
           effect: NoSchedule
+    # GPU node pool — enable for GPU job scheduling.
+    # Requires: Karpenter GPU NodePool + NVIDIA device plugin deployed to cluster.
+    gpu:
+      enabled: false
+      nodeSelector:
+        node.milab.io/compute: gpu-amd64
+      tolerations:
+        - key: nvidia.com/gpu
+          value: present
+          effect: NoSchedule
   dedicated:
     # Max simultaneous resources per queue. Adjust based on your node group scaling limits.
     # Defaults match the CloudFormation "small" deployment size.
@@ -94,6 +104,10 @@ kueue:
       batch:
         cpu: 126
         memory: 500Gi
+      gpu:
+        gpu: 4
+        cpu: 16
+        memory: 64Gi
 
 # Platforma server runs on system nodes (not on compute nodes used for jobs).
 app:

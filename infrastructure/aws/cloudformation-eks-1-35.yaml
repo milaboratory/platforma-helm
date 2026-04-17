@@ -2805,6 +2805,8 @@ Resources:
                       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
                       alb.ingress.kubernetes.io/certificate-arn: $CERTIFICATE_ARN
                       alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+                      alb.ingress.kubernetes.io/healthcheck-path: /grpc.health.v1.Health/Check
+                      alb.ingress.kubernetes.io/success-codes: '0'
                   kueue:
                     maxJobResources:
                       cpu: 62

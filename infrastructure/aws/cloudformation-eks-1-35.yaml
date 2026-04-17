@@ -2646,6 +2646,7 @@ Resources:
                   # Build app.extraArgs based on enabled features
                   APP_EXTRA_ARGS="[]"
                   if [ "$ECR_CACHE_ENABLED" = "true" ]; then
+                    AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
                     ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/quay/milaboratories/pl-containers"
                     APP_EXTRA_ARGS="[\"--default-docker-registry=${ECR_REGISTRY}\"]"
                   fi
@@ -3072,7 +3073,7 @@ Resources:
     Properties:
       RepositoryName: quay/milaboratories/pl-containers
       LifecyclePolicy:
-        LifecyclePolicyText: !Sub |
+        LifecyclePolicyText: |
           {
             "rules": [
               {

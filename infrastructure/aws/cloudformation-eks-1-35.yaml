@@ -2112,14 +2112,16 @@ Resources:
                 - |
                   [ "${TEARDOWN:-false}" = "true" ] && exit 0
                   echo "=== [2/5] KUEUE + APPWRAPPER ==="
+                  kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/cluster-autoscaler-${KUBERNETES_VERSION}.0/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
                     --version $KUEUE_VERSION \
                     -n kueue-system --create-namespace \
                     --set controllerManager.manager.resources.limits.cpu=500m \
-                    --set controllerManager.manager.resources.limits.memory=512Mi \
+                    --set controllerManager.manager.resources.limits.memory=1Gi \
                     --set controllerManager.manager.resources.requests.cpu=100m \
-                    --set controllerManager.manager.resources.requests.memory=256Mi \
+                    --set controllerManager.manager.resources.requests.memory=512Mi \
                     --set featureGates.AppWrapper=true \
+                    --set featureGates.ProvisioningACC=true \
                     --set 'integrations.frameworks[0]=batch/job' \
                     --set 'integrations.frameworks[1]=jobset.x-k8s.io/jobset' \
                     --set 'integrations.frameworks[2]=workload.codeflare.dev/appwrapper' \
@@ -2157,7 +2159,38 @@ Resources:
                     --set extraArgs.max-node-provision-time=5m \
                     --set extraArgs.initial-node-group-backoff-duration=1m \
                     --set extraArgs.max-node-group-backoff-duration=5m \
+                    --set extraArgs.enable-provisioning-requests=true \
+                    --set extraArgs.kube-api-content-type=application/json \
                     --atomic --timeout 5m
+
+                  # Grant CA access to ProvisioningRequest and PodTemplate resources
+                  # (not included in the Helm chart's built-in ClusterRole)
+                  kubectl apply -f - <<RBAC
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRole
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  rules:
+                    - apiGroups: ["autoscaling.x-k8s.io"]
+                      resources: ["provisioningrequests", "provisioningrequests/status"]
+                      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+                    - apiGroups: [""]
+                      resources: ["podtemplates"]
+                      verbs: ["get", "list", "watch"]
+                  ---
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRoleBinding
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  subjects:
+                    - kind: ServiceAccount
+                      name: cluster-autoscaler
+                      namespace: $NAMESPACE
+                  roleRef:
+                    kind: ClusterRole
+                    name: cluster-autoscaler-provisioning-requests
+                    apiGroup: rbac.authorization.k8s.io
+                  RBAC
 
                 # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---
                 - |
@@ -2634,6 +2667,8 @@ Resources:
                           - key: dedicated
                             value: batch
                             effect: NoSchedule
+                    provisioningRequest:
+                      enabled: true
                     dedicated:
                       resources:
                         ui:

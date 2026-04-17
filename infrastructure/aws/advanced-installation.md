@@ -284,10 +284,45 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
   --set extraArgs.max-node-provision-time=5m \
   --set extraArgs.initial-node-group-backoff-duration=1m \
   --set extraArgs.max-node-group-backoff-duration=5m \
+  --set extraArgs.enable-provisioning-requests=true \
+  --set extraArgs.kube-api-content-type=application/json \
   --atomic --timeout 5m
 ```
 
-### Configuration options
+### Grant ProvisioningRequest RBAC
+
+The Helm chart's built-in ClusterRole does not include ProvisioningRequest or PodTemplate permissions. Add them:
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-autoscaler-provisioning-requests
+rules:
+  - apiGroups: ["autoscaling.x-k8s.io"]
+    resources: ["provisioningrequests", "provisioningrequests/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["podtemplates"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-autoscaler-provisioning-requests
+subjects:
+  - kind: ServiceAccount
+    name: cluster-autoscaler
+    namespace: $PLATFORMA_NAMESPACE
+roleRef:
+  kind: ClusterRole
+  name: cluster-autoscaler-provisioning-requests
+  apiGroup: rbac.authorization.k8s.io
+EOF
+```
+
+### Configuration Options
 
 | Setting | Production | Dev/Test | Description |
 |---------|------------|----------|-------------|
@@ -298,6 +333,8 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
 | `max-node-provision-time` | 5m | 5m | Max time to wait for a node to become ready (default 15m is too long for EKS) |
 | `initial-node-group-backoff-duration` | 1m | 1m | Initial backoff after failed scale-up (default 5m) |
 | `max-node-group-backoff-duration` | 5m | 5m | Max backoff after repeated failures (default 30m) |
+| `enable-provisioning-requests` | true | true | Enable ProvisioningRequest API for Kueue integration (prevents resource fragmentation) |
+| `kube-api-content-type` | application/json | application/json | Required for CRD status updates (CA bug [#8855](https://github.com/kubernetes/autoscaler/issues/8855)) |
 
 Verify:
 
@@ -598,7 +635,18 @@ echo "Certificate validated: $CERT_ARN"
 
 ---
 
-## Step 8: Install Kueue with AppWrapper support
+## Step 8: Install Kueue With AppWrapper Support
+
+### Install ProvisioningRequest CRD
+
+The ProvisioningRequest CRD is required for Kueue to check with the Cluster Autoscaler whether pods can actually be scheduled before admitting workloads. It is not bundled with either the CA or Kueue Helm charts — it must be installed separately.
+
+```bash
+CA_VERSION="1.35.0"  # Must match Cluster Autoscaler image.tag (Step 3)
+kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/cluster-autoscaler-${CA_VERSION}/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
+```
+
+### Install Kueue
 
 ```bash
 helm install kueue oci://registry.k8s.io/kueue/charts/kueue \
@@ -696,6 +744,8 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set ingress.annotations."alb\.ingress\.kubernetes\.io/success-codes"=0 \
   --atomic --timeout 15m
 ```
+
+> **ProvisioningRequest**: The chart automatically creates ProvisioningRequest admission checks that prevent resource fragmentation — Kueue asks the Cluster Autoscaler whether pods can actually be scheduled before admitting them. This requires the ProvisioningRequest CRD (Step 8), `--enable-provisioning-requests=true` and `--kube-api-content-type=application/json` on the Cluster Autoscaler (Step 3), and the ProvisioningRequest RBAC (Step 3).
 
 Verify:
 

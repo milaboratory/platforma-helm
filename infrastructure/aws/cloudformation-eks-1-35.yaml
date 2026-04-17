@@ -2165,7 +2165,7 @@ Resources:
 
                   # Grant CA access to ProvisioningRequest and PodTemplate resources
                   # (not included in the Helm chart's built-in ClusterRole)
-                  kubectl apply -f - <<'RBAC'
+                  kubectl apply -f - <<RBAC
                   apiVersion: rbac.authorization.k8s.io/v1
                   kind: ClusterRole
                   metadata:
@@ -2668,7 +2668,7 @@ Resources:
                             value: batch
                             effect: NoSchedule
                     provisioningRequest:
-                      provisioningClassName: best-effort-atomic-scale-up.autoscaling.x-k8s.io
+                      enabled: true
                     dedicated:
                       resources:
                         ui:

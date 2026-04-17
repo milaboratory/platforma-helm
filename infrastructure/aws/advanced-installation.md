@@ -294,7 +294,7 @@ helm install cluster-autoscaler autoscaler/cluster-autoscaler \
 The Helm chart's built-in ClusterRole does not include ProvisioningRequest or PodTemplate permissions. Add them:
 
 ```bash
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

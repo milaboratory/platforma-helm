@@ -192,6 +192,13 @@ Kueue WorkloadPriorityClass names — mode-aware
 {{- end }}
 
 {{/*
+Kueue AdmissionCheck name for ProvisioningRequest
+*/}}
+{{- define "platforma.kueue.admissionCheckName" -}}
+{{- printf "%s-provreq" (include "platforma.kueue.clusterResourceName" .) -}}
+{{- end }}
+
+{{/*
 Main storage type — required, no auto-detection
 */}}
 {{- define "platforma.mainStorageType" -}}

@@ -7,20 +7,71 @@ if [ -n "${PL_JOB_PATH:-}" ]; then
   export PATH="${PL_JOB_PATH}:${PATH}"
 fi
 
-# --- Prune unexpected files from workdir ---
+# --- Prune unexpected items from workdir ---
 # Removes leftover output from OOM-killed retries so they don't consume memory.
-# PL_JOB_EXPECTED_FILES is a newline-separated list of relative paths.
+# PL_JOB_EXPECTED_ITEMS is a newline-separated list of relative paths.
+# Files are plain paths (e.g. "input.txt"), directories end with "/" (e.g. "output_dir/").
+# Expected files are kept. Expected directories are kept but their unexpected contents are cleaned.
+# Unexpected files and directories are removed entirely.
 # When unset, no pruning occurs (backward compat).
-if [ -n "${PL_JOB_EXPECTED_FILES:-}" ] && [ -n "${PL_JOB_WORKDIR:-}" ] && [ -d "${PL_JOB_WORKDIR}" ]; then
-  _expected_file=$(mktemp)
-  trap 'rm -f "$_expected_file"' EXIT INT TERM
-  printf '%s\n' "$PL_JOB_EXPECTED_FILES" > "$_expected_file"
+if [ -n "${PL_JOB_EXPECTED_ITEMS:-}" ] && [ -n "${PL_JOB_WORKDIR:-}" ] && [ -d "${PL_JOB_WORKDIR}" ]; then
+  _expected_files=$(mktemp)
+  _expected_dirs=$(mktemp)
+  trap 'rm -f "$_expected_files" "$_expected_dirs"' EXIT INT TERM
 
+  # Split items into files and directories (dirs end with /)
+  printf '%s\n' "$PL_JOB_EXPECTED_ITEMS" | while IFS= read -r _item; do
+    case "$_item" in
+      */) printf '%s\n' "$_item" >> "$_expected_dirs" ;;
+      *)  printf '%s\n' "$_item" >> "$_expected_files" ;;
+    esac
+  done
+
+  # Prune unexpected files
   find "$PL_JOB_WORKDIR" -type f | while IFS= read -r _abs_path; do
     _rel_path="${_abs_path#"${PL_JOB_WORKDIR}/"}"
-    if ! grep -qxF "$_rel_path" "$_expected_file"; then
+    if ! grep -qxF "$_rel_path" "$_expected_files"; then
       echo "[job-script] Pruning unexpected file: ${_rel_path}" >&2
       rm -f "$_abs_path"
+    fi
+  done
+
+  # Prune unexpected directories (depth-first to handle nested dirs correctly)
+  find "$PL_JOB_WORKDIR" -depth -type d ! -path "$PL_JOB_WORKDIR" | while IFS= read -r _abs_dir; do
+    _rel_dir="${_abs_dir#"${PL_JOB_WORKDIR}/"}"
+    _rel_dir_slash="${_rel_dir}/"
+
+    # Check if this directory is expected
+    if grep -qxF "$_rel_dir_slash" "$_expected_dirs"; then
+      continue
+    fi
+
+    # Check if this directory is an ancestor of an expected item
+    _is_ancestor=false
+    while IFS= read -r _exp_item; do
+      case "$_exp_item" in
+        "${_rel_dir}/"*) _is_ancestor=true; break ;;
+      esac
+    done < "$_expected_files"
+
+    if [ "$_is_ancestor" = false ] && [ -s "$_expected_dirs" ]; then
+      while IFS= read -r _exp_dir; do
+        case "$_exp_dir" in
+          "${_rel_dir}/"*) _is_ancestor=true; break ;;
+        esac
+      done < "$_expected_dirs"
+    fi
+
+    if [ "$_is_ancestor" = true ]; then
+      continue
+    fi
+
+    # Not expected and not an ancestor — remove if empty, or force remove
+    if rmdir "$_abs_dir" 2>/dev/null; then
+      echo "[job-script] Pruning empty directory: ${_rel_dir}" >&2
+    else
+      echo "[job-script] Pruning unexpected directory: ${_rel_dir}" >&2
+      rm -rf "$_abs_dir"
     fi
   done
 

@@ -565,6 +565,16 @@
           },
           "additionalProperties": false
         },
+        "provisioningRequest": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        },
         "shared": {
           "type": "object",
           "properties": {

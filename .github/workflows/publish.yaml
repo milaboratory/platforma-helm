@@ -18,6 +18,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -46,4 +47,10 @@ jobs:
       - name: Push to GHCR
         run: helm push packages/platforma-${{ steps.version.outputs.version }}.tgz oci://ghcr.io/${{ github.repository }}
 
-  
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::511903394050:role/prod-platforma-helm-github-oidc-euce1
+          aws-region: eu-central-1
+
+      - name: Upload CFN template to S3
+        run: aws s3 cp ./infrastructure/aws/cloudformation-eks-1-35.yaml s3://platforma-cloudformation/cloudformation-eks-1-35.yaml

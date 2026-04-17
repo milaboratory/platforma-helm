@@ -268,6 +268,26 @@ Check the CodeBuild project logs — links are in the Outputs tab (`HelmDeployer
 - **vCPU quota exceeded** — the stack checks your AWS On-Demand vCPU quota before deploying. If it's too low, request an
   increase at [Service Quotas console](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A)
 
+### Forcing Infrastructure Re-Deployment
+
+The CloudFormation template uses two CodeBuild projects:
+
+- **HelmDeployer** — installs/upgrades infra controllers (Kueue, Cluster Autoscaler, External DNS, ALB Controller)
+- **PlatformaDeployer** — installs/upgrades the Platforma Helm chart
+
+Each is triggered by a CloudFormation custom resource. CloudFormation only re-triggers a custom resource when its **properties change**. The template includes dedicated "force" properties for this:
+
+| Property | Custom resource | Purpose |
+|----------|----------------|---------|
+| `ForceUpdateInfra` | `TriggerHelmDeploy` | Re-deploys all infra controllers |
+| `ForceUpdatePlatforma` | `TriggerPlatformaDeploy` | Re-deploys Platforma chart |
+
+These are hardcoded in the template (not console parameters). When upgrading to a template that changes infra sub-charts, verify the `ForceUpdate*` values have been incremented — otherwise CloudFormation won't detect a change and the CodeBuild won't run.
+
+**Symptom:** Stack update succeeds but new features (e.g., ProvisioningRequest) don't work because the infra controllers weren't upgraded.
+
+**Fix:** Increment `ForceUpdateInfra` (or `ForceUpdatePlatforma`) in the template and re-run the stack update.
+
 ---
 
 ## Cleanup

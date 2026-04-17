@@ -13,7 +13,11 @@ The chart now creates:
 
 ## CloudFormation Deployments
 
-If you deployed via CloudFormation, **no manual steps are needed**. Update the CF template and run a stack update — all prerequisites (CRD, CA flags, RBAC, Kueue memory) are handled automatically in the correct order. The rest of this guide is for reference and for manual (non-CF) deployments.
+Update the CF template and run a stack update. The template includes `ForceUpdateInfra` which triggers the HelmDeployer CodeBuild to install all prerequisites (CRD, CA flags, RBAC, Kueue memory) before the Platforma chart upgrade.
+
+> **Important:** The HelmDeployer only re-runs when CloudFormation detects a property change on the `TriggerHelmDeploy` custom resource. The `ForceUpdateInfra` property exists specifically for this purpose — it is bumped in the template whenever infra sub-charts (Kueue, Cluster Autoscaler, External DNS, ALB Controller) need re-deployment. If you are upgrading from an older template and the HelmDeployer doesn't run, verify that `ForceUpdateInfra` has been incremented compared to the currently deployed template.
+
+The rest of this guide is for reference and for manual (non-CF) deployments.
 
 ## Manual Deployments
 

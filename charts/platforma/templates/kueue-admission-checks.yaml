@@ -1,0 +1,35 @@
+{{- if and (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources .Values.kueue.provisioningRequest.enabled }}
+# =============================================================================
+# ProvisioningRequest Admission Checks
+# =============================================================================
+# Prevents resource fragmentation by asking the Cluster Autoscaler whether pods
+# can actually be scheduled before admitting batch workloads.
+# Applied to the batch ClusterQueue only (see kueue-clusterqueues.yaml).
+# =============================================================================
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ProvisioningRequestConfig
+metadata:
+  name: {{ include "platforma.kueue.clusterResourceName" . }}-provreq-config
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  provisioningClassName: "best-effort-atomic-scale-up.autoscaling.x-k8s.io"
+  retryStrategy:
+    backoffLimitCount: 3
+    backoffBaseSeconds: 60
+    backoffMaxSeconds: 600
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: AdmissionCheck
+metadata:
+  name: {{ include "platforma.kueue.admissionCheckName" . }}
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  controllerName: kueue.x-k8s.io/provisioning-request
+  parameters:
+    apiGroup: kueue.x-k8s.io
+    kind: ProvisioningRequestConfig
+    name: {{ include "platforma.kueue.clusterResourceName" . }}-provreq-config
+{{- end }}

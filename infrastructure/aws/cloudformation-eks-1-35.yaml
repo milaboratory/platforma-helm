@@ -3040,7 +3040,7 @@ Resources:
       # The Lambda reads CodeBuildProject; the rest exist only so CloudFormation
       # detects property changes and sends an UPDATE event.
       KubernetesVersion: !FindInMap [Constants, EKS, Version]
-      ForceUpdateInfra: "1"  # Bump to force infra re-deployment
+      ForceUpdateInfra: "2"  # Bump to force infra re-deployment
 
   TriggerPlatformaDeploy:
     Type: AWS::CloudFormation::CustomResource

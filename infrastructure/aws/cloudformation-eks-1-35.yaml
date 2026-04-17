@@ -53,9 +53,25 @@ Metadata:
           - DeploymentSize
           - SystemNodeAZ
       - Label:
+          default: 'Container registry'
+        Parameters:
+          - EnableECRCache
+      - Label:
           default: Storage
         Parameters:
           - S3BucketName
+      - Label:
+          default: 'Migration (optional, one-time restore from existing server)'
+        Parameters:
+          - MigrationDatabaseS3Uri
+          - MigrationDbAccessKey
+          - MigrationDbSecretKey
+          - MigrationSourceBucket
+          - MigrationSourcePrefix
+          - MigrationSourceRegion
+          - MigrationStorageAccessKey
+          - MigrationStorageSecretKey
+          - MigrationStorageUserArn
       - Label:
           default: 'Data libraries (optional, up to 3 external read-only S3 buckets)'
         Parameters:
@@ -100,6 +116,8 @@ Metadata:
         default: 'Platforma chart version (empty = use built-in default)'
       PlatformaImage:
         default: Custom container image (leave empty for chart default)
+      EnableECRCache:
+        default: 'ECR pull-through cache for container images'
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       DomainName:
@@ -108,6 +126,24 @@ Metadata:
         default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
       AuthMethod:
         default: 'Authentication method (htpasswd or ldap)'
+      MigrationDatabaseS3Uri:
+        default: 'Database dump S3 URI (e.g. s3://bucket/backup.gz)'
+      MigrationSourceBucket:
+        default: 'Source primary storage S3 bucket name'
+      MigrationSourcePrefix:
+        default: 'Source bucket prefix (leave empty for root)'
+      MigrationSourceRegion:
+        default: 'Source bucket region (leave empty = cluster region)'
+      MigrationDbAccessKey:
+        default: 'AWS access key for database dump bucket'
+      MigrationDbSecretKey:
+        default: 'AWS secret key for database dump bucket'
+      MigrationStorageAccessKey:
+        default: 'AWS access key for source primary storage bucket'
+      MigrationStorageSecretKey:
+        default: 'AWS secret key for source primary storage bucket'
+      MigrationStorageUserArn:
+        default: 'IAM ARN for cross-account write access to destination bucket'
       EnableDemoLibrary:
         default: 'Enable MiLaboratories demo data library'
       DataLibrary1Name:
@@ -275,6 +311,79 @@ Parameters:
     Default: ''
     NoEcho: true
     Description: Password for the LDAP search user. Required when LdapSearchUser is set.
+
+  # --- Migration (from existing server) ---
+  MigrationDatabaseS3Uri:
+    Type: String
+    Default: ''
+    Description: >
+      S3 URI to the database dump file (e.g. s3://my-bucket/backup.gz).
+      Created on the source server: curl -s http://localhost:9091/db/state_raw | gzip > backup.gz
+      Leave empty to skip migration (fresh install).
+
+  MigrationSourceBucket:
+    Type: String
+    Default: ''
+    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
+    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
+    Description: >
+      Source S3 bucket for primary storage migration. Data will be synced
+      to the new bucket created by this stack. Leave empty to skip storage sync.
+
+  MigrationSourcePrefix:
+    Type: String
+    Default: ''
+    Description: Prefix within the source bucket. Leave empty for the bucket root.
+
+  MigrationSourceRegion:
+    Type: String
+    Default: ''
+    AllowedPattern: '^([a-z]{2}(-[a-z]+)+-\d{1,2})?$'
+    ConstraintDescription: 'Must be a valid AWS region or empty'
+    Description: >
+      Region of the source S3 bucket. Defaults to cluster region if empty.
+
+  MigrationDbAccessKey:
+    Type: String
+    Default: ''
+    AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
+    ConstraintDescription: 'Must be a valid AWS access key ID or empty'
+    Description: >
+      AWS access key for the database dump S3 bucket.
+      Required if the bucket is in a different AWS account.
+
+  MigrationDbSecretKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >
+      AWS secret key for the database dump S3 bucket.
+
+  MigrationStorageAccessKey:
+    Type: String
+    Default: ''
+    AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
+    ConstraintDescription: 'Must be a valid AWS access key ID or empty'
+    Description: >
+      AWS access key for the source primary storage S3 bucket.
+      Required if the bucket is in a different AWS account.
+
+  MigrationStorageSecretKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >
+      AWS secret key for the source primary storage S3 bucket.
+
+  MigrationStorageUserArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(arn:aws:iam::\d{12}:(user|role)/[a-zA-Z0-9_./@-]+)?$'
+    ConstraintDescription: 'Must be a valid IAM user or role ARN, or empty'
+    Description: >
+      IAM ARN of the user/role that will sync data to the new S3 bucket.
+      Required for cross-account migration — grants write access on the
+      destination bucket. Example: arn:aws:iam::123456789012:user/migration-user
 
   # --- Data libraries ---
   EnableDemoLibrary:
@@ -464,6 +573,18 @@ Parameters:
       your platforma-database PV resides (e.g. if volumes are in eu-west-1b,
       choose "b").
 
+  # --- Container registry ---
+  EnableECRCache:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Create an ECR pull-through cache for container images. When enabled,
+      Platforma pulls block images from a same-region ECR cache instead of
+      the default registry (containers.pl-open.science). ECR fetches from
+      Quay.io on first pull and caches locally. Disable for restricted
+      environments that cannot reach Quay.io.
+
   # --- Storage ---
   S3BucketName:
     Type: String
@@ -573,6 +694,7 @@ Mappings:
 # Conditions
 # =============================================================================
 Conditions:
+  ECRCacheEnabled: !Equals [!Ref EnableECRCache, 'true']
   CreateNewVpc: !Equals [!Ref VpcId, '']
   AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
   HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
@@ -588,6 +710,7 @@ Conditions:
   HasLibrary3Irsa: !And
     - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
     - !Equals [!Ref DataLibrary3AccessKey, '']
+  HasMigrationStorageUserArn: !Not [!Equals [!Ref MigrationStorageUserArn, '']]
   UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
   IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
   SystemAZa: !Equals [!Ref SystemNodeAZ, 'a']
@@ -996,6 +1119,18 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Policies: !If
+        - ECRCacheEnabled
+        - - PolicyName: ecr-pull-through-cache
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - ecr:BatchImportUpstreamImage
+                    - ecr:CreateRepository
+                  Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/quay/*'
+        - !Ref 'AWS::NoValue'
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2112,14 +2247,16 @@ Resources:
                 - |
                   [ "${TEARDOWN:-false}" = "true" ] && exit 0
                   echo "=== [2/5] KUEUE + APPWRAPPER ==="
+                  kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/cluster-autoscaler-${KUBERNETES_VERSION}.0/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
                     --version $KUEUE_VERSION \
                     -n kueue-system --create-namespace \
                     --set controllerManager.manager.resources.limits.cpu=500m \
-                    --set controllerManager.manager.resources.limits.memory=512Mi \
+                    --set controllerManager.manager.resources.limits.memory=1Gi \
                     --set controllerManager.manager.resources.requests.cpu=100m \
-                    --set controllerManager.manager.resources.requests.memory=256Mi \
+                    --set controllerManager.manager.resources.requests.memory=512Mi \
                     --set featureGates.AppWrapper=true \
+                    --set featureGates.ProvisioningACC=true \
                     --set 'integrations.frameworks[0]=batch/job' \
                     --set 'integrations.frameworks[1]=jobset.x-k8s.io/jobset' \
                     --set 'integrations.frameworks[2]=workload.codeflare.dev/appwrapper' \
@@ -2157,7 +2294,37 @@ Resources:
                     --set extraArgs.max-node-provision-time=5m \
                     --set extraArgs.initial-node-group-backoff-duration=1m \
                     --set extraArgs.max-node-group-backoff-duration=5m \
+                    --set extraArgs.enable-provisioning-requests=true \
+                    --set extraArgs.kube-api-content-type=application/json \
                     --atomic --timeout 5m
+
+                  # Grant CA access to ProvisioningRequest and PodTemplate resources
+                  kubectl apply -f - <<RBAC
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRole
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  rules:
+                    - apiGroups: ["autoscaling.x-k8s.io"]
+                      resources: ["provisioningrequests", "provisioningrequests/status"]
+                      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+                    - apiGroups: [""]
+                      resources: ["podtemplates"]
+                      verbs: ["get", "list", "watch"]
+                  ---
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRoleBinding
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  subjects:
+                    - kind: ServiceAccount
+                      name: cluster-autoscaler
+                      namespace: $NAMESPACE
+                  roleRef:
+                    kind: ClusterRole
+                    name: cluster-autoscaler-provisioning-requests
+                    apiGroup: rbac.authorization.k8s.io
+                  RBAC
 
                 # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---
                 - |
@@ -2291,6 +2458,8 @@ Resources:
             Value: !GetAtt PlatformaJobsIrsaRole.Arn
           - Name: VPC_ID
             Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
+          - Name: ECR_CACHE_ENABLED
+            Value: !Ref EnableECRCache
           - Name: DEPLOYMENT_SIZE
             Value: !Ref DeploymentSize
           - Name: UI_QUEUE_CPU
@@ -2349,6 +2518,22 @@ Resources:
             Value: !Ref DataLibrary3AccessKey
           - Name: DATA_LIBRARY_3_SECRET_KEY
             Value: !Ref DataLibrary3SecretKey
+          - Name: MIGRATION_DATABASE_S3_URI
+            Value: !Ref MigrationDatabaseS3Uri
+          - Name: MIGRATION_SOURCE_BUCKET
+            Value: !Ref MigrationSourceBucket
+          - Name: MIGRATION_SOURCE_PREFIX
+            Value: !Ref MigrationSourcePrefix
+          - Name: MIGRATION_SOURCE_REGION
+            Value: !Ref MigrationSourceRegion
+          - Name: MIGRATION_DB_ACCESS_KEY
+            Value: !Ref MigrationDbAccessKey
+          - Name: MIGRATION_DB_SECRET_KEY
+            Value: !Ref MigrationDbSecretKey
+          - Name: MIGRATION_STORAGE_ACCESS_KEY
+            Value: !Ref MigrationStorageAccessKey
+          - Name: MIGRATION_STORAGE_SECRET_KEY
+            Value: !Ref MigrationStorageSecretKey
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2577,6 +2762,14 @@ Resources:
                         name: platforma-library-demo-creds"
                   fi
 
+                  # Build app.extraArgs based on enabled features
+                  APP_EXTRA_ARGS="[]"
+                  if [ "$ECR_CACHE_ENABLED" = "true" ]; then
+                    AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                    ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/quay/milaboratories/pl-containers"
+                    APP_EXTRA_ARGS="[\"--default-docker-registry=${ECR_REGISTRY}\"]"
+                  fi
+
                   cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
                   environment: aws
                   storage:
@@ -2634,6 +2827,8 @@ Resources:
                           - key: dedicated
                             value: batch
                             effect: NoSchedule
+                    provisioningRequest:
+                      enabled: true
                     dedicated:
                       resources:
                         ui:
@@ -2652,6 +2847,7 @@ Resources:
                         memory: 16Gi
                     nodeSelector:
                       node.kubernetes.io/pool: system
+                    extraArgs: ${APP_EXTRA_ARGS:-[]}
                   dataSources: ${DATASOURCES_YAML:-[]}
                   PLATFORMA_VALUES
 
@@ -2696,6 +2892,12 @@ Resources:
                     fi
                   fi
 
+                  # --- Data migration (DISABLED — re-enable when ready) ---
+                  if [ -n "$MIGRATION_DATABASE_S3_URI" ]; then
+                    echo "INFO: Migration is disabled in this template version. Migration parameters are ignored."
+                    echo "INFO: To run migration, use the migration-enabled template version."
+                  fi
+
                   if [ -n "$PLATFORMA_IMAGE" ]; then
                     IMG_REPO=$(echo "$PLATFORMA_IMAGE" | sed 's/:.*//')
                     IMG_TAG=$(echo "$PLATFORMA_IMAGE" | sed 's/.*://')
@@ -2711,6 +2913,8 @@ Resources:
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
                     --atomic --timeout 15m
+
+                  # --- Data migration post-helm (DISABLED) ---
             post_build:
               commands:
                 - |
@@ -2945,6 +3149,44 @@ Resources:
         - !Ref EfsSecurityGroup
 
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # ECR Pull-Through Cache (optional)
+  # ---------------------------------------------------------------------------
+
+  ECRPullThroughCacheRule:
+    Type: AWS::ECR::PullThroughCacheRule
+    Condition: ECRCacheEnabled
+    Properties:
+      EcrRepositoryPrefix: quay
+      UpstreamRegistryUrl: quay.io
+
+  ECRCacheRepository:
+    Type: AWS::ECR::Repository
+    Condition: ECRCacheEnabled
+    DependsOn: ECRPullThroughCacheRule
+    Properties:
+      RepositoryName: quay/milaboratories/pl-containers
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire images older than 90 days",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 90
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
   # 7. Storage — S3 bucket (primary storage)
   # ---------------------------------------------------------------------------
   S3Bucket:
@@ -2995,6 +3237,20 @@ Resources:
           # the previous deny-all-except-role pattern because it locked out
           # account administrators from cleanup after stack deletion
           # (the IRSA role is deleted with the stack, leaving no one with access).
+          - !If
+            - HasMigrationStorageUserArn
+            - Sid: AllowMigrationUserWrite
+              Effect: Allow
+              Principal:
+                AWS: !Ref MigrationStorageUserArn
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
+                - !GetAtt S3Bucket.Arn
+                - !Sub '${S3Bucket.Arn}/*'
+            - !Ref AWS::NoValue
 
   # ---------------------------------------------------------------------------
   # 8. ACM Certificate (DNS-validated via Route53)

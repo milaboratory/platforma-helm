@@ -53,6 +53,10 @@ Metadata:
           - DeploymentSize
           - SystemNodeAZ
       - Label:
+          default: 'Container registry'
+        Parameters:
+          - EnableECRCache
+      - Label:
           default: Storage
         Parameters:
           - S3BucketName
@@ -100,6 +104,8 @@ Metadata:
         default: 'Platforma chart version (empty = use built-in default)'
       PlatformaImage:
         default: Custom container image (leave empty for chart default)
+      EnableECRCache:
+        default: 'ECR pull-through cache for container images'
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       DomainName:
@@ -464,6 +470,19 @@ Parameters:
       your platforma-database PV resides (e.g. if volumes are in eu-west-1b,
       choose "b").
 
+  # --- Container registry ---
+  EnableECRCache:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Create an ECR pull-through cache for container images. When enabled,
+      Platforma pulls block images from a same-region ECR cache instead of
+      the default registry (containers.pl-open.science). ECR fetches from
+      Quay.io on first pull and caches locally. Disable for restricted
+      environments that cannot reach Quay.io — images will be pulled from
+      containers.pl-open.science via Global Accelerator.
+
   # --- Storage ---
   S3BucketName:
     Type: String
@@ -573,6 +592,7 @@ Mappings:
 # Conditions
 # =============================================================================
 Conditions:
+  ECRCacheEnabled: !Equals [!Ref EnableECRCache, 'true']
   CreateNewVpc: !Equals [!Ref VpcId, '']
   AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
   HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
@@ -996,6 +1016,18 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Policies: !If
+        - ECRCacheEnabled
+        - - PolicyName: ecr-pull-through-cache
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - ecr:BatchImportUpstreamImage
+                    - ecr:CreateRepository
+                  Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/quay/*'
+        - !Ref 'AWS::NoValue'
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2112,14 +2144,16 @@ Resources:
                 - |
                   [ "${TEARDOWN:-false}" = "true" ] && exit 0
                   echo "=== [2/5] KUEUE + APPWRAPPER ==="
+                  kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/cluster-autoscaler-${KUBERNETES_VERSION}.0/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
                     --version $KUEUE_VERSION \
                     -n kueue-system --create-namespace \
                     --set controllerManager.manager.resources.limits.cpu=500m \
-                    --set controllerManager.manager.resources.limits.memory=512Mi \
+                    --set controllerManager.manager.resources.limits.memory=1Gi \
                     --set controllerManager.manager.resources.requests.cpu=100m \
-                    --set controllerManager.manager.resources.requests.memory=256Mi \
+                    --set controllerManager.manager.resources.requests.memory=512Mi \
                     --set featureGates.AppWrapper=true \
+                    --set featureGates.ProvisioningACC=true \
                     --set 'integrations.frameworks[0]=batch/job' \
                     --set 'integrations.frameworks[1]=jobset.x-k8s.io/jobset' \
                     --set 'integrations.frameworks[2]=workload.codeflare.dev/appwrapper' \
@@ -2157,7 +2191,37 @@ Resources:
                     --set extraArgs.max-node-provision-time=5m \
                     --set extraArgs.initial-node-group-backoff-duration=1m \
                     --set extraArgs.max-node-group-backoff-duration=5m \
+                    --set extraArgs.enable-provisioning-requests=true \
+                    --set extraArgs.kube-api-content-type=application/json \
                     --atomic --timeout 5m
+
+                  # Grant CA access to ProvisioningRequest and PodTemplate resources
+                  kubectl apply -f - <<RBAC
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRole
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  rules:
+                    - apiGroups: ["autoscaling.x-k8s.io"]
+                      resources: ["provisioningrequests", "provisioningrequests/status"]
+                      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+                    - apiGroups: [""]
+                      resources: ["podtemplates"]
+                      verbs: ["get", "list", "watch"]
+                  ---
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRoleBinding
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  subjects:
+                    - kind: ServiceAccount
+                      name: cluster-autoscaler
+                      namespace: $NAMESPACE
+                  roleRef:
+                    kind: ClusterRole
+                    name: cluster-autoscaler-provisioning-requests
+                    apiGroup: rbac.authorization.k8s.io
+                  RBAC
 
                 # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---
                 - |
@@ -2291,6 +2355,8 @@ Resources:
             Value: !GetAtt PlatformaJobsIrsaRole.Arn
           - Name: VPC_ID
             Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
+          - Name: ECR_CACHE_ENABLED
+            Value: !Ref EnableECRCache
           - Name: DEPLOYMENT_SIZE
             Value: !Ref DeploymentSize
           - Name: UI_QUEUE_CPU
@@ -2577,6 +2643,14 @@ Resources:
                         name: platforma-library-demo-creds"
                   fi
 
+                  # Build app.extraArgs based on enabled features
+                  APP_EXTRA_ARGS="[]"
+                  if [ "$ECR_CACHE_ENABLED" = "true" ]; then
+                    AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                    ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/quay/milaboratories/pl-containers"
+                    APP_EXTRA_ARGS="[\"--default-docker-registry=${ECR_REGISTRY}\"]"
+                  fi
+
                   cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
                   environment: aws
                   storage:
@@ -2634,6 +2708,8 @@ Resources:
                           - key: dedicated
                             value: batch
                             effect: NoSchedule
+                    provisioningRequest:
+                      enabled: true
                     dedicated:
                       resources:
                         ui:
@@ -2652,6 +2728,7 @@ Resources:
                         memory: 16Gi
                     nodeSelector:
                       node.kubernetes.io/pool: system
+                    extraArgs: ${APP_EXTRA_ARGS:-[]}
                   dataSources: ${DATASOURCES_YAML:-[]}
                   PLATFORMA_VALUES
 
@@ -2969,6 +3046,49 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  # =========================================================================
+  # ECR Pull-Through Cache (optional)
+  # =========================================================================
+  # Caches container images from Quay.io (upstream of containers.pl-open.science)
+  # in a same-region ECR registry for lower pull latency.
+
+  ECRPullThroughCacheRule:
+    Type: AWS::ECR::PullThroughCacheRule
+    Condition: ECRCacheEnabled
+    Properties:
+      EcrRepositoryPrefix: quay
+      UpstreamRegistryUrl: quay.io
+
+  # Lifecycle policy applied to the main image repository.
+  # Repositories are auto-created by pull-through on first pull, but we
+  # pre-create this one to attach the lifecycle policy.
+  ECRCacheRepository:
+    Type: AWS::ECR::Repository
+    Condition: ECRCacheEnabled
+    DependsOn: ECRPullThroughCacheRule
+    Properties:
+      RepositoryName: quay/milaboratories/pl-containers
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire images older than 90 days",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 90
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
       Tags:
         - Key: platforma
           Value: !Ref ClusterName

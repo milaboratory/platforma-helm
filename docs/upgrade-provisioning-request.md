@@ -1,6 +1,6 @@
 # Upgrade Guide: ProvisioningRequest Integration
 
-Starting with Platforma Helm chart v3.3.0, the chart creates ProvisioningRequest admission checks that prevent Kueue resource fragmentation. This requires additional infrastructure components.
+Starting with Platforma Helm chart v3.2.2, the chart creates ProvisioningRequest admission checks that prevent Kueue resource fragmentation. This requires additional infrastructure components.
 
 ## What Changed
 

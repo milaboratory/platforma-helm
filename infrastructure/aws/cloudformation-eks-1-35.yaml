@@ -2163,6 +2163,11 @@ Resources:
                     --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[1]=kueue-system' \
                     --set metrics.enableClusterQueueResources=true \
                     --atomic --timeout 5m
+                  # Restart Kueue if the ProvisioningRequest CRD was just installed —
+                  # Kueue only discovers CRDs at startup and skips the provisioning
+                  # controller if the CRD wasn't present when it first started.
+                  kubectl rollout restart deployment kueue-controller-manager -n kueue-system
+                  kubectl wait --for=condition=Available deployment/kueue-controller-manager -n kueue-system --timeout=120s
                   kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml
                   kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
                   kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found

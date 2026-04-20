@@ -2083,6 +2083,10 @@ Resources:
             Value: !Ref HostedZoneId
           - Name: KUBERNETES_VERSION
             Value: !FindInMap [Constants, EKS, Version]
+          # -----------------------------------------------------------------
+          # INFRA VERSIONS — duplicated in TriggerHelmDeploy properties.
+          # When changing any version below, also update TriggerHelmDeploy.
+          # -----------------------------------------------------------------
           - Name: KUEUE_VERSION
             Value: '0.16.1'
           - Name: APPWRAPPER_VERSION
@@ -2914,11 +2918,19 @@ Resources:
     Properties:
       ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
       CodeBuildProject: !Sub '${ClusterName}-helm-deployer'
-      # Properties below trigger re-deployment when changed during stack update.
-      # The Lambda reads CodeBuildProject; the rest exist only so CloudFormation
-      # detects property changes and sends an UPDATE event.
+      # --- Trigger properties ---
+      # CF re-invokes this resource whenever ANY property value changes.
+      # Version properties MUST match HelmDeployerProject env vars above.
+      # This duplication is intentional — CF needs property changes to
+      # detect when re-deployment is required.
       KubernetesVersion: !FindInMap [Constants, EKS, Version]
-      ForceUpdateInfra: "2"  # Bump to force infra re-deployment
+      KueueVersion: '0.16.1'
+      AppWrapperVersion: 'v1.2.0'
+      ClusterAutoscalerChartVersion: '9.56.0'
+      ExternalDnsVersion: '1.20.0'
+      AlbControllerVersion: '3.0.0'
+      # Bump for non-version buildspec changes (new flags, RBAC, install order)
+      BuildSpecRevision: '2'
 
   TriggerPlatformaDeploy:
     Type: AWS::CloudFormation::CustomResource

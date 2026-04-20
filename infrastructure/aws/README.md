@@ -268,6 +268,26 @@ Check the CodeBuild project logs — links are in the Outputs tab (`HelmDeployer
 - **vCPU quota exceeded** — the stack checks your AWS On-Demand vCPU quota before deploying. If it's too low, request an
   increase at [Service Quotas console](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-1216C47A)
 
+### How Infrastructure Re-Deployment Works
+
+The template uses two CodeBuild projects:
+
+- **HelmDeployer** — installs/upgrades infra controllers (Kueue, Cluster Autoscaler, External DNS, ALB Controller)
+- **PlatformaDeployer** — installs/upgrades the Platforma Helm chart
+
+Each is triggered by a CloudFormation custom resource that only re-runs when its **properties change**. The `TriggerHelmDeploy` resource mirrors all infra component version strings as properties:
+
+| Property | Source |
+|----------|--------|
+| `KueueVersion` | `KUEUE_VERSION` env var in HelmDeployerProject |
+| `AppWrapperVersion` | `APPWRAPPER_VERSION` |
+| `ClusterAutoscalerChartVersion` | `CLUSTER_AUTOSCALER_CHART_VERSION` |
+| `ExternalDnsVersion` | `EXTERNAL_DNS_VERSION` |
+| `AlbControllerVersion` | `ALB_CONTROLLER_VERSION` |
+| `BuildSpecRevision` | Bump for non-version changes (new flags, RBAC, install order) |
+
+When you update an infra component version in the CodeBuild env vars, **also update the matching property on `TriggerHelmDeploy`**. Otherwise CloudFormation won't detect the change and the HelmDeployer won't run.
+
 ---
 
 ## Cleanup

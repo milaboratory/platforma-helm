@@ -12,23 +12,30 @@ jobs:
       - name: Check for unauthorized changes
         if: github.actor != 'github-actions[bot]'
         env:
-          PROTECTED_FOLDER: charts/platforma
           GH_TOKEN: ${{ github.token }}
         run: |
+          PROTECTED_FOLDERS="charts/platforma infrastructure/aws"
+
           CHANGED_FILES=$(gh api \
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
             --paginate --jq '.[].filename')
 
-          VIOLATIONS=$(echo "${CHANGED_FILES}" | grep "^${PROTECTED_FOLDER}/" || true)
+          VIOLATIONS=""
+          for FOLDER in ${PROTECTED_FOLDERS}; do
+            FOLDER_VIOLATIONS=$(echo "${CHANGED_FILES}" | grep "^${FOLDER}/" || true)
+            if [ -n "${FOLDER_VIOLATIONS}" ]; then
+              VIOLATIONS="${VIOLATIONS}${FOLDER_VIOLATIONS}"$'\n'
+            fi
+          done
 
           if [ -n "${VIOLATIONS}" ]; then
-            echo "::error::Changes to '${PROTECTED_FOLDER}/' are only allowed from the sync bot."
+            echo "::error::Changes to synced folders are only allowed from the sync bot."
             echo ""
             echo "The following files were modified:"
             echo "${VIOLATIONS}"
             echo ""
-            echo "This folder is managed automatically. Please do not modify it directly."
+            echo "These folders are managed automatically. Please do not modify them directly."
             exit 1
           fi
 
-          echo "No unauthorized changes to '${PROTECTED_FOLDER}/'."
+          echo "No unauthorized changes to synced folders."

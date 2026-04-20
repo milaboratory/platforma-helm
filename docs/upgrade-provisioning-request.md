@@ -13,11 +13,13 @@ The chart now creates:
 
 ## CloudFormation Deployments
 
-Update the CF template and run a stack update. The template includes `ForceUpdateInfra` which triggers the HelmDeployer CodeBuild to install all prerequisites (CRD, CA flags, RBAC, Kueue memory) before the Platforma chart upgrade.
+Update the CF template and run a stack update. The template mirrors all infra component version strings as properties on `TriggerHelmDeploy` — any version change automatically triggers the HelmDeployer CodeBuild, which installs all prerequisites (CRD, CA flags, RBAC, Kueue memory) before the Platforma chart upgrade.
 
-> **Important:** The HelmDeployer only re-runs when CloudFormation detects a property change on the `TriggerHelmDeploy` custom resource. The `ForceUpdateInfra` property exists specifically for this purpose — it is bumped in the template whenever infra sub-charts (Kueue, Cluster Autoscaler, External DNS, ALB Controller) need re-deployment. If you are upgrading from an older template and the HelmDeployer doesn't run, verify that `ForceUpdateInfra` has been incremented compared to the currently deployed template.
+> **Note:** For non-version buildspec changes (new Helm flags, RBAC additions, install order), the template uses a `BuildSpecRevision` property that must be bumped manually. See the README for details.
 
-The rest of this guide is for reference and for manual (non-CF) deployments.
+For GKE deployments, see [upgrade-provisioning-request-gke.md](upgrade-provisioning-request-gke.md).
+
+The rest of this guide is for reference and for manual (non-CF) AWS EKS deployments.
 
 ## Manual Deployments
 

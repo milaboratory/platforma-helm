@@ -1,0 +1,102 @@
+image:
+  repository: quay.io/milaboratory/pl
+  tag: "main"  # Override with --set image.tag="..." from CI
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  grpcPort: 6345
+  httpPort: 6347
+  annotations: {}
+
+storageService:
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+license:
+  secretName: ""    # Must be provided — k8s secret name containing the license key
+  secretKey: pl-license-key
+
+auth:
+  htpasswd:
+    secretName: ""  # Existing htpasswd secret; if empty, add --no-auth to app.extraArgs
+    secretKey: htpasswd
+  ldap:
+    server: ""          # e.g. ldaps://ldap.eu.foxpass.com
+    startTLS: false
+    searchRules: []     # list of "<filter>|<base DN>" strings
+    searchUser: ""
+    searchPasswordSecretRef:
+      name: ""
+      key: ""
+    tls:
+      insecureSkipVerify: false
+
+# Ingress for Platforma gRPC endpoint (external-dns watches Ingress resources)
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  tls:
+    enabled: false
+    secretName: ""
+  annotations: {}
+
+# Additional ingress for local FS HTTP endpoint (port 6347)
+additionalIngress:
+  enabled: false
+  className: ""
+  host: ""
+  tls:
+    enabled: false
+    secretName: ""
+  annotations: {}
+
+# Extra CLI args passed verbatim (e.g. ["--no-auth"] for testing without credentials)
+app:
+  extraArgs: []
+  extraEnv: []
+  # - name: MY_VAR
+  #   value: "plain-text"
+  # - name: MY_SECRET
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: my-secret
+  #       key: my-key
+  debug:
+    enabled: false
+
+# emptyDir volumes — no PVC dependencies
+volumes:
+  storage:
+    sizeLimit: 10Gi
+  workspace:
+    sizeLimit: 10Gi
+  database:
+    sizeLimit: 5Gi
+  main:
+    sizeLimit: 5Gi
+
+# Data library sources (S3, PVC, or GCS)
+# Example:
+#   dataSources:
+#     - name: "test-assets"
+#       type: s3
+#       s3:
+#         bucket: "my-bucket"
+#         region: "eu-central-1"
+#         prefix: "test-assets"
+#         secretRef:
+#           name: "my-s3-credentials"
+#           accessKeyField: "access-key"
+#           secretKeyField: "secret-key"
+dataSources: []

@@ -4,7 +4,7 @@ Production-ready Helm chart for deploying [Platforma](https://platforma.bio) on 
 
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-  --version 3.0.1 -n platforma -f your-values.yaml
+  -n platforma -f your-values.yaml
 ```
 
 ## Prerequisites
@@ -67,7 +67,6 @@ kubectl create secret generic platforma-htpasswd \
 **AWS EKS (S3 primary storage):**
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-  --version 3.0.1 \
   -n platforma \
   -f infrastructure/aws/values-aws-s3.yaml \
   --set storage.main.s3.bucket=my-platforma-bucket \
@@ -77,7 +76,6 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
 **GCP GKE (GCS primary storage):**
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-  --version 3.0.1 \
   -n platforma \
   -f infrastructure/gcp/values-gcp-gcs.yaml \
   --set storage.workspace.filestore.ip=10.0.0.2 \
@@ -88,7 +86,6 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
 **Generic NFS:**
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-  --version 3.0.1 \
   -n platforma \
   --set environment="" \
   --set auth.htpasswd.secretName=platforma-htpasswd \
@@ -342,6 +339,8 @@ ingress:
     secretName: "platforma-tls"
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
+app:
+  serviceAnnotations:
     traefik.ingress.kubernetes.io/service.serversscheme: h2c
 ```
 

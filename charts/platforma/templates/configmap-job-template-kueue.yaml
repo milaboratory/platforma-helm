@@ -67,6 +67,7 @@ data:
                   serviceAccountName: {{ include "platforma.jobServiceAccountName" . }}
                   securityContext:
                     runAsNonRoot: true
+                    fsGroup: 1010
                   restartPolicy: Never
                   <<- if eq .PlatformaQueue "ui-tasks" >>
                   {{- with .Values.kueue.pools.ui.nodeSelector }}

@@ -283,6 +283,11 @@
                 "chownOnCreate": {
                   "type": "boolean"
                 },
+                "accessMode": {
+                  "type": "string",
+                  "enum": ["ReadWriteOnce", "ReadWriteMany", "ReadOnlyMany"],
+                  "default": "ReadWriteMany"
+                },
                 "size": {
                   "type": "string"
                 },
@@ -702,6 +707,9 @@
           "type": "object"
         },
         "podAnnotations": {
+          "type": "object"
+        },
+        "serviceAnnotations": {
           "type": "object"
         },
         "env": {

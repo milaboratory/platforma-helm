@@ -124,10 +124,10 @@ spec:
             - "--k8s-namespace={{ .Release.Namespace }}"
             {{- if .Values.kueue.maxJobResources }}
             {{- if .Values.kueue.maxJobResources.cpu }}
-            - "--k8s-max-cpu-request={{ .Values.kueue.maxJobResources.cpu }}"
+            - "--runner-max-cpu-request={{ .Values.kueue.maxJobResources.cpu }}"
             {{- end }}
             {{- if .Values.kueue.maxJobResources.memory }}
-            - "--k8s-max-ram-request={{ .Values.kueue.maxJobResources.memory }}"
+            - "--runner-max-ram-request={{ .Values.kueue.maxJobResources.memory }}"
             {{- end }}
             {{- end }}
             - "--runner-enable-docker"
@@ -185,11 +185,7 @@ spec:
             {{- if eq .type "pvc" }}
             - "--data-library-fs={{ .name }}=/data/sources/{{ .name }}"
             {{- else if eq .type "s3" }}
-            {{- if .s3.endpoint }}
-            - "--data-library-s3={{ .name }}={{ .s3.endpoint }}/{{ .s3.bucket }}{{ if .s3.prefix }}/{{ .s3.prefix }}{{ end }}"
-            {{- else }}
-            - "--data-library-s3={{ .name }}=s3://{{ .s3.bucket }}{{ if .s3.prefix }}/{{ .s3.prefix }}{{ end }}"
-            {{- end }}
+            - "--data-library-s3={{ .name }}=s3://{{ .s3.bucket }}{{ if .s3.prefix }}/{{ trimSuffix "/" .s3.prefix }}/{{ end }}"
             {{- if .s3.region }}
             - "--data-library-s3-region={{ .name }}={{ .s3.region }}"
             {{- end }}

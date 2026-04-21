@@ -173,7 +173,7 @@ metadata:
     helm.sh/resource-policy: keep
 spec:
   accessModes:
-    - ReadWriteMany
+    - {{ .Values.storage.workspace.pvc.accessMode | default "ReadWriteMany" }}
   {{- if .Values.storage.workspace.pvc.storageClass }}
   storageClassName: {{ .Values.storage.workspace.pvc.storageClass | quote }}
   {{- end }}

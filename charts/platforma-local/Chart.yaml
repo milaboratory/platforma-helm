@@ -1,0 +1,6 @@
+apiVersion: v2
+name: platforma-local
+description: Minimal Platforma deployment with local FS storage for CI testing
+type: application
+version: 0.1.0
+appVersion: latest

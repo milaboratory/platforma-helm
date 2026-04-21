@@ -1,0 +1,97 @@
+# =============================================================================
+# Platforma Local Ingress Resources
+# =============================================================================
+# Generates up to 2 ingress resources:
+#   1. {fullname}            — primary ingress (gRPC)
+#   2. {fullname}-additional — additional ingress (HTTP storage)
+# =============================================================================
+
+{{/* ---- Validation ---- */}}
+{{- if .Values.ingress.enabled }}
+{{- if not .Values.ingress.host }}
+{{- fail "ingress.enabled=true requires ingress.host to be set" }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.additionalIngress.enabled }}
+{{- if not .Values.additionalIngress.host }}
+{{- fail "additionalIngress.enabled=true requires additionalIngress.host to be set" }}
+{{- end }}
+{{- end }}
+
+{{/* ---- 1. Primary ingress (gRPC) ---- */}}
+{{- if and .Values.ingress.enabled .Values.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "platforma-local.fullname" . }}
+  labels:
+    {{- include "platforma-local.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      {{- if .Values.ingress.tls.secretName }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "platforma-local.fullname" . }}
+                port:
+                  number: {{ .Values.service.grpcPort }}
+{{- end }}
+
+{{/* ---- 2. Additional ingress (HTTP storage) ---- */}}
+{{- if and .Values.additionalIngress.enabled .Values.additionalIngress.host }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "platforma-local.fullname" . }}-additional
+  labels:
+    {{- include "platforma-local.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage
+  {{- with .Values.additionalIngress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.additionalIngress.className }}
+  ingressClassName: {{ .Values.additionalIngress.className }}
+  {{- end }}
+  {{- if .Values.additionalIngress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.additionalIngress.host | quote }}
+      {{- if .Values.additionalIngress.tls.secretName }}
+      secretName: {{ .Values.additionalIngress.tls.secretName }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.additionalIngress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "platforma-local.fullname" . }}-storage
+                port:
+                  number: {{ .Values.service.httpPort }}
+{{- end }}

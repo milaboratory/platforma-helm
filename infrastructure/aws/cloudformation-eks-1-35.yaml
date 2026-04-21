@@ -3085,7 +3085,7 @@ Resources:
       ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
       CodeBuildProject: !Sub '${ClusterName}-platforma-deployer'
       # Properties below trigger re-deployment when changed during stack update.
-      ForceUpdatePlatforma: "1"  # Bump to force Platforma re-deployment
+      ForceUpdatePlatforma: "2"  # Bump to force Platforma re-deployment
       PlatformaVersion: !If
         - UseDefaultPlatformaVersion
         - !FindInMap [Constants, Platforma, Version]

@@ -2,11 +2,9 @@ name: Publish Helm Chart
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'packages/*.tgz'
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
   # Triggered by version tag push from sync-helm-chart.yaml.

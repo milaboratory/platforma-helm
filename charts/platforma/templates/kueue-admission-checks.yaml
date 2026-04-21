@@ -7,7 +7,7 @@
 # Applied to the batch ClusterQueue only (see kueue-clusterqueues.yaml).
 # =============================================================================
 ---
-apiVersion: kueue.x-k8s.io/v1beta1
+apiVersion: kueue.x-k8s.io/v1beta2
 kind: ProvisioningRequestConfig
 metadata:
   name: {{ include "platforma.kueue.clusterResourceName" . }}-provreq-config
@@ -20,7 +20,7 @@ spec:
     backoffBaseSeconds: 60
     backoffMaxSeconds: 600
 ---
-apiVersion: kueue.x-k8s.io/v1beta1
+apiVersion: kueue.x-k8s.io/v1beta2
 kind: AdmissionCheck
 metadata:
   name: {{ include "platforma.kueue.admissionCheckName" . }}

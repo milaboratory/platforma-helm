@@ -2307,7 +2307,20 @@ Resources:
                     --set extraArgs.kube-api-content-type=application/json \
                     --atomic --timeout 5m
 
-                  # Grant CA access to ProvisioningRequest and PodTemplate resources
+                  # Grant CA access to ProvisioningRequest and PodTemplate resources.
+                  # roleRef is immutable on a ClusterRoleBinding: if an earlier install
+                  # (e.g. manual "provisioning-request-admin" role from pre-3.2.x testing)
+                  # bound this name to a different ClusterRole, `kubectl apply` fails with
+                  # "cannot change roleRef". Recreate the binding when roleRef drifts, and
+                  # drop the legacy orphan ClusterRole.
+                  EXPECTED_ROLE="cluster-autoscaler-provisioning-requests"
+                  CURRENT_ROLE=$(kubectl get clusterrolebinding cluster-autoscaler-provisioning-requests \
+                    -o jsonpath='{.roleRef.name}' 2>/dev/null || true)
+                  if [ -n "$CURRENT_ROLE" ] && [ "$CURRENT_ROLE" != "$EXPECTED_ROLE" ]; then
+                    echo "Recreating stale ClusterRoleBinding (was bound to $CURRENT_ROLE)"
+                    kubectl delete clusterrolebinding cluster-autoscaler-provisioning-requests
+                  fi
+                  kubectl delete clusterrole provisioning-request-admin --ignore-not-found
                   kubectl apply -f - <<RBAC
                   apiVersion: rbac.authorization.k8s.io/v1
                   kind: ClusterRole

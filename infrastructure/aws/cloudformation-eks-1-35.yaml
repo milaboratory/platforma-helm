@@ -3092,6 +3092,7 @@ Resources:
         - !Ref PlatformaVersion
       PlatformaImage: !Ref PlatformaImage
       DeployPlatforma: !Ref DeployPlatforma
+      EnableECRCache: !Ref EnableECRCache
       LicenseKey: !Ref LicenseKey
       AuthMethod: !Ref AuthMethod
       HtpasswdContent: !Ref HtpasswdContent
@@ -3196,6 +3197,11 @@ Resources:
     DependsOn: ECRPullThroughCacheRule
     Properties:
       RepositoryName: quay/milaboratories/pl-containers
+      # Allow CF to delete the repo when EnableECRCache flips to false even
+      # if it still holds cached images — the whole point of the teardown is
+      # to reclaim the storage, so failing the update on "repo not empty"
+      # defeats the purpose.
+      EmptyOnDelete: true
       LifecyclePolicy:
         LifecyclePolicyText: |
           {

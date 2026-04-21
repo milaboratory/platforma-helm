@@ -56,6 +56,7 @@ Metadata:
           default: 'Container registry'
         Parameters:
           - EnableECRCache
+          - UseECRCacheForPlatforma
       - Label:
           default: Storage
         Parameters:
@@ -118,6 +119,8 @@ Metadata:
         default: Custom container image (leave empty for chart default)
       EnableECRCache:
         default: 'ECR pull-through cache for container images'
+      UseECRCacheForPlatforma:
+        default: 'Route Platforma image pulls through the ECR cache'
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       DomainName:
@@ -584,6 +587,17 @@ Parameters:
       the default registry (containers.pl-open.science). ECR fetches from
       Quay.io on first pull and caches locally. Disable for restricted
       environments that cannot reach Quay.io.
+
+  UseECRCacheForPlatforma:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Route Platforma workload image pulls through the ECR pull-through cache.
+      Only takes effect when EnableECRCache=true; ignored otherwise. Set to
+      false to keep the cache resources in place while having Platforma pull
+      directly from upstream — useful for debugging cache issues or rolling
+      client behaviour back without tearing down the cache state.
 
   # --- Storage ---
   S3BucketName:
@@ -2482,6 +2496,8 @@ Resources:
             Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
           - Name: ECR_CACHE_ENABLED
             Value: !Ref EnableECRCache
+          - Name: USE_ECR_CACHE_FOR_PLATFORMA
+            Value: !Ref UseECRCacheForPlatforma
           - Name: DEPLOYMENT_SIZE
             Value: !Ref DeploymentSize
           - Name: UI_QUEUE_CPU
@@ -2784,9 +2800,14 @@ Resources:
                         name: platforma-library-demo-creds"
                   fi
 
-                  # Build app.extraArgs based on enabled features
+                  # Build app.extraArgs based on enabled features.
+                  # Route through the ECR cache only when the cache resources
+                  # exist (ECR_CACHE_ENABLED) AND the client-side toggle is on
+                  # (USE_ECR_CACHE_FOR_PLATFORMA). The second flag lets operators
+                  # keep the cache in place but point Platforma at upstream —
+                  # useful for debugging or rolling back client behaviour.
                   APP_EXTRA_ARGS="[]"
-                  if [ "$ECR_CACHE_ENABLED" = "true" ]; then
+                  if [ "$ECR_CACHE_ENABLED" = "true" ] && [ "$USE_ECR_CACHE_FOR_PLATFORMA" = "true" ]; then
                     AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
                     ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/quay/milaboratories/pl-containers"
                     APP_EXTRA_ARGS="[\"--default-docker-registry=${ECR_REGISTRY}\"]"
@@ -3093,6 +3114,7 @@ Resources:
       PlatformaImage: !Ref PlatformaImage
       DeployPlatforma: !Ref DeployPlatforma
       EnableECRCache: !Ref EnableECRCache
+      UseECRCacheForPlatforma: !Ref UseECRCacheForPlatforma
       LicenseKey: !Ref LicenseKey
       AuthMethod: !Ref AuthMethod
       HtpasswdContent: !Ref HtpasswdContent

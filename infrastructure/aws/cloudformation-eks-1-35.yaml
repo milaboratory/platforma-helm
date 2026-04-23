@@ -447,10 +447,11 @@ Parameters:
       Cluster sizing profile. Controls node group scaling limits and Kueue quotas.
       All deployment sizes support the same maximum single-job size (62 vCPU / 500Gi).
       Larger sizes allow more jobs to run simultaneously.
-      small:  ~4 large jobs, or 16 small — for small teams or testing (~400 vCPU quota).
-      medium: ~8 large jobs, or 32 small — for mid-sized research groups (~700 vCPU quota).
-      large:  ~16 large jobs, or 64 small — for large research groups (~1400 vCPU quota).
-      xlarge: ~32 large jobs, or 128 small — for enterprise deployments (~2700 vCPU quota).
+      GPU nodes (g6/g6e family) are always enabled and scale from 0 — no cost when idle.
+      small:  ~4 large CPU jobs or 16 small; GPU: 1× 24GB + 1× 48GB nodes.
+      medium: ~8 large CPU jobs or 32 small; GPU: 2× 24GB + 2× 48GB + 1× 192GB nodes.
+      large:  ~16 large CPU jobs or 64 small; GPU: 4× 24GB + 4× 48GB + 2× 192GB nodes.
+      xlarge: ~32 large CPU jobs or 128 small; GPU: 8× 24GB + 8× 48GB + 4× 192GB nodes.
 
   SystemNodeAZ:
     Type: String

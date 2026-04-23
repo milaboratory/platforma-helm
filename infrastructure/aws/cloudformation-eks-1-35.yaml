@@ -1891,7 +1891,8 @@ Resources:
   # ---------------------------------------------------------------------------
   # 4b. GPU node groups (conditional — only when EnableGPU=true)
   # ---------------------------------------------------------------------------
-  # Two GPU tiers: standard (g4dn.xlarge/T4, <=16GB VRAM) and large (g5.xlarge/A10G, 24GB VRAM).
+  # Single GPU node group with the largest available GPU (g5.xlarge/A10G, 24GB VRAM).
+  # Multiple jobs share the GPU — backend GPU memory pool tracks VRAM usage.
 
   GpuNodeLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
@@ -1914,47 +1915,12 @@ Resources:
               - Key: platforma
                 Value: !Ref ClusterName
 
-  GpuStandardNodeGroup:
+  GpuNodeGroup:
     Type: AWS::EKS::Nodegroup
     Condition: GpuEnabled
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: gpu-standard
-      Version: !FindInMap [Constants, EKS, Version]
-      NodeRole: !GetAtt NodeGroupRole.Arn
-      AmiType: AL2023_x86_64_NVIDIA
-      InstanceTypes:
-        - g4dn.xlarge
-      CapacityType: ON_DEMAND
-      ScalingConfig:
-        DesiredSize: 0
-        MinSize: 0
-        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu]
-      Subnets: !If
-        - CreateNewVpc
-        - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
-      LaunchTemplate:
-        Id: !Ref GpuNodeLaunchTemplate
-        Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
-      Labels:
-        node.kubernetes.io/pool: gpu-standard
-      Taints:
-        - Key: nvidia.com/gpu
-          Value: present
-          Effect: NO_SCHEDULE
-      Tags:
-        nodegroup-type: gpu-standard
-        platforma: !Sub "${ClusterName}"
-
-  GpuLargeNodeGroup:
-    Type: AWS::EKS::Nodegroup
-    Condition: GpuEnabled
-    Properties:
-      ClusterName: !Ref EksCluster
-      NodegroupName: gpu-large
+      NodegroupName: gpu
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       AmiType: AL2023_x86_64_NVIDIA
@@ -1975,13 +1941,13 @@ Resources:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
       Labels:
-        node.kubernetes.io/pool: gpu-large
+        node.kubernetes.io/pool: gpu
       Taints:
         - Key: nvidia.com/gpu
           Value: present
           Effect: NO_SCHEDULE
       Tags:
-        nodegroup-type: gpu-large
+        nodegroup-type: gpu
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
@@ -2767,21 +2733,12 @@ Resources:
                             effect: NoSchedule
                       gpu:
                         enabled: ${ENABLE_GPU}
-                        standard:
-                          memoryBytes: 17179869184
-                          nodeSelector:
-                            node.kubernetes.io/pool: gpu-standard
-                          tolerations:
-                            - key: nvidia.com/gpu
-                              value: present
-                              effect: NoSchedule
-                        large:
-                          nodeSelector:
-                            node.kubernetes.io/pool: gpu-large
-                          tolerations:
-                            - key: nvidia.com/gpu
-                              value: present
-                              effect: NoSchedule
+                        nodeSelector:
+                          node.kubernetes.io/pool: gpu
+                        tolerations:
+                          - key: nvidia.com/gpu
+                            value: present
+                            effect: NoSchedule
                     dedicated:
                       resources:
                         ui:
@@ -2790,14 +2747,10 @@ Resources:
                         batch:
                           cpu: $BATCH_QUEUE_CPU
                           memory: ${BATCH_QUEUE_MEMORY_GI}Gi
-                        gpuStandard:
+                        gpu:
                           gpu: 4
-                          cpu: 16
-                          memory: 64Gi
-                        gpuLarge:
-                          gpu: 4
-                          cpu: 16
-                          memory: 64Gi
+                          cpu: 32
+                          memory: 128Gi
                   app:
                     resources:
                       requests:

@@ -1,0 +1,4 @@
+project_id   = "your-gcp-project-id"
+region       = "europe-west1"
+zone_suffix  = "b"
+cluster_name = "platforma-cluster"

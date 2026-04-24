@@ -1923,7 +1923,7 @@ Resources:
         - Key: platforma
           Value: !Ref ClusterName
 
-  # CSI drivers (DependsOn: SystemNodeGroupV3 for running pods)
+  # CSI drivers (DependsOn: SystemNodeGroupV4 for running pods)
   EbsCsiAddon:
     Type: AWS::EKS::Addon
     DependsOn: SystemNodeGroupV4

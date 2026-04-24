@@ -395,10 +395,10 @@ app:
   resources:
     requests:
       cpu: 8000m
-      memory: 16Gi
+      memory: 32Gi
     limits:
       cpu: 8000m
-      memory: 16Gi
+      memory: 32Gi
 
   # -- Pod scheduling
   nodeSelector: {}
@@ -441,12 +441,12 @@ app:
     # your cluster's log driver: CloudWatch, Stackdriver, etc.).
     persistence:
       enabled: true
-      size: 10Gi
+      size: 20Gi
       storageClass: ""      # "" = cluster default
       existingClaim: ""     # Use pre-created PVC instead of creating one
       rotation:
         size: 1Gi           # Rotate when a log file reaches this size
-        count: 15           # Number of rotated files to keep
+        count: 100          # Number of rotated files to keep
 
   # -- Monitoring
   # Platforma exposes Prometheus metrics. To enable scraping:

@@ -155,10 +155,10 @@ spec:
             - "--k8s-namespace={{ .Release.Namespace }}"
             {{- if .Values.kueue.maxJobResources }}
             {{- if .Values.kueue.maxJobResources.cpu }}
-            - "--runner-max-cpu-request={{ .Values.kueue.maxJobResources.cpu }}"
+            - "--k8s-max-cpu-request={{ .Values.kueue.maxJobResources.cpu }}"
             {{- end }}
             {{- if .Values.kueue.maxJobResources.memory }}
-            - "--runner-max-ram-request={{ .Values.kueue.maxJobResources.memory }}"
+            - "--k8s-max-ram-request={{ .Values.kueue.maxJobResources.memory }}"
             {{- end }}
             {{- end }}
             - "--runner-enable-docker"

@@ -1,10 +1,11 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Platforma infrastructure on AWS EKS (~20 min to deploy). Creates EKS cluster, node groups,
-  EFS, S3, IAM roles, and deploys Kueue, AppWrapper, Cluster Autoscaler, ALB Controller,
-  and External DNS via CodeBuild. Optionally deploys Platforma (set DeployPlatforma=true).
-  For infrastructure-only testing, leave DeployPlatforma=false and run tests/ scripts manually.
-  Updating: replace the template URL and keep PlatformaVersion empty to auto-upgrade.
+  Platforma infrastructure on AWS EKS (~20 min to deploy). Creates EKS cluster,
+  node groups, EFS, S3, IAM roles, and deploys Kueue, AppWrapper, Cluster
+  Autoscaler, ALB Controller, and External DNS via CodeBuild. Optionally deploys
+  Platforma (set DeployPlatforma=true). For infrastructure-only testing, leave
+  DeployPlatforma=false and run tests/ scripts manually. Updating: replace the
+  template URL and keep PlatformaVersion empty to auto-upgrade.
 
 # =============================================================================
 # Metadata — controls parameter display order in AWS Console
@@ -25,7 +26,7 @@ Metadata:
           - PublicSubnetIds
           - VpcCidr
       - Label:
-          default: 'DNS / TLS (required)'
+          default: "DNS / TLS (required)"
         Parameters:
           - DomainName
           - HostedZoneId
@@ -48,7 +49,7 @@ Metadata:
           - LdapSearchUser
           - LdapSearchPassword
       - Label:
-          default: 'Cluster sizing'
+          default: "Cluster sizing"
         Parameters:
           - DeploymentSize
           - SystemNodeAZ
@@ -57,7 +58,7 @@ Metadata:
         Parameters:
           - S3BucketName
       - Label:
-          default: 'Data libraries (optional, up to 3 external read-only S3 buckets)'
+          default: "Data libraries (optional, up to 3 external read-only S3 buckets)"
         Parameters:
           - EnableDemoLibrary
           - DataLibrary1Name
@@ -89,71 +90,71 @@ Metadata:
       VpcCidr:
         default: VPC CIDR (new VPC only)
       DeploymentSize:
-        default: 'Deployment size (controls parallelism)'
+        default: "Deployment size (controls parallelism)"
       SystemNodeAZ:
-        default: 'System node AZ suffix (a/b/c — must match existing database volumes)'
+        default: "System node AZ suffix (a/b/c — must match existing database volumes)"
       DeployPlatforma:
-        default: 'Deploy Platforma (false = infrastructure + controllers only)'
+        default: "Deploy Platforma (false = infrastructure + controllers only)"
       LicenseKey:
         default: Platforma license key (required when DeployPlatforma=true)
       PlatformaVersion:
-        default: 'Platforma chart version (empty = use built-in default)'
+        default: "Platforma chart version (empty = use built-in default)"
       PlatformaImage:
         default: Custom container image (leave empty for chart default)
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       DomainName:
-        default: 'Domain name (e.g. platforma.example.com)'
+        default: "Domain name (e.g. platforma.example.com)"
       HostedZoneId:
-        default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
+        default: "Route53 hosted zone ID (e.g. Z0123456789ABCDEF)"
       AuthMethod:
-        default: 'Authentication method (htpasswd or ldap)'
+        default: "Authentication method (htpasswd or ldap)"
       EnableDemoLibrary:
-        default: 'Enable MiLaboratories demo data library'
+        default: "Enable MiLaboratories demo data library"
       DataLibrary1Name:
-        default: 'Library 1 name (shown in Desktop App)'
+        default: "Library 1 name (shown in Desktop App)"
       DataLibrary1Bucket:
-        default: 'Library 1 S3 bucket name'
+        default: "Library 1 S3 bucket name"
       DataLibrary1Region:
-        default: 'Library 1 S3 region (leave empty = cluster region)'
+        default: "Library 1 S3 region (leave empty = cluster region)"
       DataLibrary1AccessKey:
-        default: 'Library 1 access key (leave empty for IRSA)'
+        default: "Library 1 access key (leave empty for IRSA)"
       DataLibrary1SecretKey:
-        default: 'Library 1 secret key'
+        default: "Library 1 secret key"
       DataLibrary2Name:
-        default: 'Library 2 name (shown in Desktop App)'
+        default: "Library 2 name (shown in Desktop App)"
       DataLibrary2Bucket:
-        default: 'Library 2 S3 bucket name'
+        default: "Library 2 S3 bucket name"
       DataLibrary2Region:
-        default: 'Library 2 S3 region (leave empty = cluster region)'
+        default: "Library 2 S3 region (leave empty = cluster region)"
       DataLibrary2AccessKey:
-        default: 'Library 2 access key (leave empty for IRSA)'
+        default: "Library 2 access key (leave empty for IRSA)"
       DataLibrary2SecretKey:
-        default: 'Library 2 secret key'
+        default: "Library 2 secret key"
       DataLibrary3Name:
-        default: 'Library 3 name (shown in Desktop App)'
+        default: "Library 3 name (shown in Desktop App)"
       DataLibrary3Bucket:
-        default: 'Library 3 S3 bucket name'
+        default: "Library 3 S3 bucket name"
       DataLibrary3Region:
-        default: 'Library 3 S3 region (leave empty = cluster region)'
+        default: "Library 3 S3 region (leave empty = cluster region)"
       DataLibrary3AccessKey:
-        default: 'Library 3 access key (leave empty for IRSA)'
+        default: "Library 3 access key (leave empty for IRSA)"
       DataLibrary3SecretKey:
-        default: 'Library 3 secret key'
+        default: "Library 3 secret key"
       HtpasswdContent:
-        default: 'htpasswd file content (htpasswd mode only)'
+        default: "htpasswd file content (htpasswd mode only)"
       LdapServer:
-        default: 'LDAP server URL (ldap mode only)'
+        default: "LDAP server URL (ldap mode only)"
       LdapStartTLS:
-        default: 'LDAP StartTLS'
+        default: "LDAP StartTLS"
       LdapBindDN:
-        default: 'LDAP bind DN template (direct bind)'
+        default: "LDAP bind DN template (direct bind)"
       LdapSearchRules:
-        default: 'LDAP search rules (semicolon-separated)'
+        default: "LDAP search rules (semicolon-separated)"
       LdapSearchUser:
-        default: 'LDAP search user DN'
+        default: "LDAP search user DN"
       LdapSearchPassword:
-        default: 'LDAP search user password'
+        default: "LDAP search user password"
 
 # =============================================================================
 # Parameters
@@ -164,234 +165,240 @@ Parameters:
   ClusterName:
     Type: String
     Default: platforma-cluster
-    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$'
-    ConstraintDescription: 'Alphanumeric, hyphens, underscores, 1-100 characters'
+    AllowedPattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$"
+    ConstraintDescription: "Alphanumeric, hyphens, underscores, 1-100 characters"
     Description: EKS cluster name
 
   PlatformaNamespace:
     Type: String
     Default: platforma
-    AllowedPattern: '^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
-    ConstraintDescription: 'Must be a valid Kubernetes namespace (lowercase, digits, hyphens, starts with letter, max 63 chars)'
+    AllowedPattern: "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+    ConstraintDescription: "Must be a valid Kubernetes namespace (lowercase, digits,
+      hyphens, starts with letter, max 63 chars)"
     Description: >
-      Kubernetes namespace for Platforma. Used in IRSA trust policies.
-      The namespace is NOT created by this template — create it before Helm install.
+      Kubernetes namespace for Platforma. Used in IRSA trust policies. The
+      namespace is NOT created by this template — create it before Helm install.
 
   DeployPlatforma:
     Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
+    Default: "true"
+    AllowedValues: [ "true", "false" ]
     Description: >
-      Deploy Platforma via Helm after infrastructure provisioning.
-      Set to false to deploy only Kueue, AppWrapper, Cluster Autoscaler,
-      ALB Controller, and External DNS — useful for testing the stack first.
+      Deploy Platforma via Helm after infrastructure provisioning. Set to false
+      to deploy only Kueue, AppWrapper, Cluster Autoscaler, ALB Controller, and
+      External DNS — useful for testing the stack first.
 
   LicenseKey:
     Type: String
-    Default: ''
-    Description: Platforma license key (MI_LICENSE value from your license file). Required when DeployPlatforma=true.
+    Default: ""
+    Description: Platforma license key (MI_LICENSE value from your license file).
+      Required when DeployPlatforma=true.
 
   PlatformaVersion:
     Type: String
-    Default: ''
-    AllowedPattern: '^([0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?)?$'
-    ConstraintDescription: 'Must be a valid semver version (e.g. 3.0.1) or empty for built-in default'
+    Default: ""
+    AllowedPattern: "^([0-9]+\\.[0-9]+\\.[0-9]+(-[a-zA-Z0-9.-]+)?)?$"
+    ConstraintDescription: "Must be a valid semver version (e.g. 3.0.1) or empty for built-in default"
     Description: >
-      Override Platforma Helm chart version. Leave empty to use the version built into this
-      template. On stack update, an empty value automatically picks up the new version from
-      the updated template.
+      Override Platforma Helm chart version. Leave empty to use the version
+      built into this template. On stack update, an empty value automatically
+      picks up the new version from the updated template.
 
   PlatformaImage:
     Type: String
-    Default: ''
+    Default: ""
     Description: >
-      Custom Platforma container image (e.g. 123456.dkr.ecr.eu-central-1.amazonaws.com/repo:tag).
-      Leave empty to use the chart default image.
+      Custom Platforma container image (e.g.
+      123456.dkr.ecr.eu-central-1.amazonaws.com/repo:tag). Leave empty to use
+      the chart default image.
 
   # --- Authentication ---
   AuthMethod:
     Type: String
     Default: htpasswd
-    AllowedValues: [htpasswd, ldap]
+    AllowedValues: [ htpasswd, ldap ]
     Description: >
       Authentication method for Platforma. Required when DeployPlatforma=true.
-      htpasswd: provide HtpasswdContent parameter.
-      ldap: provide LdapServer and related parameters.
+      htpasswd: provide HtpasswdContent parameter. ldap: provide LdapServer and
+      related parameters.
 
   HtpasswdContent:
     Type: String
-    Default: ''
+    Default: ""
     NoEcho: true
     Description: >
-      htpasswd file content (one line per user, e.g. "user:$apr1$...").
-      Supports up to ~45 users due to CloudFormation parameter size limit (4096 chars).
-      For more users, create the 'platforma-htpasswd' secret manually and restart the backend.
-      When empty and AuthMethod=htpasswd, a random users password is auto-generated
-      and stored in SSM Parameter Store (see outputs).
-      Generate manually with: htpasswd -nB username
+      htpasswd file content (one line per user, e.g. "user:$apr1$..."). Supports
+      up to ~45 users due to CloudFormation parameter size limit (4096 chars).
+      For more users, create the 'platforma-htpasswd' secret manually and
+      restart the backend. When empty and AuthMethod=htpasswd, a random users
+      password is auto-generated and stored in SSM Parameter Store (see
+      outputs). Generate manually with: htpasswd -nB username
 
   LdapServer:
     Type: String
-    Default: ''
-    AllowedPattern: '^(ldaps?://[^\s]+)?$'
-    ConstraintDescription: 'Must be an LDAP URL (e.g. ldap://ldap.example.com:389) or empty'
+    Default: ""
+    AllowedPattern: "^(ldaps?://[^\\s]+)?$"
+    ConstraintDescription: "Must be an LDAP URL (e.g. ldap://ldap.example.com:389) or empty"
     Description: >
-      LDAP server URL (e.g. ldap://ldap.example.com:389).
-      Required when AuthMethod=ldap.
+      LDAP server URL (e.g. ldap://ldap.example.com:389). Required when
+      AuthMethod=ldap.
 
   LdapStartTLS:
     Type: String
-    Default: 'false'
-    AllowedValues: ['true', 'false']
+    Default: "false"
+    AllowedValues: [ "true", "false" ]
     Description: Enable LDAP StartTLS
 
   LdapBindDN:
     Type: String
-    Default: ''
+    Default: ""
     Description: >
-      Direct bind DN template where %u is replaced with username
-      (e.g. cn=%u,ou=users,dc=example,dc=com).
-      Set for direct bind mode. Leave empty for search bind mode.
+      Direct bind DN template where %u is replaced with username (e.g.
+      cn=%u,ou=users,dc=example,dc=com). Set for direct bind mode. Leave empty
+      for search bind mode.
 
   LdapSearchRules:
     Type: String
-    Default: ''
+    Default: ""
     Description: >
-      Semicolon-delimited LDAP search rules. Each rule: "FILTER|BASE_DN"
-      (e.g. "(uid=%u)|dc=example,dc=com"). Separate multiple rules with semicolons.
-      Example with group filter: "(&(uid=%u)(memberOf=cn=users,ou=groups,dc=example,dc=com))|dc=example,dc=com"
+      Semicolon-delimited LDAP search rules. Each rule: "FILTER|BASE_DN" (e.g.
+      "(uid=%u)|dc=example,dc=com"). Separate multiple rules with semicolons.
+      Example with group filter:
+      "(&(uid=%u)(memberOf=cn=users,ou=groups,dc=example,dc=com))|dc=example,dc=com"
       Set for search bind mode. Leave empty for direct bind mode.
 
   LdapSearchUser:
     Type: String
-    Default: ''
+    Default: ""
     Description: >
-      Service account DN for LDAP search queries
-      (e.g. cn=readonly,dc=example,dc=com).
-      Required when using search bind mode.
+      Service account DN for LDAP search queries (e.g.
+      cn=readonly,dc=example,dc=com). Required when using search bind mode.
 
   LdapSearchPassword:
     Type: String
-    Default: ''
+    Default: ""
     NoEcho: true
     Description: Password for the LDAP search user. Required when LdapSearchUser is set.
 
   # --- Data libraries ---
   EnableDemoLibrary:
     Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
+    Default: "true"
+    AllowedValues: [ "true", "false" ]
     Description: >
-      Add MiLaboratories' demo data library (milabs-demo-data) with pre-configured
-      read-only access to sample datasets.
+      Add MiLaboratories' demo data library (milabs-demo-data) with
+      pre-configured read-only access to sample datasets.
 
   DataLibrary1Name:
     Type: String
-    Default: ''
+    Default: ""
     Description: Name for data library 1 (shown in Desktop App). Leave empty to disable.
 
   DataLibrary1Bucket:
     Type: String
-    Default: ''
-    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
-    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
+    Default: ""
+    AllowedPattern: "^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$"
+    ConstraintDescription: "Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty"
     Description: >
-      S3 bucket name for data library 1 (e.g. my-reference-data).
-      Leave empty to disable.
+      S3 bucket name for data library 1 (e.g. my-reference-data). Leave empty to
+      disable.
 
   DataLibrary1Region:
     Type: String
-    Default: ''
-    AllowedPattern: '^([a-z]{2}(-[a-z]+)+-\d{1,2})?$'
-    ConstraintDescription: 'Must be a valid AWS region (e.g. us-east-1, eu-central-1) or empty'
+    Default: ""
+    AllowedPattern: "^([a-z]{2}(-[a-z]+)+-\\d{1,2})?$"
+    ConstraintDescription: "Must be a valid AWS region (e.g. us-east-1, eu-central-1) or empty"
     Description: >
-      S3 region for Library 1. REQUIRED if the bucket is in a different
-      region than the cluster. Defaults to cluster region if empty.
+      S3 region for Library 1. REQUIRED if the bucket is in a different region
+      than the cluster. Defaults to cluster region if empty.
 
   DataLibrary1AccessKey:
     Type: String
-    Default: ''
-    AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
-    ConstraintDescription: 'Must be a valid AWS access key ID (20 characters, starts with AKIA or ASIA) or empty'
+    Default: ""
+    AllowedPattern: "^((?:AKIA|ASIA)[A-Z0-9]{16})?$"
+    ConstraintDescription: "Must be a valid AWS access key ID (20 characters, starts
+      with AKIA or ASIA) or empty"
     Description: >
-      S3 access key for data library 1. Leave empty to use IRSA
-      (bucket must be in the same AWS account).
+      S3 access key for data library 1. Leave empty to use IRSA (bucket must be
+      in the same AWS account).
 
   DataLibrary1SecretKey:
     Type: String
-    Default: ''
+    Default: ""
     NoEcho: true
     Description: S3 secret key for data library 1. Required when AccessKey is set.
 
   DataLibrary2Name:
     Type: String
-    Default: ''
+    Default: ""
     Description: Name for data library 2 (shown in Desktop App). Leave empty to disable.
 
   DataLibrary2Bucket:
     Type: String
-    Default: ''
-    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
-    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
+    Default: ""
+    AllowedPattern: "^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$"
+    ConstraintDescription: "Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty"
     Description: S3 bucket name for data library 2. Leave empty to disable.
 
   DataLibrary2Region:
     Type: String
-    Default: ''
-    AllowedPattern: '^([a-z]{2}(-[a-z]+)+-\d{1,2})?$'
-    ConstraintDescription: 'Must be a valid AWS region (e.g. us-east-1, eu-central-1) or empty'
+    Default: ""
+    AllowedPattern: "^([a-z]{2}(-[a-z]+)+-\\d{1,2})?$"
+    ConstraintDescription: "Must be a valid AWS region (e.g. us-east-1, eu-central-1) or empty"
     Description: >
-      S3 region for Library 2. REQUIRED if the bucket is in a different
-      region than the cluster. Defaults to cluster region if empty.
+      S3 region for Library 2. REQUIRED if the bucket is in a different region
+      than the cluster. Defaults to cluster region if empty.
 
   DataLibrary2AccessKey:
     Type: String
-    Default: ''
-    AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
-    ConstraintDescription: 'Must be a valid AWS access key ID (20 characters, starts with AKIA or ASIA) or empty'
+    Default: ""
+    AllowedPattern: "^((?:AKIA|ASIA)[A-Z0-9]{16})?$"
+    ConstraintDescription: "Must be a valid AWS access key ID (20 characters, starts
+      with AKIA or ASIA) or empty"
     Description: >
-      S3 access key for data library 2. Leave empty to use IRSA
-      (bucket must be in the same AWS account).
+      S3 access key for data library 2. Leave empty to use IRSA (bucket must be
+      in the same AWS account).
 
   DataLibrary2SecretKey:
     Type: String
-    Default: ''
+    Default: ""
     NoEcho: true
     Description: S3 secret key for data library 2. Required when AccessKey is set.
 
   DataLibrary3Name:
     Type: String
-    Default: ''
+    Default: ""
     Description: Name for data library 3 (shown in Desktop App). Leave empty to disable.
 
   DataLibrary3Bucket:
     Type: String
-    Default: ''
-    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
-    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
+    Default: ""
+    AllowedPattern: "^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$"
+    ConstraintDescription: "Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty"
     Description: S3 bucket name for data library 3. Leave empty to disable.
 
   DataLibrary3Region:
     Type: String
-    Default: ''
-    AllowedPattern: '^([a-z]{2}(-[a-z]+)+-\d{1,2})?$'
-    ConstraintDescription: 'Must be a valid AWS region (e.g. us-east-1, eu-central-1) or empty'
+    Default: ""
+    AllowedPattern: "^([a-z]{2}(-[a-z]+)+-\\d{1,2})?$"
+    ConstraintDescription: "Must be a valid AWS region (e.g. us-east-1, eu-central-1) or empty"
     Description: >
-      S3 region for Library 3. REQUIRED if the bucket is in a different
-      region than the cluster. Defaults to cluster region if empty.
+      S3 region for Library 3. REQUIRED if the bucket is in a different region
+      than the cluster. Defaults to cluster region if empty.
 
   DataLibrary3AccessKey:
     Type: String
-    Default: ''
-    AllowedPattern: '^((?:AKIA|ASIA)[A-Z0-9]{16})?$'
-    ConstraintDescription: 'Must be a valid AWS access key ID (20 characters, starts with AKIA or ASIA) or empty'
+    Default: ""
+    AllowedPattern: "^((?:AKIA|ASIA)[A-Z0-9]{16})?$"
+    ConstraintDescription: "Must be a valid AWS access key ID (20 characters, starts
+      with AKIA or ASIA) or empty"
     Description: >
-      S3 access key for data library 3. Leave empty to use IRSA
-      (bucket must be in the same AWS account).
+      S3 access key for data library 3. Leave empty to use IRSA (bucket must be
+      in the same AWS account).
 
   DataLibrary3SecretKey:
     Type: String
-    Default: ''
+    Default: ""
     NoEcho: true
     Description: S3 secret key for data library 3. Required when AccessKey is set.
 
@@ -403,22 +410,22 @@ Parameters:
   #   - Each subnet must be in a different Availability Zone
   VpcId:
     Type: String
-    Default: ''
-    AllowedPattern: '^(vpc-[a-f0-9]{8,17})?$'
-    ConstraintDescription: 'Must be a valid VPC ID (e.g. vpc-0123456789abcdef0) or empty'
+    Default: ""
+    AllowedPattern: "^(vpc-[a-f0-9]{8,17})?$"
+    ConstraintDescription: "Must be a valid VPC ID (e.g. vpc-0123456789abcdef0) or empty"
     Description: >
-      Existing VPC ID. Leave empty to create a new VPC.
-      If provided, you must also provide PrivateSubnetIds.
+      Existing VPC ID. Leave empty to create a new VPC. If provided, you must
+      also provide PrivateSubnetIds.
 
   PrivateSubnetIds:
     Type: CommaDelimitedList
     # Default must be ',,' (two commas) so the list always has 3 elements.
     # CloudFormation validates !Select expressions in all conditional branches,
     # even those not taken — fewer than 3 elements causes an out-of-bounds error.
-    Default: ',,'
+    Default: ",,"
     Description: >
-      Comma-separated list of exactly 3 existing private subnet IDs (one per AZ).
-      Required if VpcId is provided. Leave empty when creating a new VPC.
+      Comma-separated list of exactly 3 existing private subnet IDs (one per
+      AZ). Required if VpcId is provided. Leave empty when creating a new VPC.
       Note: the default ',,' is a CloudFormation workaround, not a typo.
 
   PublicSubnetIds:
@@ -426,54 +433,56 @@ Parameters:
     # Default must be ',,' (two commas) so the list always has 3 elements.
     # CloudFormation validates !Select expressions in all conditional branches,
     # even those not taken — fewer than 3 elements causes an out-of-bounds error.
-    Default: ',,'
+    Default: ",,"
     Description: >
       Comma-separated list of exactly 3 existing public subnet IDs (one per AZ).
       Required for ALB/NLB when using existing VPC. Leave empty when creating
-      new VPC. Note: the default ',,' is a CloudFormation workaround, not a typo.
+      new VPC. Note: the default ',,' is a CloudFormation workaround, not a
+      typo.
 
   VpcCidr:
     Type: String
-    Default: '10.0.0.0/16'
-    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    Default: "10.0.0.0/16"
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
     Description: CIDR block for new VPC (ignored if VpcId is provided)
 
   # --- Cluster sizing ---
   DeploymentSize:
     Type: String
     Default: small
-    AllowedValues: [small, medium, large, xlarge]
+    AllowedValues: [ small, medium, large, xlarge ]
     Description: >
-      Cluster sizing profile. Controls node group scaling limits and Kueue quotas.
-      All deployment sizes support the same maximum single-job size (62 vCPU / 500Gi).
-      Larger sizes allow more jobs to run simultaneously.
-      small:  ~4 large jobs, or 16 small — for small teams or testing (~400 vCPU quota).
-      medium: ~8 large jobs, or 32 small — for mid-sized research groups (~700 vCPU quota).
-      large:  ~16 large jobs, or 64 small — for large research groups (~1400 vCPU quota).
-      xlarge: ~32 large jobs, or 128 small — for enterprise deployments (~2700 vCPU quota).
+      Cluster sizing profile. Controls node group scaling limits and Kueue
+      quotas. All deployment sizes support the same maximum single-job size (62
+      vCPU / 500Gi). Larger sizes allow more jobs to run simultaneously.
+      small:  ~4 large jobs, or 16 small — for small teams or testing (~400 vCPU
+      quota). medium: ~8 large jobs, or 32 small — for mid-sized research groups
+      (~700 vCPU quota). large:  ~16 large jobs, or 64 small — for large
+      research groups (~1400 vCPU quota). xlarge: ~32 large jobs, or 128 small —
+      for enterprise deployments (~2700 vCPU quota).
 
   SystemNodeAZ:
     Type: String
     Default: a
-    AllowedValues: [a, b, c]
+    AllowedValues: [ a, b, c ]
     Description: >
       Availability zone suffix (a, b, or c) for system nodes. Platforma's
-      database and log volumes (EBS) are bound to a single AZ. System nodes
-      must be in the same AZ as these volumes. For new deployments the default
-      (a) is correct. For existing deployments, set this to match the AZ where
-      your platforma-database PV resides (e.g. if volumes are in eu-west-1b,
-      choose "b").
+      database and log volumes (EBS) are bound to a single AZ. System nodes must
+      be in the same AZ as these volumes. For new deployments the default (a) is
+      correct. For existing deployments, set this to match the AZ where your
+      platforma-database PV resides (e.g. if volumes are in eu-west-1b, choose
+      "b").
 
   # --- Storage ---
   S3BucketName:
     Type: String
-    Default: ''
-    AllowedPattern: '^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$'
-    ConstraintDescription: 'Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty'
+    Default: ""
+    AllowedPattern: "^([a-z0-9]([a-z0-9.-]{1,61}[a-z0-9])?)?$"
+    ConstraintDescription: "Lowercase letters, digits, hyphens, periods, 3-63 chars, or empty"
     Description: >
-      S3 bucket name for primary storage. Leave empty to auto-generate
-      as platforma-<ClusterName>-<random> (unique per stack creation).
-      The bucket is retained on stack deletion for data safety.
+      S3 bucket name for primary storage. Leave empty to auto-generate as
+      platforma-<ClusterName>-<random> (unique per stack creation). The bucket
+      is retained on stack deletion for data safety.
 
   # --- IAM / IRSA roles ---
   # Always created (required for Platforma):
@@ -488,31 +497,31 @@ Parameters:
 
   # --- DNS / TLS (required) ---
   HostedZoneId:
-    Type: 'AWS::Route53::HostedZone::Id'
+    Type: "AWS::Route53::HostedZone::Id"
     Description: >
       Route53 hosted zone ID. Required — used for ACM certificate DNS validation
-      and External DNS record management. The Desktop App connects via TLS,
-      so a valid domain with a certificate is mandatory.
+      and External DNS record management. The Desktop App connects via TLS, so a
+      valid domain with a certificate is mandatory.
 
   DomainName:
     Type: String
-    AllowedPattern: '^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$'
-    ConstraintDescription: 'Must be a valid domain name (e.g. platforma.example.com)'
+    AllowedPattern: "^[a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA\
+      -Z0-9\\-]*[a-zA-Z0-9])?)*\\.[a-zA-Z]{2,}$"
+    ConstraintDescription: "Must be a valid domain name (e.g. platforma.example.com)"
     Description: >
-      Domain name for the Platforma endpoint (e.g. platforma.example.com).
-      An ACM certificate will be created and validated via Route53.
-
+      Domain name for the Platforma endpoint (e.g. platforma.example.com). An
+      ACM certificate will be created and validated via Route53.
   # Controller versions are managed internally — not exposed as parameters.
 
-# =============================================================================
-# Mappings
-# =============================================================================
+  # =============================================================================
+  # Mappings
+  # =============================================================================
 Mappings:
   Constants:
     EKS:
-      Version: '1.35'
+      Version: "1.35"
     Platforma:
-      Version: '3.3.1'
+      Version: "3.3.1"
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
@@ -521,131 +530,131 @@ Mappings:
   DeploymentSize:
     small:
       # Kueue quotas (derived: 2x63=126 CPU, 1x500=500Gi)
-      BatchCpu: '126'
-      BatchMemoryGi: '500'
-      UiCpu: '64'
-      UiMemoryGi: '256'
+      BatchCpu: "126"
+      BatchMemoryGi: "500"
+      UiCpu: "64"
+      UiMemoryGi: "256"
       # Node group MaxSize per pool
-      MaxBatch16c64g: '4'
-      MaxBatch32c128g: '2'
-      MaxBatch64c256g: '1'
-      MaxBatch32c256g: '2'
-      MaxBatch64c512g: '1'
-      MaxUi: '4'
+      MaxBatch16c64g: "4"
+      MaxBatch32c128g: "2"
+      MaxBatch64c256g: "1"
+      MaxBatch32c256g: "2"
+      MaxBatch64c512g: "1"
+      MaxUi: "4"
     medium:
       # Kueue quotas (derived: 4x63=252 CPU, 2x500=1000Gi)
-      BatchCpu: '252'
-      BatchMemoryGi: '1000'
-      UiCpu: '64'
-      UiMemoryGi: '256'
-      MaxBatch16c64g: '8'
-      MaxBatch32c128g: '4'
-      MaxBatch64c256g: '2'
-      MaxBatch32c256g: '4'
-      MaxBatch64c512g: '2'
-      MaxUi: '8'
+      BatchCpu: "252"
+      BatchMemoryGi: "1000"
+      UiCpu: "64"
+      UiMemoryGi: "256"
+      MaxBatch16c64g: "8"
+      MaxBatch32c128g: "4"
+      MaxBatch64c256g: "2"
+      MaxBatch32c256g: "4"
+      MaxBatch64c512g: "2"
+      MaxUi: "8"
     large:
       # Kueue quotas (derived: 8x63=504 CPU, 4x500=2000Gi)
-      BatchCpu: '504'
-      BatchMemoryGi: '2000'
-      UiCpu: '64'
-      UiMemoryGi: '256'
-      MaxBatch16c64g: '16'
-      MaxBatch32c128g: '8'
-      MaxBatch64c256g: '4'
-      MaxBatch32c256g: '8'
-      MaxBatch64c512g: '4'
-      MaxUi: '16'
+      BatchCpu: "504"
+      BatchMemoryGi: "2000"
+      UiCpu: "64"
+      UiMemoryGi: "256"
+      MaxBatch16c64g: "16"
+      MaxBatch32c128g: "8"
+      MaxBatch64c256g: "4"
+      MaxBatch32c256g: "8"
+      MaxBatch64c512g: "4"
+      MaxUi: "16"
     xlarge:
       # Kueue quotas (derived: 16x63=1008 CPU, 8x500=4000Gi)
-      BatchCpu: '1008'
-      BatchMemoryGi: '4000'
-      UiCpu: '64'
-      UiMemoryGi: '256'
-      MaxBatch16c64g: '32'
-      MaxBatch32c128g: '16'
-      MaxBatch64c256g: '8'
-      MaxBatch32c256g: '16'
-      MaxBatch64c512g: '8'
-      MaxUi: '16'
+      BatchCpu: "1008"
+      BatchMemoryGi: "4000"
+      UiCpu: "64"
+      UiMemoryGi: "256"
+      MaxBatch16c64g: "32"
+      MaxBatch32c128g: "16"
+      MaxBatch64c256g: "8"
+      MaxBatch32c256g: "16"
+      MaxBatch64c512g: "8"
+      MaxUi: "16"
 
 # =============================================================================
 # Conditions
 # =============================================================================
 Conditions:
-  CreateNewVpc: !Equals [!Ref VpcId, '']
-  AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
-  HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
-  HasLibrary1: !Not [!Equals [!Ref DataLibrary1Bucket, '']]
+  CreateNewVpc: !Equals [ !Ref VpcId, "" ]
+  AutoGenerateS3Name: !Equals [ !Ref S3BucketName, "" ]
+  HasPublicSubnets: !Not [ !Equals [ !Select [ 0, !Ref PublicSubnetIds ], "" ] ]
+  HasLibrary1: !Not [ !Equals [ !Ref DataLibrary1Bucket, "" ] ]
   HasLibrary1Irsa: !And
-    - !Not [!Equals [!Ref DataLibrary1Bucket, '']]
-    - !Equals [!Ref DataLibrary1AccessKey, '']
-  HasLibrary2: !Not [!Equals [!Ref DataLibrary2Bucket, '']]
+    - !Not [ !Equals [ !Ref DataLibrary1Bucket, "" ] ]
+    - !Equals [ !Ref DataLibrary1AccessKey, "" ]
+  HasLibrary2: !Not [ !Equals [ !Ref DataLibrary2Bucket, "" ] ]
   HasLibrary2Irsa: !And
-    - !Not [!Equals [!Ref DataLibrary2Bucket, '']]
-    - !Equals [!Ref DataLibrary2AccessKey, '']
-  HasLibrary3: !Not [!Equals [!Ref DataLibrary3Bucket, '']]
+    - !Not [ !Equals [ !Ref DataLibrary2Bucket, "" ] ]
+    - !Equals [ !Ref DataLibrary2AccessKey, "" ]
+  HasLibrary3: !Not [ !Equals [ !Ref DataLibrary3Bucket, "" ] ]
   HasLibrary3Irsa: !And
-    - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
-    - !Equals [!Ref DataLibrary3AccessKey, '']
-  UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
-  IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
-  SystemAZa: !Equals [!Ref SystemNodeAZ, 'a']
-  SystemAZb: !Equals [!Ref SystemNodeAZ, 'b']
+    - !Not [ !Equals [ !Ref DataLibrary3Bucket, "" ] ]
+    - !Equals [ !Ref DataLibrary3AccessKey, "" ]
+  UseDefaultPlatformaVersion: !Equals [ !Ref PlatformaVersion, "" ]
+  IsHtpasswd: !Equals [ !Ref AuthMethod, "htpasswd" ]
+  SystemAZa: !Equals [ !Ref SystemNodeAZ, "a" ]
+  SystemAZb: !Equals [ !Ref SystemNodeAZ, "b" ]
 
 # =============================================================================
 # Rules — fail fast on invalid parameter combinations
 # =============================================================================
 Rules:
   LicenseRequiredForDeploy:
-    RuleCondition: !Equals [!Ref DeployPlatforma, 'true']
+    RuleCondition: !Equals [ !Ref DeployPlatforma, "true" ]
     Assertions:
-      - Assert: !Not [!Equals [!Ref LicenseKey, '']]
+      - Assert: !Not [ !Equals [ !Ref LicenseKey, "" ] ]
         AssertDescription: LicenseKey is required when DeployPlatforma is true
   LdapServerRequired:
     RuleCondition: !And
-      - !Equals [!Ref DeployPlatforma, 'true']
-      - !Equals [!Ref AuthMethod, 'ldap']
+      - !Equals [ !Ref DeployPlatforma, "true" ]
+      - !Equals [ !Ref AuthMethod, "ldap" ]
     Assertions:
-      - Assert: !Not [!Equals [!Ref LdapServer, '']]
+      - Assert: !Not [ !Equals [ !Ref LdapServer, "" ] ]
         AssertDescription: LdapServer is required when AuthMethod is ldap
   DataLibrary1KeyPair:
     Assertions:
       - Assert: !Or
-          - !Equals [!Ref DataLibrary1AccessKey, '']
-          - !Not [!Equals [!Ref DataLibrary1SecretKey, '']]
+          - !Equals [ !Ref DataLibrary1AccessKey, "" ]
+          - !Not [ !Equals [ !Ref DataLibrary1SecretKey, "" ] ]
         AssertDescription: DataLibrary1SecretKey is required when DataLibrary1AccessKey is set
       - Assert: !Or
-          - !Equals [!Ref DataLibrary1SecretKey, '']
-          - !Not [!Equals [!Ref DataLibrary1AccessKey, '']]
+          - !Equals [ !Ref DataLibrary1SecretKey, "" ]
+          - !Not [ !Equals [ !Ref DataLibrary1AccessKey, "" ] ]
         AssertDescription: DataLibrary1AccessKey is required when DataLibrary1SecretKey is set
   DataLibrary2KeyPair:
     Assertions:
       - Assert: !Or
-          - !Equals [!Ref DataLibrary2AccessKey, '']
-          - !Not [!Equals [!Ref DataLibrary2SecretKey, '']]
+          - !Equals [ !Ref DataLibrary2AccessKey, "" ]
+          - !Not [ !Equals [ !Ref DataLibrary2SecretKey, "" ] ]
         AssertDescription: DataLibrary2SecretKey is required when DataLibrary2AccessKey is set
       - Assert: !Or
-          - !Equals [!Ref DataLibrary2SecretKey, '']
-          - !Not [!Equals [!Ref DataLibrary2AccessKey, '']]
+          - !Equals [ !Ref DataLibrary2SecretKey, "" ]
+          - !Not [ !Equals [ !Ref DataLibrary2AccessKey, "" ] ]
         AssertDescription: DataLibrary2AccessKey is required when DataLibrary2SecretKey is set
   DataLibrary3KeyPair:
     Assertions:
       - Assert: !Or
-          - !Equals [!Ref DataLibrary3AccessKey, '']
-          - !Not [!Equals [!Ref DataLibrary3SecretKey, '']]
+          - !Equals [ !Ref DataLibrary3AccessKey, "" ]
+          - !Not [ !Equals [ !Ref DataLibrary3SecretKey, "" ] ]
         AssertDescription: DataLibrary3SecretKey is required when DataLibrary3AccessKey is set
       - Assert: !Or
-          - !Equals [!Ref DataLibrary3SecretKey, '']
-          - !Not [!Equals [!Ref DataLibrary3AccessKey, '']]
+          - !Equals [ !Ref DataLibrary3SecretKey, "" ]
+          - !Not [ !Equals [ !Ref DataLibrary3AccessKey, "" ] ]
         AssertDescription: DataLibrary3AccessKey is required when DataLibrary3SecretKey is set
   ExistingVpcRequiresSubnets:
-    RuleCondition: !Not [!Equals [!Ref VpcId, '']]
+    RuleCondition: !Not [ !Equals [ !Ref VpcId, "" ] ]
     Assertions:
-      - Assert: !Not [!Contains [!Ref PrivateSubnetIds, '']]
+      - Assert: !Not [ !Contains [ !Ref PrivateSubnetIds, "" ] ]
         AssertDescription: >
-          PrivateSubnetIds requires exactly 3 subnet IDs when using an existing VPC.
-          Provide 3 comma-separated private subnet IDs (one per AZ).
+          PrivateSubnetIds requires exactly 3 subnet IDs when using an existing
+          VPC. Provide 3 comma-separated private subnet IDs (one per AZ).
 
 # =============================================================================
 # Resources
@@ -664,7 +673,7 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-vpc'
+          Value: !Sub "${ClusterName}-vpc"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -674,7 +683,7 @@ Resources:
     Properties:
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-igw'
+          Value: !Sub "${ClusterName}-igw"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -691,14 +700,14 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 6, 13]]
-      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [ 0, !Cidr [ !Ref VpcCidr, 6, 13 ] ]
+      AvailabilityZone: !Select [ 0, !GetAZs "" ]
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-public-1'
+          Value: !Sub "${ClusterName}-public-1"
         - Key: kubernetes.io/role/elb
-          Value: '1'
+          Value: "1"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -707,14 +716,14 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 6, 13]]
-      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [ 1, !Cidr [ !Ref VpcCidr, 6, 13 ] ]
+      AvailabilityZone: !Select [ 1, !GetAZs "" ]
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-public-2'
+          Value: !Sub "${ClusterName}-public-2"
         - Key: kubernetes.io/role/elb
-          Value: '1'
+          Value: "1"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -723,14 +732,14 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 6, 13]]
-      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: !Select [ 2, !Cidr [ !Ref VpcCidr, 6, 13 ] ]
+      AvailabilityZone: !Select [ 2, !GetAZs "" ]
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-public-3'
+          Value: !Sub "${ClusterName}-public-3"
         - Key: kubernetes.io/role/elb
-          Value: '1'
+          Value: "1"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -740,13 +749,13 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 6, 13]]
-      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [ 3, !Cidr [ !Ref VpcCidr, 6, 13 ] ]
+      AvailabilityZone: !Select [ 0, !GetAZs "" ]
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-private-1'
+          Value: !Sub "${ClusterName}-private-1"
         - Key: kubernetes.io/role/internal-elb
-          Value: '1'
+          Value: "1"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -755,13 +764,13 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: !Select [4, !Cidr [!Ref VpcCidr, 6, 13]]
-      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [ 4, !Cidr [ !Ref VpcCidr, 6, 13 ] ]
+      AvailabilityZone: !Select [ 1, !GetAZs "" ]
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-private-2'
+          Value: !Sub "${ClusterName}-private-2"
         - Key: kubernetes.io/role/internal-elb
-          Value: '1'
+          Value: "1"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -770,13 +779,13 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: !Select [5, !Cidr [!Ref VpcCidr, 6, 13]]
-      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: !Select [ 5, !Cidr [ !Ref VpcCidr, 6, 13 ] ]
+      AvailabilityZone: !Select [ 2, !GetAZs "" ]
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-private-3'
+          Value: !Sub "${ClusterName}-private-3"
         - Key: kubernetes.io/role/internal-elb
-          Value: '1'
+          Value: "1"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -788,7 +797,7 @@ Resources:
       VpcId: !Ref Vpc
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-public-rt'
+          Value: !Sub "${ClusterName}-public-rt"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -798,7 +807,7 @@ Resources:
     DependsOn: VpcGatewayAttachment
     Properties:
       RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: '0.0.0.0/0'
+      DestinationCidrBlock: "0.0.0.0/0"
       GatewayId: !Ref InternetGateway
 
   PublicSubnet1RouteTableAssoc:
@@ -830,7 +839,7 @@ Resources:
       Domain: vpc
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-nat-eip'
+          Value: !Sub "${ClusterName}-nat-eip"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -843,7 +852,7 @@ Resources:
       SubnetId: !Ref PublicSubnet1
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-nat'
+          Value: !Sub "${ClusterName}-nat"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -855,7 +864,7 @@ Resources:
       VpcId: !Ref Vpc
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-private-rt'
+          Value: !Sub "${ClusterName}-private-rt"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -864,7 +873,7 @@ Resources:
     Condition: CreateNewVpc
     Properties:
       RouteTableId: !Ref PrivateRouteTable
-      DestinationCidrBlock: '0.0.0.0/0'
+      DestinationCidrBlock: "0.0.0.0/0"
       NatGatewayId: !Ref NatGateway
 
   PrivateSubnet1RouteTableAssoc:
@@ -894,9 +903,9 @@ Resources:
   EksClusterRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-cluster-role'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-cluster-role"
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -911,19 +920,18 @@ Resources:
   EksClusterLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/eks/${ClusterName}/cluster'
+      LogGroupName: !Sub "/aws/eks/${ClusterName}/cluster"
       RetentionInDays: 30
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
-
 
   EksCluster:
     Type: AWS::EKS::Cluster
     DependsOn: EksClusterLogGroup
     Properties:
       Name: !Ref ClusterName
-      Version: !FindInMap [Constants, EKS, Version]
+      Version: !FindInMap [ Constants, EKS, Version ]
       RoleArn: !GetAtt EksClusterRole.Arn
       ResourcesVpcConfig:
         SubnetIds: !If
@@ -936,12 +944,12 @@ Resources:
             - !Ref PublicSubnet3
           - !If
             - HasPublicSubnets
-            - - !Select [0, !Ref PrivateSubnetIds]
-              - !Select [1, !Ref PrivateSubnetIds]
-              - !Select [2, !Ref PrivateSubnetIds]
-              - !Select [0, !Ref PublicSubnetIds]
-              - !Select [1, !Ref PublicSubnetIds]
-              - !Select [2, !Ref PublicSubnetIds]
+            - - !Select [ 0, !Ref PrivateSubnetIds ]
+              - !Select [ 1, !Ref PrivateSubnetIds ]
+              - !Select [ 2, !Ref PrivateSubnetIds ]
+              - !Select [ 0, !Ref PublicSubnetIds ]
+              - !Select [ 1, !Ref PublicSubnetIds ]
+              - !Select [ 2, !Ref PublicSubnetIds ]
             - !Ref PrivateSubnetIds
         EndpointPublicAccess: true
         EndpointPrivateAccess: true
@@ -971,10 +979,10 @@ Resources:
       ClientIdList:
         - sts.amazonaws.com
       ThumbprintList:
-        - '9e99a48a9960b14926bb7f3b02e22da2b0ab7280'
+        - "9e99a48a9960b14926bb7f3b02e22da2b0ab7280"
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-oidc'
+          Value: !Sub "${ClusterName}-oidc"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -984,9 +992,9 @@ Resources:
   NodeGroupRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-node-role'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-node-role"
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -1006,7 +1014,7 @@ Resources:
   EbsCsiDriverRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-ebs-csi-irsa'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-ebs-csi-irsa"
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -1025,7 +1033,7 @@ Resources:
               }]
             }
           - OidcProviderArn: !Ref OidcProvider
-            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            OidcIssuer: !Select [ 1, !Split [ "://", !GetAtt EksCluster.OpenIdConnectIssuerUrl ] ]
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
       Tags:
@@ -1035,7 +1043,7 @@ Resources:
   EfsCsiDriverRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-efs-csi-irsa'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-efs-csi-irsa"
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -1054,7 +1062,7 @@ Resources:
               }]
             }
           - OidcProviderArn: !Ref OidcProvider
-            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            OidcIssuer: !Select [ 1, !Split [ "://", !GetAtt EksCluster.OpenIdConnectIssuerUrl ] ]
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy
       Tags:
@@ -1064,7 +1072,7 @@ Resources:
   PlatformaIrsaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-platforma-irsa'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-platforma-irsa"
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -1083,12 +1091,12 @@ Resources:
               }]
             }
           - OidcProviderArn: !Ref OidcProvider
-            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            OidcIssuer: !Select [ 1, !Split [ "://", !GetAtt EksCluster.OpenIdConnectIssuerUrl ] ]
             PlatformaNamespace: !Ref PlatformaNamespace
       Policies:
         - PolicyName: platforma-s3-access
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Sid: ListBucket
                 Effect: Allow
@@ -1105,48 +1113,48 @@ Resources:
                   - s3:GetObjectAttributes
                   - s3:AbortMultipartUpload
                   - s3:ListMultipartUploadParts
-                Resource: !Sub '${S3Bucket.Arn}/*'
+                Resource: !Sub "${S3Bucket.Arn}/*"
               - !If
                 - HasLibrary1Irsa
                 - Sid: Library1ListBucket
                   Effect: Allow
-                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary1Bucket}'
+                  Action: [ s3:ListBucket, s3:ListBucketMultipartUploads ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary1Bucket}"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary1Irsa
                 - Sid: Library1GetObjects
                   Effect: Allow
-                  Action: [s3:GetObject, s3:GetObjectAttributes]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary1Bucket}/*'
+                  Action: [ s3:GetObject, s3:GetObjectAttributes ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary1Bucket}/*"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary2Irsa
                 - Sid: Library2ListBucket
                   Effect: Allow
-                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary2Bucket}'
+                  Action: [ s3:ListBucket, s3:ListBucketMultipartUploads ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary2Bucket}"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary2Irsa
                 - Sid: Library2GetObjects
                   Effect: Allow
-                  Action: [s3:GetObject, s3:GetObjectAttributes]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary2Bucket}/*'
+                  Action: [ s3:GetObject, s3:GetObjectAttributes ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary2Bucket}/*"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary3Irsa
                 - Sid: Library3ListBucket
                   Effect: Allow
-                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary3Bucket}'
+                  Action: [ s3:ListBucket, s3:ListBucketMultipartUploads ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary3Bucket}"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary3Irsa
                 - Sid: Library3GetObjects
                   Effect: Allow
-                  Action: [s3:GetObject, s3:GetObjectAttributes]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary3Bucket}/*'
+                  Action: [ s3:GetObject, s3:GetObjectAttributes ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary3Bucket}/*"
                 - !Ref AWS::NoValue
       Tags:
         - Key: platforma
@@ -1155,7 +1163,7 @@ Resources:
   PlatformaJobsIrsaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-platforma-jobs-irsa'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-platforma-jobs-irsa"
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -1174,12 +1182,12 @@ Resources:
               }]
             }
           - OidcProviderArn: !Ref OidcProvider
-            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            OidcIssuer: !Select [ 1, !Split [ "://", !GetAtt EksCluster.OpenIdConnectIssuerUrl ] ]
             PlatformaNamespace: !Ref PlatformaNamespace
       Policies:
         - PolicyName: platforma-jobs-s3-access
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Sid: ListBucket
                 Effect: Allow
@@ -1196,48 +1204,48 @@ Resources:
                   - s3:GetObjectAttributes
                   - s3:AbortMultipartUpload
                   - s3:ListMultipartUploadParts
-                Resource: !Sub '${S3Bucket.Arn}/*'
+                Resource: !Sub "${S3Bucket.Arn}/*"
               - !If
                 - HasLibrary1Irsa
                 - Sid: Library1ListBucket
                   Effect: Allow
-                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary1Bucket}'
+                  Action: [ s3:ListBucket, s3:ListBucketMultipartUploads ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary1Bucket}"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary1Irsa
                 - Sid: Library1GetObjects
                   Effect: Allow
-                  Action: [s3:GetObject, s3:GetObjectAttributes]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary1Bucket}/*'
+                  Action: [ s3:GetObject, s3:GetObjectAttributes ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary1Bucket}/*"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary2Irsa
                 - Sid: Library2ListBucket
                   Effect: Allow
-                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary2Bucket}'
+                  Action: [ s3:ListBucket, s3:ListBucketMultipartUploads ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary2Bucket}"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary2Irsa
                 - Sid: Library2GetObjects
                   Effect: Allow
-                  Action: [s3:GetObject, s3:GetObjectAttributes]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary2Bucket}/*'
+                  Action: [ s3:GetObject, s3:GetObjectAttributes ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary2Bucket}/*"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary3Irsa
                 - Sid: Library3ListBucket
                   Effect: Allow
-                  Action: [s3:ListBucket, s3:ListBucketMultipartUploads]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary3Bucket}'
+                  Action: [ s3:ListBucket, s3:ListBucketMultipartUploads ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary3Bucket}"
                 - !Ref AWS::NoValue
               - !If
                 - HasLibrary3Irsa
                 - Sid: Library3GetObjects
                   Effect: Allow
-                  Action: [s3:GetObject, s3:GetObjectAttributes]
-                  Resource: !Sub 'arn:aws:s3:::${DataLibrary3Bucket}/*'
+                  Action: [ s3:GetObject, s3:GetObjectAttributes ]
+                  Resource: !Sub "arn:aws:s3:::${DataLibrary3Bucket}/*"
                 - !Ref AWS::NoValue
       Tags:
         - Key: platforma
@@ -1246,7 +1254,7 @@ Resources:
   AutoscalerIrsaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-autoscaler-irsa'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-autoscaler-irsa"
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -1265,7 +1273,7 @@ Resources:
               }]
             }
           - OidcProviderArn: !Ref OidcProvider
-            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            OidcIssuer: !Select [ 1, !Split [ "://", !GetAtt EksCluster.OpenIdConnectIssuerUrl ] ]
             PlatformaNamespace: !Ref PlatformaNamespace
       Policies:
         - PolicyName: cluster-autoscaler
@@ -1314,14 +1322,14 @@ Resources:
   ALBControllerPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      ManagedPolicyName: !Sub '${ClusterName}-${AWS::Region}-alb-controller-policy'
+      ManagedPolicyName: !Sub "${ClusterName}-${AWS::Region}-alb-controller-policy"
       PolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Action:
               - iam:CreateServiceLinkedRole
-            Resource: '*'
+            Resource: "*"
             Condition:
               StringEquals:
                 iam:AWSServiceName: elasticloadbalancing.amazonaws.com
@@ -1354,7 +1362,7 @@ Resources:
               - elasticloadbalancing:DescribeTrustStores
               - elasticloadbalancing:DescribeListenerAttributes
               - elasticloadbalancing:DescribeCapacityReservation
-            Resource: '*'
+            Resource: "*"
           - Effect: Allow
             Action:
               - cognito-idp:DescribeUserPoolClient
@@ -1374,79 +1382,79 @@ Resources:
               - shield:DescribeProtection
               - shield:CreateProtection
               - shield:DeleteProtection
-            Resource: '*'
+            Resource: "*"
           - Effect: Allow
             Action:
               - ec2:AuthorizeSecurityGroupIngress
               - ec2:RevokeSecurityGroupIngress
-            Resource: '*'
+            Resource: "*"
           - Effect: Allow
             Action:
               - ec2:CreateSecurityGroup
-            Resource: '*'
+            Resource: "*"
           - Effect: Allow
             Action:
               - ec2:CreateTags
-            Resource: 'arn:aws:ec2:*:*:security-group/*'
+            Resource: "arn:aws:ec2:*:*:security-group/*"
             Condition:
               StringEquals:
                 ec2:CreateAction: CreateSecurityGroup
-              'Null':
-                aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "false"
           - Effect: Allow
             Action:
               - ec2:CreateTags
               - ec2:DeleteTags
-            Resource: 'arn:aws:ec2:*:*:security-group/*'
+            Resource: "arn:aws:ec2:*:*:security-group/*"
             Condition:
-              'Null':
-                aws:RequestTag/elbv2.k8s.aws/cluster: 'true'
-                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "true"
+                aws:ResourceTag/elbv2.k8s.aws/cluster: "false"
           - Effect: Allow
             Action:
               - ec2:AuthorizeSecurityGroupIngress
               - ec2:RevokeSecurityGroupIngress
               - ec2:DeleteSecurityGroup
-            Resource: '*'
+            Resource: "*"
             Condition:
-              'Null':
-                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+              "Null":
+                aws:ResourceTag/elbv2.k8s.aws/cluster: "false"
           - Effect: Allow
             Action:
               - elasticloadbalancing:CreateLoadBalancer
               - elasticloadbalancing:CreateTargetGroup
-            Resource: '*'
+            Resource: "*"
             Condition:
-              'Null':
-                aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "false"
           - Effect: Allow
             Action:
               - elasticloadbalancing:CreateListener
               - elasticloadbalancing:DeleteListener
               - elasticloadbalancing:CreateRule
               - elasticloadbalancing:DeleteRule
-            Resource: '*'
+            Resource: "*"
           - Effect: Allow
             Action:
               - elasticloadbalancing:AddTags
               - elasticloadbalancing:RemoveTags
             Resource:
-              - 'arn:aws:elasticloadbalancing:*:*:targetgroup/*/*'
-              - 'arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*'
-              - 'arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*'
+              - "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*"
+              - "arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*"
+              - "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*"
             Condition:
-              'Null':
-                aws:RequestTag/elbv2.k8s.aws/cluster: 'true'
-                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "true"
+                aws:ResourceTag/elbv2.k8s.aws/cluster: "false"
           - Effect: Allow
             Action:
               - elasticloadbalancing:AddTags
               - elasticloadbalancing:RemoveTags
             Resource:
-              - 'arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*'
-              - 'arn:aws:elasticloadbalancing:*:*:listener/app/*/*/*'
-              - 'arn:aws:elasticloadbalancing:*:*:listener-rule/net/*/*/*'
-              - 'arn:aws:elasticloadbalancing:*:*:listener-rule/app/*/*/*'
+              - "arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*"
+              - "arn:aws:elasticloadbalancing:*:*:listener/app/*/*/*"
+              - "arn:aws:elasticloadbalancing:*:*:listener-rule/net/*/*/*"
+              - "arn:aws:elasticloadbalancing:*:*:listener-rule/app/*/*/*"
           - Effect: Allow
             Action:
               - elasticloadbalancing:ModifyLoadBalancerAttributes
@@ -1459,29 +1467,29 @@ Resources:
               - elasticloadbalancing:DeleteTargetGroup
               - elasticloadbalancing:ModifyListenerAttributes
               - elasticloadbalancing:ModifyCapacityReservation
-            Resource: '*'
+            Resource: "*"
             Condition:
-              'Null':
-                aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+              "Null":
+                aws:ResourceTag/elbv2.k8s.aws/cluster: "false"
           - Effect: Allow
             Action:
               - elasticloadbalancing:AddTags
             Resource:
-              - 'arn:aws:elasticloadbalancing:*:*:targetgroup/*/*'
-              - 'arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*'
-              - 'arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*'
+              - "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*"
+              - "arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*"
+              - "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*"
             Condition:
               StringEquals:
                 elasticloadbalancing:CreateAction:
                   - CreateTargetGroup
                   - CreateLoadBalancer
-              'Null':
-                aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "false"
           - Effect: Allow
             Action:
               - elasticloadbalancing:RegisterTargets
               - elasticloadbalancing:DeregisterTargets
-            Resource: 'arn:aws:elasticloadbalancing:*:*:targetgroup/*/*'
+            Resource: "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*"
           - Effect: Allow
             Action:
               - elasticloadbalancing:SetWebAcl
@@ -1489,12 +1497,12 @@ Resources:
               - elasticloadbalancing:AddListenerCertificates
               - elasticloadbalancing:RemoveListenerCertificates
               - elasticloadbalancing:ModifyRule
-            Resource: '*'
+            Resource: "*"
 
   ALBControllerRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-alb-controller-irsa'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-alb-controller-irsa"
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -1513,7 +1521,7 @@ Resources:
               }]
             }
           - OidcProviderArn: !Ref OidcProvider
-            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            OidcIssuer: !Select [ 1, !Split [ "://", !GetAtt EksCluster.OpenIdConnectIssuerUrl ] ]
             PlatformaNamespace: !Ref PlatformaNamespace
       ManagedPolicyArns:
         - !Ref ALBControllerPolicy
@@ -1524,27 +1532,27 @@ Resources:
   ExternalDNSPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      ManagedPolicyName: !Sub '${ClusterName}-${AWS::Region}-external-dns-policy'
+      ManagedPolicyName: !Sub "${ClusterName}-${AWS::Region}-external-dns-policy"
       PolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Sid: ChangeRecords
             Effect: Allow
             Action:
               - route53:ChangeResourceRecordSets
-            Resource: !Sub 'arn:aws:route53:::hostedzone/${HostedZoneId}'
+            Resource: !Sub "arn:aws:route53:::hostedzone/${HostedZoneId}"
           - Sid: ListZones
             Effect: Allow
             Action:
               - route53:ListHostedZones
               - route53:ListResourceRecordSets
               - route53:ListTagsForResource
-            Resource: '*'
+            Resource: "*"
 
   ExternalDNSRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-external-dns-irsa'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-external-dns-irsa"
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -1563,7 +1571,7 @@ Resources:
               }]
             }
           - OidcProviderArn: !Ref OidcProvider
-            OidcIssuer: !Select [1, !Split ['://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+            OidcIssuer: !Select [ 1, !Split [ "://", !GetAtt EksCluster.OpenIdConnectIssuerUrl ] ]
             PlatformaNamespace: !Ref PlatformaNamespace
       ManagedPolicyArns:
         - !Ref ExternalDNSPolicy
@@ -1645,12 +1653,12 @@ Resources:
               - Key: platforma
                 Value: !Ref ClusterName
 
-  SystemNodeGroupV3:
+  SystemNodeGroupV4:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: system-v4
-      Version: !FindInMap [Constants, EKS, Version]
+      Version: !FindInMap [ Constants, EKS, Version ]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m7i.4xlarge
@@ -1663,8 +1671,20 @@ Resources:
       # when a node lands in a different AZ than its PVs.
       Subnets: !If
         - CreateNewVpc
-        - - !If [SystemAZa, !Ref PrivateSubnet1, !If [SystemAZb, !Ref PrivateSubnet2, !Ref PrivateSubnet3]]
-        - - !If [SystemAZa, !Select [0, !Ref PrivateSubnetIds], !If [SystemAZb, !Select [1, !Ref PrivateSubnetIds], !Select [2, !Ref PrivateSubnetIds]]]
+        - - !If [
+              SystemAZa,
+              !Ref PrivateSubnet1,
+              !If [ SystemAZb, !Ref PrivateSubnet2, !Ref PrivateSubnet3 ],
+            ]
+        - - !If [
+              SystemAZa,
+              !Select [ 0, !Ref PrivateSubnetIds ],
+              !If [
+                  SystemAZb,
+                  !Select [ 1, !Ref PrivateSubnetIds ],
+                  !Select [ 2, !Ref PrivateSubnetIds ],
+                ],
+            ]
       LaunchTemplate:
         Id: !Ref SmallNodeLaunchTemplate
         Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber
@@ -1679,14 +1699,14 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: ui-v2
-      Version: !FindInMap [Constants, EKS, Version]
+      Version: !FindInMap [ Constants, EKS, Version ]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - t3.xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxUi]
+        MaxSize: !FindInMap [ DeploymentSize, !Ref DeploymentSize, MaxUi ]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1711,14 +1731,14 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-16c-64g-v2
-      Version: !FindInMap [Constants, EKS, Version]
+      Version: !FindInMap [ Constants, EKS, Version ]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m7i.4xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch16c64g]
+        MaxSize: !FindInMap [ DeploymentSize, !Ref DeploymentSize, MaxBatch16c64g ]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1743,14 +1763,14 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-32c-128g-v2
-      Version: !FindInMap [Constants, EKS, Version]
+      Version: !FindInMap [ Constants, EKS, Version ]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m7i.8xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch32c128g]
+        MaxSize: !FindInMap [ DeploymentSize, !Ref DeploymentSize, MaxBatch32c128g ]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1775,14 +1795,14 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-64c-256g-v2
-      Version: !FindInMap [Constants, EKS, Version]
+      Version: !FindInMap [ Constants, EKS, Version ]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - m7i.16xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch64c256g]
+        MaxSize: !FindInMap [ DeploymentSize, !Ref DeploymentSize, MaxBatch64c256g ]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1807,14 +1827,14 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-32c-256g-v2
-      Version: !FindInMap [Constants, EKS, Version]
+      Version: !FindInMap [ Constants, EKS, Version ]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - r7i.8xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch32c256g]
+        MaxSize: !FindInMap [ DeploymentSize, !Ref DeploymentSize, MaxBatch32c256g ]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1839,14 +1859,14 @@ Resources:
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-64c-512g-v2
-      Version: !FindInMap [Constants, EKS, Version]
+      Version: !FindInMap [ Constants, EKS, Version ]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
         - r7i.16xlarge
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
-        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch64c512g]
+        MaxSize: !FindInMap [ DeploymentSize, !Ref DeploymentSize, MaxBatch64c512g ]
       Subnets: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -1894,7 +1914,7 @@ Resources:
 
   CoreDnsAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV3
+    DependsOn: SystemNodeGroupV4
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: coredns
@@ -1906,7 +1926,7 @@ Resources:
   # CSI drivers (DependsOn: SystemNodeGroupV3 for running pods)
   EbsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV3
+    DependsOn: SystemNodeGroupV4
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-ebs-csi-driver
@@ -1918,7 +1938,7 @@ Resources:
 
   EfsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV3
+    DependsOn: SystemNodeGroupV4
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-efs-csi-driver
@@ -1943,9 +1963,9 @@ Resources:
   HelmDeployerRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-helm-deployer'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-helm-deployer"
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -1954,12 +1974,13 @@ Resources:
       Policies:
         - PolicyName: HelmDeployerPolicy
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
                   - eks:DescribeCluster
-                Resource: !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}'
+                Resource: !Sub "arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterN\
+                  ame}"
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -1967,27 +1988,32 @@ Resources:
                   - logs:PutLogEvents
                   - logs:PutRetentionPolicy
                 Resource:
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-helm-deployer:*'
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-platforma-deployer:*'
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${\
+                    ClusterName}-helm-deployer:*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebui\
+                    ld/${ClusterName}-platforma-deployer:*"
               # Store/retrieve auto-generated users password in SSM Parameter Store
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:PutParameter
                   - ssm:DeleteParameter
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ClusterName}/platforma/*'
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Cluste\
+                  rName}/platforma/*"
               # Teardown: delete ALBs, TGs, and SGs that ALB Controller created outside CF
               - Effect: Allow
                 Action:
                   - tag:GetResources
-                Resource: '*'
+                Resource: "*"
               - Effect: Allow
                 Action:
                   - elasticloadbalancing:DeleteLoadBalancer
                   - elasticloadbalancing:DeleteTargetGroup
                 Resource:
-                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*/*'
-                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*/*'
+                  - !Sub "arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalance\
+                    r/app/*/*"
+                  - !Sub "arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:target\
+                    group/*/*"
               - Effect: Allow
                 Action:
                   - ec2:DescribeSecurityGroups
@@ -1995,11 +2021,11 @@ Resources:
                   - ec2:DeleteSecurityGroup
                   - ec2:RevokeSecurityGroupIngress
                   - ec2:RevokeSecurityGroupEgress
-                Resource: '*'
+                Resource: "*"
               - Effect: Allow
                 Action:
                   - servicequotas:GetServiceQuota
-                Resource: '*'
+                Resource: "*"
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2023,7 +2049,7 @@ Resources:
   HelmDeployerProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub '${ClusterName}-helm-deployer'
+      Name: !Sub "${ClusterName}-helm-deployer"
       ServiceRole: !GetAtt HelmDeployerRole.Arn
       TimeoutInMinutes: 30
       Artifacts:
@@ -2042,7 +2068,7 @@ Resources:
           - Name: AUTOSCALER_ROLE_ARN
             Value: !GetAtt AutoscalerIrsaRole.Arn
           - Name: VPC_ID
-            Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
+            Value: !If [ CreateNewVpc, !Ref Vpc, !Ref VpcId ]
           - Name: ALB_ROLE_ARN
             Value: !GetAtt ALBControllerRole.Arn
           - Name: EXTERNALDNS_ROLE_ARN
@@ -2050,17 +2076,17 @@ Resources:
           - Name: HOSTED_ZONE_ID
             Value: !Ref HostedZoneId
           - Name: KUBERNETES_VERSION
-            Value: !FindInMap [Constants, EKS, Version]
+            Value: !FindInMap [ Constants, EKS, Version ]
           - Name: KUEUE_VERSION
-            Value: '0.16.1'
+            Value: "0.16.1"
           - Name: APPWRAPPER_VERSION
-            Value: 'v1.2.0'
+            Value: "v1.2.0"
           - Name: CLUSTER_AUTOSCALER_CHART_VERSION
-            Value: '9.56.0'
+            Value: "9.56.0"
           - Name: EXTERNAL_DNS_VERSION
-            Value: '1.20.0'
+            Value: "1.20.0"
           - Name: ALB_CONTROLLER_VERSION
-            Value: '3.0.0'
+            Value: "3.0.0"
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2276,7 +2302,7 @@ Resources:
   PlatformaDeployerProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub '${ClusterName}-platforma-deployer'
+      Name: !Sub "${ClusterName}-platforma-deployer"
       ServiceRole: !GetAtt HelmDeployerRole.Arn
       TimeoutInMinutes: 30
       Artifacts:
@@ -2293,7 +2319,7 @@ Resources:
           - Name: NAMESPACE
             Value: !Ref PlatformaNamespace
           - Name: KUBERNETES_VERSION
-            Value: !FindInMap [Constants, EKS, Version]
+            Value: !FindInMap [ Constants, EKS, Version ]
           # NOTE: Secrets below are visible in CodeBuild console/API.
           # The auto-generated users password uses SSM SecureString (see buildspec).
           # For user-provided secrets, restrict codebuild:BatchGetBuilds/BatchGetProjects
@@ -2304,7 +2330,7 @@ Resources:
           - Name: PLATFORMA_VERSION
             Value: !If
               - UseDefaultPlatformaVersion
-              - !FindInMap [Constants, Platforma, Version]
+              - !FindInMap [ Constants, Platforma, Version ]
               - !Ref PlatformaVersion
           - Name: PLATFORMA_IMAGE
             Value: !Ref PlatformaImage
@@ -2323,17 +2349,17 @@ Resources:
           - Name: PLATFORMA_JOBS_ROLE_ARN
             Value: !GetAtt PlatformaJobsIrsaRole.Arn
           - Name: VPC_ID
-            Value: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
+            Value: !If [ CreateNewVpc, !Ref Vpc, !Ref VpcId ]
           - Name: DEPLOYMENT_SIZE
             Value: !Ref DeploymentSize
           - Name: UI_QUEUE_CPU
-            Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, UiCpu]
+            Value: !FindInMap [ DeploymentSize, !Ref DeploymentSize, UiCpu ]
           - Name: UI_QUEUE_MEMORY_GI
-            Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, UiMemoryGi]
+            Value: !FindInMap [ DeploymentSize, !Ref DeploymentSize, UiMemoryGi ]
           - Name: BATCH_QUEUE_CPU
-            Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchCpu]
+            Value: !FindInMap [ DeploymentSize, !Ref DeploymentSize, BatchCpu ]
           - Name: BATCH_QUEUE_MEMORY_GI
-            Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchMemoryGi]
+            Value: !FindInMap [ DeploymentSize, !Ref DeploymentSize, BatchMemoryGi ]
           - Name: AUTH_METHOD
             Value: !Ref AuthMethod
           - Name: HTPASSWD_CONTENT
@@ -2764,9 +2790,9 @@ Resources:
   TriggerHelmDeployRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ClusterName}-${AWS::Region}-helm-trigger'
+      RoleName: !Sub "${ClusterName}-${AWS::Region}-helm-trigger"
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -2777,14 +2803,16 @@ Resources:
       Policies:
         - PolicyName: StartCodeBuild
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
                   - codebuild:StartBuild
                 Resource:
-                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ClusterName}-helm-deployer'
-                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ClusterName}-platforma-deployer'
+                  - !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${ClusterName}\
+                    -helm-deployer"
+                  - !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${Cluster\
+                    Name}-platforma-deployer"
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2795,7 +2823,7 @@ Resources:
       - HelmDeployerProject
       - PlatformaDeployerProject
     Properties:
-      FunctionName: !Sub '${ClusterName}-helm-trigger'
+      FunctionName: !Sub "${ClusterName}-helm-trigger"
       Runtime: python3.12
       Handler: index.handler
       Role: !GetAtt TriggerHelmDeployRole.Arn
@@ -2805,7 +2833,7 @@ Resources:
           Value: !Ref ClusterName
       Environment:
         Variables:
-          CODEBUILD_PROJECT: !Sub '${ClusterName}-helm-deployer'
+          CODEBUILD_PROJECT: !Sub "${ClusterName}-helm-deployer"
       Code:
         ZipFile: |
           import boto3, json, os, urllib.request
@@ -2866,12 +2894,12 @@ Resources:
       - EfsCsiAddon
     Properties:
       ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
-      CodeBuildProject: !Sub '${ClusterName}-helm-deployer'
+      CodeBuildProject: !Sub "${ClusterName}-helm-deployer"
       # Properties below trigger re-deployment when changed during stack update.
       # The Lambda reads CodeBuildProject; the rest exist only so CloudFormation
       # detects property changes and sends an UPDATE event.
-      KubernetesVersion: !FindInMap [Constants, EKS, Version]
-      ForceUpdateInfra: "1"  # Bump to force infra re-deployment
+      KubernetesVersion: !FindInMap [ Constants, EKS, Version ]
+      ForceUpdateInfra: "1" # Bump to force infra re-deployment
 
   TriggerPlatformaDeploy:
     Type: AWS::CloudFormation::CustomResource
@@ -2884,12 +2912,12 @@ Resources:
       - Certificate
     Properties:
       ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
-      CodeBuildProject: !Sub '${ClusterName}-platforma-deployer'
+      CodeBuildProject: !Sub "${ClusterName}-platforma-deployer"
       # Properties below trigger re-deployment when changed during stack update.
-      ForceUpdatePlatforma: "1"  # Bump to force Platforma re-deployment
+      ForceUpdatePlatforma: "1" # Bump to force Platforma re-deployment
       PlatformaVersion: !If
         - UseDefaultPlatformaVersion
-        - !FindInMap [Constants, Platforma, Version]
+        - !FindInMap [ Constants, Platforma, Version ]
         - !Ref PlatformaVersion
       PlatformaImage: !Ref PlatformaImage
       DeployPlatforma: !Ref DeployPlatforma
@@ -2925,10 +2953,10 @@ Resources:
   # ---------------------------------------------------------------------------
   EfsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    DependsOn: EksCluster  # required to resolve EksCluster.ClusterSecurityGroupId
+    DependsOn: EksCluster # required to resolve EksCluster.ClusterSecurityGroupId
     Properties:
-      GroupDescription: !Sub 'Allow NFS traffic to Platforma EFS - ${ClusterName}'
-      VpcId: !If [CreateNewVpc, !Ref Vpc, !Ref VpcId]
+      GroupDescription: !Sub "Allow NFS traffic to Platforma EFS - ${ClusterName}"
+      VpcId: !If [ CreateNewVpc, !Ref Vpc, !Ref VpcId ]
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 2049
@@ -2936,7 +2964,7 @@ Resources:
           SourceSecurityGroupId: !GetAtt EksCluster.ClusterSecurityGroupId
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-efs-sg'
+          Value: !Sub "${ClusterName}-efs-sg"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -2950,7 +2978,7 @@ Resources:
       Encrypted: true
       FileSystemTags:
         - Key: Name
-          Value: !Sub '${ClusterName}-workspace'
+          Value: !Sub "${ClusterName}-workspace"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -2959,7 +2987,7 @@ Resources:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref EfsFileSystem
-      SubnetId: !If [CreateNewVpc, !Ref PrivateSubnet1, !Select [0, !Ref PrivateSubnetIds]]
+      SubnetId: !If [ CreateNewVpc, !Ref PrivateSubnet1, !Select [ 0, !Ref PrivateSubnetIds ] ]
       SecurityGroups:
         - !Ref EfsSecurityGroup
 
@@ -2967,7 +2995,7 @@ Resources:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref EfsFileSystem
-      SubnetId: !If [CreateNewVpc, !Ref PrivateSubnet2, !Select [1, !Ref PrivateSubnetIds]]
+      SubnetId: !If [ CreateNewVpc, !Ref PrivateSubnet2, !Select [ 1, !Ref PrivateSubnetIds ] ]
       SecurityGroups:
         - !Ref EfsSecurityGroup
 
@@ -2975,7 +3003,7 @@ Resources:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref EfsFileSystem
-      SubnetId: !If [CreateNewVpc, !Ref PrivateSubnet3, !Select [2, !Ref PrivateSubnetIds]]
+      SubnetId: !If [ CreateNewVpc, !Ref PrivateSubnet3, !Select [ 2, !Ref PrivateSubnetIds ] ]
       SecurityGroups:
         - !Ref EfsSecurityGroup
 
@@ -2990,10 +3018,10 @@ Resources:
       BucketName: !If
         - AutoGenerateS3Name
         - !Join
-          - '-'
-          - - 'platforma'
+          - "-"
+          - - "platforma"
             - !Ref ClusterName
-            - !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
+            - !Select [ 0, !Split [ "-", !Select [ 2, !Split [ "/", !Ref "AWS::StackId" ] ] ] ]
         - !Ref S3BucketName
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -3013,27 +3041,27 @@ Resources:
     Properties:
       Bucket: !Ref S3Bucket
       PolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Sid: DenyInsecureTransport
             Effect: Deny
-            Principal: '*'
-            Action: 's3:*'
+            Principal: "*"
+            Action: "s3:*"
             Resource:
               - !GetAtt S3Bucket.Arn
-              - !Sub '${S3Bucket.Arn}/*'
+              - !Sub "${S3Bucket.Arn}/*"
             Condition:
               Bool:
-                aws:SecureTransport: 'false'
+                aws:SecureTransport: "false"
           # Access control relies on IAM: only the Platforma IRSA role has
           # s3:* permissions on this bucket via its inline policy. Removing
           # the previous deny-all-except-role pattern because it locked out
           # account administrators from cleanup after stack deletion
           # (the IRSA role is deleted with the stack, leaving no one with access).
 
-  # ---------------------------------------------------------------------------
-  # 8. ACM Certificate (DNS-validated via Route53)
-  # ---------------------------------------------------------------------------
+          # ---------------------------------------------------------------------------
+          # 8. ACM Certificate (DNS-validated via Route53)
+          # ---------------------------------------------------------------------------
   Certificate:
     Type: AWS::CertificateManager::Certificate
     Properties:
@@ -3044,7 +3072,7 @@ Resources:
           HostedZoneId: !Ref HostedZoneId
       Tags:
         - Key: Name
-          Value: !Sub '${ClusterName}-certificate'
+          Value: !Sub "${ClusterName}-certificate"
         - Key: platforma
           Value: !Ref ClusterName
 
@@ -3055,32 +3083,37 @@ Outputs:
   PlatformaUrl:
     Description: >
       Platforma URL. Connect to this address using the Platforma Desktop App.
-    Value: !Sub 'https://${DomainName}'
+    Value: !Sub "https://${DomainName}"
 
   DefaultUsername:
     Condition: IsHtpasswd
     Description: >
-      Default username for Platforma login (htpasswd mode, auto-generated password).
+      Default username for Platforma login (htpasswd mode, auto-generated
+      password).
     Value: platforma
 
   UsersPasswordSSMPath:
     Condition: IsHtpasswd
     Description: >
-      SSM Parameter containing auto-generated users password (htpasswd mode only).
-      Retrieve with: aws ssm get-parameter --name /<ClusterName>/platforma/users-password --with-decryption --query Parameter.Value --output text
-    Value: !Sub '/${ClusterName}/platforma/users-password'
+      SSM Parameter containing auto-generated users password (htpasswd mode
+      only). Retrieve with: aws ssm get-parameter --name
+      /<ClusterName>/platforma/users-password --with-decryption --query
+      Parameter.Value --output text
+    Value: !Sub "/${ClusterName}/platforma/users-password"
 
   UsersPasswordSSMConsole:
     Condition: IsHtpasswd
     Description: >
       Click to open the SSM Parameter with the auto-generated users password.
       Click "Show" on the parameter page to reveal the value.
-    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/systems-manager/parameters/%2F${ClusterName}%2Fplatforma%2Fusers-password/description?region=${AWS::Region}'
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/para\
+      meters/%2F${ClusterName}%2Fplatforma%2Fusers-password/description?region=\
+      ${AWS::Region}"
 
   ClusterName:
     Description: >
-      EKS cluster name. To access the cluster:
-      aws eks update-kubeconfig --name <ClusterName> --region <Region>
+      EKS cluster name. To access the cluster: aws eks update-kubeconfig --name
+      <ClusterName> --region <Region>
     Value: !Ref EksCluster
 
   S3BucketOutput:
@@ -3093,18 +3126,25 @@ Outputs:
 
   HelmDeployerBuildProject:
     Description: >
-      CodeBuild project that deploys infrastructure controllers (Kueue, AppWrapper,
-      Cluster Autoscaler, ALB Controller, External DNS). Check logs here if the stack fails.
-    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ClusterName}-helm-deployer/history?region=${AWS::Region}'
+      CodeBuild project that deploys infrastructure controllers (Kueue,
+      AppWrapper, Cluster Autoscaler, ALB Controller, External DNS). Check logs
+      here if the stack fails.
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/codesuite/codebuild/\
+      ${AWS::AccountId}/projects/${ClusterName}-helm-deployer/history?region=${\
+      AWS::Region}"
 
   PlatformaDeployerBuildProject:
     Description: >
-      CodeBuild project that deploys Platforma. Check logs here if Platforma deployment fails.
-    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/codesuite/codebuild/${AWS::AccountId}/projects/${ClusterName}-platforma-deployer/history?region=${AWS::Region}'
+      CodeBuild project that deploys Platforma. Check logs here if Platforma
+      deployment fails.
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/codesuite/codebuild/\
+      ${AWS::AccountId}/projects/${ClusterName}-platforma-deployer/history?regi\
+      on=${AWS::Region}"
 
   PostDeploySteps:
     Description: What to do after the stack completes
     Value: >-
-      Stack deploys everything automatically. Once complete, connect the Platforma
-      Desktop App to your domain on port 443. If deployment fails, check the CodeBuild
-      project logs (see HelmDeployerBuildProject and PlatformaDeployerBuildProject outputs).
+      Stack deploys everything automatically. Once complete, connect the
+      Platforma Desktop App to your domain on port 443. If deployment fails,
+      check the CodeBuild project logs (see HelmDeployerBuildProject and
+      PlatformaDeployerBuildProject outputs).

@@ -94,6 +94,7 @@ spec:
             - "--db-dir=/data/database"
             - "--work-dir=/data/workspace/work"
             - "--packages-dir=/data/workspace/packages"
+            - "--use-symlinks=never"
             {{- if eq $mainType "s3" }}
             {{- if .Values.storage.main.s3.endpoint }}
             - "--primary-storage-s3={{ .Values.storage.main.s3.endpoint }}/{{ .Values.storage.main.s3.bucket }}{{ if .Values.storage.main.s3.prefix }}/{{ .Values.storage.main.s3.prefix }}{{ end }}"

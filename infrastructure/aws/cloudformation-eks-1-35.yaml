@@ -1671,7 +1671,7 @@ Resources:
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m7i.2xlarge
+        - m7i.4xlarge
       ScalingConfig:
         DesiredSize: 1
         MinSize: 1

@@ -63,17 +63,44 @@ All three share the same Terraform module under [`terraform/`](terraform/).
 
 ## Deployment sizes
 
-`deployment_size` controls node-pool maxes, Kueue batch queue quotas, Filestore
-default capacity, and the values the installer requests via the Cloud Quotas
-API. **All sizes share the same per-job cap of 62 vCPU / 500 GiB RAM** — the
-preset only controls how many such jobs can run in parallel.
+`deployment_size` controls per-batch-pool max-node counts, Kueue batch queue
+quotas, Filestore default capacity, and the values the installer requests via
+the Cloud Quotas API. **All sizes share the same per-job cap of 62 vCPU /
+500 GiB RAM** — the preset controls per-pool parallelism.
 
-| Preset | Parallel jobs | UI nodes max | Filestore (GiB) | CPUs (global) | N2D CPUs (region) | PD SSD GB (region) | Filestore Zonal GiB (region) | Instances (region) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `small`  |  4 |  4 | 1024 |  512 |  512 |  2048 | 1024 |  32 |
-| `medium` |  8 |  8 | 2048 | 1024 | 1024 |  4096 | 2048 |  48 |
-| `large`  | 16 | 16 | 4096 | 2048 | 2048 |  8192 | 4096 |  64 |
-| `xlarge` | 32 | 16 | 8192 | 4096 | 4096 | 16384 | 8192 | 128 |
+The batch tier is split into **5 pool shapes** (mirrors AWS's 5 batch node
+groups). All pools share the same K8s label (`role=batch`) and taint
+(`dedicated=batch:NoSchedule`); the GKE Cluster Autoscaler picks the
+smallest-fitting pool per pending pod. Small jobs land on small nodes, big
+jobs on big nodes — bin-packing efficiency without manual placement.
+
+Per-pool max-node counts per preset:
+
+| Preset | 16c-64g | 32c-128g | 64c-256g | 32c-256g | 64c-512g | Total batch | UI nodes max |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `small`  |  4 | 2 | 1 | 2 | 1 | 10 |  4 |
+| `medium` |  8 | 4 | 2 | 4 | 2 | 20 |  8 |
+| `large`  | 16 | 8 | 4 | 8 | 4 | 40 | 16 |
+| `xlarge` | 32 |16 | 8 |16 | 8 | 80 | 16 |
+
+Pool shape mapping:
+
+| Shape    | GCP machine type   | vCPU / Mem      | AWS counterpart |
+|---|---|---|---|
+| 16c-64g  | `n2d-standard-16`  | 16 / 64 GiB     | m7i.4xlarge |
+| 32c-128g | `n2d-standard-32`  | 32 / 128 GiB    | m7i.8xlarge |
+| 64c-256g | `n2d-standard-64`  | 64 / 256 GiB    | m7i.16xlarge |
+| 32c-256g | `n2d-highmem-32`   | 32 / 256 GiB    | r7i.8xlarge |
+| 64c-512g | `n2d-highmem-64`   | 64 / 512 GiB    | r7i.16xlarge |
+
+Other preset values:
+
+| Preset | Filestore (GiB) | CPUs (global) | N2D CPUs (region) | PD SSD GB (region) | Filestore Zonal GiB (region) | Instances (region) |
+|---|---:|---:|---:|---:|---:|---:|
+| `small`  | 1024 |  512 |  512 |  2048 | 1024 |  32 |
+| `medium` | 2048 | 1024 | 1024 |  4096 | 2048 |  48 |
+| `large`  | 4096 | 2048 | 2048 |  8192 | 4096 |  64 |
+| `xlarge` | 8192 | 4096 | 4096 | 16384 | 8192 | 128 |
 
 Larger sizes request larger GCP quotas. The installer auto-submits these via
 the Cloud Quotas API on first run; **small/medium** typically auto-approve
@@ -95,8 +122,21 @@ Rough idle cost (no jobs running, Tier-1 small):
 | Static IP + Cloud DNS records + Cert Manager | ~$0 |
 | **Idle total** | **~$0.50/hour (~$360/month)** |
 
-Batch + UI pools scale from zero, so they don't burn when idle. Active jobs
-add `n2d-highmem-64` instance-hours (~$3.60/h per running batch node).
+Batch + UI pools scale from zero, so they don't burn when idle. Active-job
+cost varies with the pool the autoscaler picks for each job:
+
+| Pool | Approximate $/hour per running node |
+|---|---|
+| 16c-64g  | ~$0.90 |
+| 32c-128g | ~$1.80 |
+| 64c-256g | ~$3.60 |
+| 32c-256g | ~$2.30 |
+| 64c-512g | ~$4.60 |
+
+(Spot pricing in europe-west1, list price; commit / SUD discounts apply
+separately.) Smaller jobs landing on smaller pools is the whole point of
+the multi-pool design — a 16-vCPU MiXCR job on a `16c-64g` node costs ~$0.90/h
+versus ~$3.60/h on a `64c-256g` node.
 
 GKE control plane is the only fixed cost (~$73/month). Filestore SSD is the
 floor — at 1 TiB, ~$300/month. Smaller deployments can drop to BASIC_HDD

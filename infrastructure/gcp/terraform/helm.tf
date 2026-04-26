@@ -27,7 +27,7 @@ resource "helm_release" "kueue" {
         }
       }
       featureGates = {
-        AppWrapper     = true
+        AppWrapper      = true
         ProvisioningACC = true
       }
       integrations = {

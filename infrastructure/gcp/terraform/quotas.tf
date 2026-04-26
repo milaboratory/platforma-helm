@@ -30,28 +30,28 @@ locals {
       quota_id      = "CPUS-ALL-REGIONS-per-project"
       dimensions    = {}
       preferred     = local.preset.cpus_global_quota
-      justification = "Total CPU (all regions). Required for Platforma batch nodes scaling up to ${local.preset.parallel_jobs} parallel jobs (deployment size: ${var.deployment_size})."
+      justification = "Total CPU (all regions). Required for Platforma batch nodes scaling up to ${local.total_batch_max_nodes} nodes (${local.total_batch_cpu} vCPU peak) across 5 batch pool shapes for deployment size ${var.deployment_size}."
     }
     n2d_cpus_region = {
       service       = "compute.googleapis.com"
       quota_id      = "N2D-CPUS-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.n2d_cpus_quota
-      justification = "N2D CPU per region. Platforma batch pool uses n2d-highmem-64 nodes (${local.preset.parallel_jobs} max nodes for deployment size ${var.deployment_size})."
+      justification = "N2D CPU per region. Platforma uses 5 batch pool shapes (n2d-standard-16/32/64, n2d-highmem-32/64) plus n2d-standard-4 system+UI nodes. Peak total: ${local.total_batch_cpu} vCPU batch + system/UI overhead, deployment size ${var.deployment_size}."
     }
     pd_ssd_region = {
       service       = "compute.googleapis.com"
       quota_id      = "SSD-TOTAL-GB-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.pd_ssd_quota_gb
-      justification = "Persistent Disk SSD per region. Covers pd-balanced node boot disks across system+UI+batch pools plus the database PVC."
+      justification = "Persistent Disk SSD per region. Covers pd-balanced boot disks for system+UI+batch nodes (up to ${local.total_batch_max_nodes} batch nodes peak across 5 pools) plus database PVC."
     }
     instances_region = {
       service       = "compute.googleapis.com"
       quota_id      = "INSTANCES-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.instances_quota
-      justification = "Compute instances per region. System (2) + UI (up to ${local.preset.ui_max_nodes}) + batch (up to ${local.preset.parallel_jobs}) nodes for Platforma."
+      justification = "Compute instances per region. System (2) + UI (up to ${local.preset.ui_max_nodes}) + batch (up to ${local.total_batch_max_nodes} across 5 pool shapes) nodes for Platforma."
     }
     filestore_zonal_region = {
       service       = "file.googleapis.com"

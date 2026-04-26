@@ -90,32 +90,46 @@ variable "ui_pool_max_nodes" {
   default     = null
 }
 
-variable "batch_pool_machine_type" {
-  type        = string
+variable "batch_pool_max_nodes_overrides" {
+  type        = map(number)
   description = <<-EOT
-    Machine type for the batch node pool. Default n2d-highmem-64 (64 vCPU /
-    512 GiB) — sized for Platforma's per-job cap (kueue_max_job_cpu = 62
-    vCPU / 500 GiB) so each batch node fits exactly one large job.
+    Per-batch-pool max-nodes override map. Keys are batch pool shape IDs:
+      "16c-64g", "32c-128g", "64c-256g", "32c-256g", "64c-512g"
+    Values are the autoscaler max-node count for that pool. Empty map (default)
+    uses the deployment_size preset values (see presets.tf batch_pool_max_nodes
+    per preset). Override only the pools you want to change; others fall back
+    to preset.
 
-    Smaller types (e.g. n2d-standard-16) appear to "save money" but lock you
-    out: jobs request 16+ vCPU per pod, and after GKE's daemonset/system
-    overhead a 16-vCPU node has only ~15.9 vCPU allocatable, so pods sit
-    Pending forever. If you override to a smaller type, also lower
-    kueue_max_job_cpu and kueue_max_job_memory accordingly.
+    Examples:
+      batch_pool_max_nodes_overrides = { "64c-512g" = 4 }
+        # Keep small preset defaults except allow up to 4 huge-memory nodes.
 
-    Quota implications: n2d-highmem-64 × <preset.parallel_jobs> nodes plus
-    UI + system pools must fit within your N2D-CPUS-per-project-region
-    quota. The installer auto-requests the right size (see presets.tf
-    n2d_cpus_quota); first installs may need to wait for human approval on
-    larger sizes.
+      batch_pool_max_nodes_overrides = {
+        "16c-64g"  = 0
+        "32c-128g" = 0
+        "32c-256g" = 0
+      }
+        # Disable smaller pools entirely (only run on 64c-256g + 64c-512g).
+
+    Pool shapes mirror AWS CloudFormation's batch node groups:
+      16c-64g  → n2d-standard-16 (16 vCPU / 64 GiB,  AWS m7i.4xlarge)
+      32c-128g → n2d-standard-32 (32 vCPU / 128 GiB, AWS m7i.8xlarge)
+      64c-256g → n2d-standard-64 (64 vCPU / 256 GiB, AWS m7i.16xlarge)
+      32c-256g → n2d-highmem-32  (32 vCPU / 256 GiB, AWS r7i.8xlarge)
+      64c-512g → n2d-highmem-64  (64 vCPU / 512 GiB, AWS r7i.16xlarge)
+    All pools share the same K8s label (role=batch) and taint
+    (dedicated=batch:NoSchedule); the GKE autoscaler picks the smallest-
+    fitting pool per pending pod.
   EOT
-  default     = "n2d-highmem-64"
-}
+  default     = {}
 
-variable "batch_pool_max_nodes" {
-  type        = number
-  description = "Override max nodes in the batch pool (scales from 0). null = use deployment_size preset default (= parallel jobs supported)."
-  default     = null
+  validation {
+    condition = alltrue([
+      for k, _ in var.batch_pool_max_nodes_overrides :
+      contains(["16c-64g", "32c-128g", "64c-256g", "32c-256g", "64c-512g"], k)
+    ])
+    error_message = "batch_pool_max_nodes_overrides keys must be one of: 16c-64g, 32c-128g, 64c-256g, 32c-256g, 64c-512g."
+  }
 }
 
 variable "batch_pool_disk_size_gb" {

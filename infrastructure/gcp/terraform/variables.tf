@@ -149,7 +149,10 @@ variable "workspace_capacity_gb" {
   default     = null
 
   validation {
-    condition     = var.workspace_capacity_gb == null || var.workspace_capacity_gb >= 1024
+    # Use ternary to short-circuit explicitly — TF 1.5's || does NOT
+    # short-circuit inside validation conditions, so 'null >= 1024' would
+    # error with "argument must not be null" before we ever check null.
+    condition     = var.workspace_capacity_gb == null ? true : var.workspace_capacity_gb >= 1024
     error_message = "workspace_capacity_gb must be null (use preset) or >= 1024 (1 TiB)."
   }
 }

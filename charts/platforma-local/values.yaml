@@ -1,0 +1,98 @@
+image:
+  repository: quay.io/milaboratory/pl
+  tag: "main"  # Override with --set image.tag="..." from CI
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 6345
+  # Annotations for the primary (gRPC) Service. Set serversscheme: h2c here
+  # for Traefik to speak h2c to the gRPC backend.
+  annotations: {}
+
+# Annotations for the storage Service ({fullname}-storage, port 6347, HTTP/1.1).
+# Kept separate so the primary Service's h2c scheme does not leak to storage.
+storageService:
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+license:
+  secretName: ""    # Must be provided — k8s secret name containing the license key
+  secretKey: pl-license-key
+
+auth:
+  htpasswd:
+    secretName: ""  # Existing htpasswd secret; if empty, add --no-auth to app.extraArgs
+    secretKey: htpasswd
+  # LDAP authentication
+  ldap:
+    server: ""       # e.g., ldaps://ldap.example.com
+    startTLS: false
+    bindDN: ""
+    searchRules: []
+    searchUser: ""
+    searchPassword: ""
+    searchPasswordSecretRef:
+      name: ""
+      key: "password"
+    tls:
+      insecureSkipVerify: false
+
+# Primary storage configuration
+storage:
+  # fs: local filesystem (default for this chart)
+  # Set fsExternalUrl when Desktop App needs to download results via HTTP
+  fsExternalUrl: ""  # e.g., http://storage.example.com
+
+# Extra CLI args passed verbatim (e.g. ["--no-auth"] for testing without credentials)
+app:
+  extraArgs: []
+  extraEnv: []
+  # - name: MY_VAR
+  #   value: "plain-text"
+  # - name: MY_SECRET
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: my-secret
+  #       key: my-key
+  debug:
+    enabled: false
+
+# Primary ingress (gRPC endpoint).
+# Use annotation traefik.ingress.kubernetes.io/service.serversscheme: h2c for gRPC.
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""
+
+# Additional ingress (HTTP storage endpoint)
+additionalIngress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""
+
+# emptyDir volumes — no PVC dependencies
+volumes:
+  storage:
+    sizeLimit: 10Gi
+  workspace:
+    sizeLimit: 10Gi
+  database:
+    sizeLimit: 5Gi
+  main:
+    sizeLimit: 5Gi

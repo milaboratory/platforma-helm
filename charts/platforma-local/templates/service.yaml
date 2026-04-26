@@ -1,0 +1,52 @@
+# =============================================================================
+# Services
+# =============================================================================
+# Two Services are needed because the backend speaks different protocols on
+# each port, and Traefik's `serversscheme` annotation is per-Service, not
+# per-port:
+#   - {fullname}          — gRPC on 6345 (h2c). Carries the h2c annotation.
+#   - {fullname}-storage  — HTTP/1.1 on 6347. Plain HTTP, no scheme override.
+# Using a single Service with both ports caused the storage ingress to 502
+# because Traefik opened h2c to the HTTP/1.1 backend.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platforma-local.fullname" . }}
+  labels:
+    {{- include "platforma-local.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "platforma-local.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platforma-local.fullname" . }}-storage
+  labels:
+    {{- include "platforma-local.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage
+  {{- with .Values.storageService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: 6347
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "platforma-local.selectorLabels" . | nindent 4 }}

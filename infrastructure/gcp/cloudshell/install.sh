@@ -328,6 +328,100 @@ pick_dns_zone_and_domain() {
   echo
 }
 
+# Verify the chosen Cloud DNS zone is publicly resolvable — i.e. that the
+# parent zone has actually delegated NS to it. Catches the common failure
+# mode where the user creates a zone for a subdomain (e.g. gcp-test.example.com)
+# but forgets to add NS records at the parent (example.com) pointing to the 4
+# Cloud DNS nameservers. Without this check, install.sh runs all the way to
+# Cert Manager, which then sits in PROVISIONING with AUTHORIZATION_ISSUE
+# forever — costing the user 20+ minutes to discover the problem.
+verify_dns_delegation() {
+  bold "DNS delegation precheck"
+
+  # Skip in non-ingress mode — no cert validation, no delegation needed.
+  if [[ "${INGRESS_ENABLED:-true}" != "true" ]]; then
+    info "Skipped (INGRESS_ENABLED=${INGRESS_ENABLED})"
+    echo
+    return 0
+  fi
+
+  if ! command -v dig &>/dev/null; then
+    warn "dig not found — skipping DNS delegation check."
+    warn "If the cert sticks in PROVISIONING after deploy, see infrastructure/gcp/domain-guide.md."
+    echo
+    return 0
+  fi
+
+  local zone_project="${DNS_ZONE_PROJECT:-${PROJECT_ID}}"
+  local zone_info
+  zone_info="$(gcloud dns managed-zones describe "${DNS_ZONE_NAME}" \
+    --project="${zone_project}" --format=json 2>/dev/null || echo '{}')"
+  local zone_dns_name expected_ns
+  zone_dns_name="$(echo "${zone_info}" | jq -r '.dnsName // ""' | sed 's/\.$//')"
+  expected_ns="$(echo "${zone_info}" | jq -r '.nameServers // [] | map(sub("\\.$";"")) | sort | .[]')"
+
+  if [[ -z "${zone_dns_name}" ]]; then
+    red "Could not describe zone ${DNS_ZONE_NAME} in project ${zone_project}."
+    red "Check the zone exists and you have dns.managedZones.get permission."
+    exit 1
+  fi
+
+  info "Zone:           ${DNS_ZONE_NAME}  (${zone_dns_name})"
+  info "Expected NS:    $(echo "${expected_ns}" | head -1) (+3 more)"
+
+  # Query the public DNS hierarchy for the zone's apex NS record. If the
+  # parent didn't delegate, this returns empty (or, with some resolvers,
+  # the NS of the parent — which still wouldn't match the Google ones).
+  local actual_ns
+  actual_ns="$(dig +short +time=5 +tries=2 NS "${zone_dns_name}" 2>/dev/null \
+    | sed 's/\.$//' | sort)"
+
+  if [[ -z "${actual_ns}" ]]; then
+    red "✗ ${zone_dns_name} returns no NS records from public DNS."
+    red ""
+    red "  This means the parent of '${zone_dns_name}' has not delegated"
+    red "  authority to your Cloud DNS zone. Cert validation will fail and"
+    red "  the cert will sit in PROVISIONING forever."
+    red ""
+    red "  Fix: add an NS record at the parent zone for '${zone_dns_name%%.*}'"
+    red "  pointing to these 4 nameservers:"
+    while IFS= read -r ns; do red "    ${ns}"; done <<<"${expected_ns}"
+    red ""
+    red "  Step-by-step (Route53/Cloudflare/GoDaddy/Namecheap):"
+    red "    infrastructure/gcp/domain-guide.md"
+    red ""
+    if prompt_yn "Proceed anyway (cert will not validate until you fix this)?"; then
+      warn "Continuing without DNS delegation. Fix it within ~30 min of deploy."
+      echo
+      return 0
+    fi
+    exit 1
+  fi
+
+  # Compare actual to expected. Mismatch = delegation points elsewhere.
+  if [[ "$(echo "${actual_ns}" | tr '\n' ' ')" != "$(echo "${expected_ns}" | tr '\n' ' ')" ]]; then
+    red "✗ ${zone_dns_name} resolves to nameservers that don't match your Cloud DNS zone."
+    red ""
+    red "  Got:"
+    while IFS= read -r ns; do red "    ${ns}"; done <<<"${actual_ns}"
+    red "  Expected (from Cloud DNS):"
+    while IFS= read -r ns; do red "    ${ns}"; done <<<"${expected_ns}"
+    red ""
+    red "  Fix the parent-zone NS delegation, or pick a different zone."
+    red "  See: infrastructure/gcp/domain-guide.md"
+    red ""
+    if prompt_yn "Proceed anyway (cert will not validate until you fix this)?"; then
+      warn "Continuing with mismatched delegation."
+      echo
+      return 0
+    fi
+    exit 1
+  fi
+
+  green "  ✓ DNS delegation verified — public NS for ${zone_dns_name} matches Cloud DNS."
+  echo
+}
+
 # -----------------------------------------------------------------------------
 # Auth: htpasswd (auto-gen / user-supplied content) or LDAP
 # -----------------------------------------------------------------------------
@@ -854,6 +948,7 @@ main() {
 
   preflight
   collect_inputs
+  verify_dns_delegation
   detect_existing_quota_prefs
   ensure_im_service_account
 

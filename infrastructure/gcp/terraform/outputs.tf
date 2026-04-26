@@ -13,7 +13,7 @@
 
 output "platforma_url" {
   description = "Endpoint to connect the Platforma Desktop App. HTTPS when ingress_enabled=true; otherwise the user must port-forward (see port_forward_command)."
-  value = var.ingress_enabled ? "https://${var.domain_name}" : "(ingress disabled — use port_forward_command, then connect Desktop App to grpc://localhost:6345)"
+  value       = var.ingress_enabled ? "https://${var.domain_name}" : "(ingress disabled — use port_forward_command, then connect Desktop App to grpc://localhost:6345)"
 }
 
 output "default_username" {
@@ -35,6 +35,25 @@ locals {
   _password_console_url = "https://console.cloud.google.com/security/secret-manager/secret/${google_secret_manager_secret.admin_password.secret_id}/versions?project=${var.project_id}"
   _password_cli_command = "gcloud secrets versions access latest --secret=${google_secret_manager_secret.admin_password.secret_id} --project=${var.project_id}"
 
+  # Credentials step text — branches on auth method so the post-deploy
+  # instructions match what the user actually configured. For LDAP and
+  # user-supplied htpasswd content, the auto-generated Secret Manager URL is
+  # irrelevant; for htpasswd auto-gen it's the only way to discover the
+  # password (avoids printing it to TF state outputs).
+  #
+  # nonsensitive() wrap: htpasswd_content is sensitive, so any expression
+  # touching it inherits sensitivity. Whether it is empty is not sensitive,
+  # so we extract that boolean explicitly — without this, post_deploy_steps
+  # itself becomes sensitive and TF refuses to print it.
+  _htpasswd_provided = nonsensitive(length(var.htpasswd_content) > 0)
+  _auth_step = (
+    var.auth_method == "ldap" ?
+    "Log in with your LDAP credentials (server: ${var.ldap_server})." :
+    local._htpasswd_provided ?
+    "Log in with one of the user/password pairs from your htpasswd_content." :
+    "Retrieve the auto-generated admin password (username '${var.admin_username}'):\n       Open: ${local._password_console_url}\n       (or run: ${local._password_cli_command})"
+  )
+
   _post_deploy_steps_with_ingress = <<-EOT
     Platforma is being deployed. Once the deploy completes:
 
@@ -42,12 +61,10 @@ locals {
        Check: gcloud certificate-manager certificates describe ${var.cluster_name}-cert --location=global --project=${var.project_id}
        Status should be ACTIVE.
 
-    2. Retrieve your admin password:
-       Open: ${local._password_console_url}
-       (or run: ${local._password_cli_command})
+    2. ${local._auth_step}
 
     3. Open the Platforma Desktop App, click "Add Connection" → "Remote Server",
-       enter https://${var.domain_name}, log in as ${var.admin_username} with the password above.
+       and connect to https://${var.domain_name}.
   EOT
 
   _post_deploy_steps_port_forward = <<-EOT
@@ -59,12 +76,10 @@ locals {
     2. Start a port-forward (leave running):
        kubectl port-forward -n ${var.platforma_namespace} svc/${var.helm_release_name} 6345:6345
 
-    3. Retrieve your admin password:
-       Open: ${local._password_console_url}
-       (or run: ${local._password_cli_command})
+    3. ${local._auth_step}
 
     4. Open the Platforma Desktop App, click "Add Connection" → "Remote Server",
-       enter grpc://localhost:6345, log in as ${var.admin_username} with the password above.
+       and connect to grpc://localhost:6345.
 
     For production, set ingress_enabled=true with domain_name + dns_zone_name to enable HTTPS access.
   EOT

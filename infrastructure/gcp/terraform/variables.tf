@@ -228,8 +228,73 @@ variable "dns_zone_project" {
 
 variable "admin_username" {
   type        = string
-  description = "Default admin username for htpasswd auth."
+  description = "Default admin username for htpasswd auth (only used when auth_method = htpasswd and htpasswd_content is empty — i.e. the auto-generated path)."
   default     = "platforma"
+}
+
+# =============================================================================
+# Authentication
+# =============================================================================
+# Two methods are supported (mirrors AWS CloudFormation):
+#   - htpasswd: file-based local auth. Either auto-generated (testing only —
+#     a random password lands in Secret Manager) or user-supplied bcrypted
+#     content (production single-team).
+#   - ldap: corporate directory integration. Pick direct-bind OR search-bind.
+# =============================================================================
+
+variable "auth_method" {
+  type        = string
+  description = "Authentication method: 'htpasswd' (local, file-based) or 'ldap' (corporate directory)."
+  default     = "htpasswd"
+
+  validation {
+    condition     = contains(["htpasswd", "ldap"], var.auth_method)
+    error_message = "auth_method must be one of: htpasswd, ldap."
+  }
+}
+
+variable "htpasswd_content" {
+  type        = string
+  description = "htpasswd file content (one or more 'username:bcrypt-hash' lines). Generate with 'htpasswd -nB <user>'. Empty = auto-generate a random password for admin_username and store it in Secret Manager — TESTING ONLY (the password ends up in Terraform state). Production deployments should provide pre-bcrypted content."
+  default     = ""
+  sensitive   = true
+}
+
+variable "ldap_server" {
+  type        = string
+  description = "LDAP server URL (e.g. ldaps://ldap.example.com:636). LDAPS strongly recommended. Required when auth_method = ldap."
+  default     = ""
+}
+
+variable "ldap_start_tls" {
+  type        = bool
+  description = "Enable StartTLS on the LDAP connection (only meaningful for plain ldap:// URLs; LDAPS is already TLS)."
+  default     = false
+}
+
+variable "ldap_bind_dn" {
+  type        = string
+  description = "Direct-bind DN template — e.g. 'cn=%u,ou=users,dc=example,dc=com'. Set this OR ldap_search_rules; direct bind is simpler when usernames map predictably to DNs."
+  default     = ""
+}
+
+variable "ldap_search_rules" {
+  type        = list(string)
+  description = "Search-bind rules — each entry 'filter|baseDN' (e.g. '(uid=%u)|ou=users,dc=example,dc=com'). Multiple entries are tried in order; first match wins. Set this OR ldap_bind_dn."
+  default     = []
+}
+
+variable "ldap_search_user" {
+  type        = string
+  description = "DN of the service account used to perform search queries (required when ldap_search_rules is set)."
+  default     = ""
+}
+
+variable "ldap_search_password" {
+  type        = string
+  description = "Password for ldap_search_user."
+  default     = ""
+  sensitive   = true
 }
 
 # =============================================================================

@@ -142,6 +142,17 @@ preflight() {
     cloudquotas.googleapis.com \
     --project="${PROJECT_ID}" --quiet
 
+  # Provision the Infrastructure Manager service identity (
+  # service-<num>@gcp-sa-config.iam.gserviceaccount.com). This SA backs IM's
+  # internal storage; the FIRST IM call against a project fails with
+  # "Creating the root Cloud Storage bucket failed: Not found ... Spanner:
+  # Not found ServiceAccountInfoDataType" if the identity isn't created
+  # explicitly — enabling the API alone isn't enough on a fresh project.
+  info "Provisioning Infrastructure Manager service identity…"
+  gcloud beta services identity create \
+    --service=config.googleapis.com \
+    --project="${PROJECT_ID}" --quiet >/dev/null || true
+
   echo
 }
 

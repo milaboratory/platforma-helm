@@ -74,6 +74,40 @@ locals {
 
   # Image override → split repo:tag or just repo (let chart fill tag from appVersion)
   image_override_parts = var.platforma_image_override != "" ? split(":", var.platforma_image_override) : []
+
+  # Auth Helm values — branches on auth_method:
+  #   ldap                                → ldap.* block
+  #   htpasswd + htpasswd_content         → reference user-supplied secret
+  #   htpasswd + empty content (auto-gen) → inline credentials list with random_password
+  auth_helm_value = var.auth_method == "ldap" ? {
+    ldap = merge(
+      {
+        server      = var.ldap_server
+        startTLS    = var.ldap_start_tls
+        bindDN      = var.ldap_bind_dn
+        searchRules = var.ldap_search_rules
+        searchUser  = var.ldap_search_user
+      },
+      var.ldap_search_password != "" ? {
+        searchPasswordSecretRef = {
+          name = "platforma-ldap-search-password"
+          key  = "password"
+        }
+      } : {},
+    )
+    } : (var.htpasswd_content != "" ? {
+      htpasswd = {
+        secretName = "platforma-htpasswd-provided"
+        secretKey  = "htpasswd"
+      }
+      } : {
+      htpasswd = {
+        credentials = [{
+          username = var.admin_username
+          password = random_password.admin.result
+        }]
+      }
+  })
 }
 
 resource "kubernetes_namespace" "platforma" {
@@ -107,6 +141,43 @@ resource "google_secret_manager_secret" "admin_password" {
 resource "google_secret_manager_secret_version" "admin_password" {
   secret      = google_secret_manager_secret.admin_password.id
   secret_data = random_password.admin.result
+}
+
+# =============================================================================
+# Auth: htpasswd-content secret (when user supplied bcrypted content) or
+# LDAP search-password secret (when ldap with search bind). The auto-gen
+# htpasswd path uses random_password.admin + Secret Manager (above); the
+# Helm chart creates its own htpasswd Secret from the credentials list.
+# =============================================================================
+
+resource "kubernetes_secret" "htpasswd_provided" {
+  count = (var.auth_method == "htpasswd" && var.htpasswd_content != "") ? 1 : 0
+
+  metadata {
+    name      = "platforma-htpasswd-provided"
+    namespace = kubernetes_namespace.platforma.metadata[0].name
+  }
+
+  data = {
+    htpasswd = var.htpasswd_content
+  }
+
+  type = "Opaque"
+}
+
+resource "kubernetes_secret" "ldap_search_password" {
+  count = (var.auth_method == "ldap" && var.ldap_search_password != "") ? 1 : 0
+
+  metadata {
+    name      = "platforma-ldap-search-password"
+    namespace = kubernetes_namespace.platforma.metadata[0].name
+  }
+
+  data = {
+    password = var.ldap_search_password
+  }
+
+  type = "Opaque"
 }
 
 # License secret (chart expects an existing secret via license.secretName).
@@ -188,14 +259,7 @@ resource "helm_release" "platforma" {
         }
       }
 
-      auth = {
-        htpasswd = {
-          credentials = [{
-            username = var.admin_username
-            password = random_password.admin.result
-          }]
-        }
-      }
+      auth = local.auth_helm_value
 
       license = {
         secretName = kubernetes_secret.license.metadata[0].name
@@ -302,5 +366,7 @@ resource "helm_release" "platforma" {
     google_storage_bucket_iam_member.server_bucket_admin,
     google_storage_bucket_iam_member.jobs_bucket_admin,
     kubernetes_secret.license,
+    kubernetes_secret.htpasswd_provided,
+    kubernetes_secret.ldap_search_password,
   ]
 }

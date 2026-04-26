@@ -23,12 +23,38 @@ license_key = "E-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 # dns_zone_project = ""                 # if zone is in a different project
 
 # ---------------------------------------------------------------------------
-# Optional: external read-only data libraries shown in the Desktop App.
+# Authentication (default: htpasswd with auto-generated random password).
+# ---------------------------------------------------------------------------
+# Auto-generated htpasswd is for TESTING ONLY — the password lands in TF
+# state. For production, supply pre-bcrypted content via htpasswd_content
+# (generate with: htpasswd -nB <username>) or switch to LDAP.
+#
+# auth_method      = "htpasswd"
+# htpasswd_content = "user1:$2y$05$...\nuser2:$2y$05$..."
+#
+# auth_method          = "ldap"
+# ldap_server          = "ldaps://ldap.example.com:636"
+# ldap_start_tls       = false
+# ldap_bind_dn         = "cn=%u,ou=users,dc=example,dc=com"
+# # OR for search-bind mode:
+# # ldap_search_rules    = ["(uid=%u)|ou=users,dc=example,dc=com"]
+# # ldap_search_user     = "cn=svc-platforma,ou=services,dc=example,dc=com"
+# # ldap_search_password = "..."
+
+# ---------------------------------------------------------------------------
+# Data libraries — external read-only buckets containing input data
+# (e.g. fastq files). Without these, the cluster has no real input data
+# beyond the demo dataset.
 # ---------------------------------------------------------------------------
 # enable_demo_data_library = false      # MiLaboratories' public demo data (default: enabled)
 #
 # data_libraries = [
+#   # Same-project GCS — uses Workload Identity, no creds needed. Grant
+#   # platforma-server@<project>.iam.gserviceaccount.com roles/storage.objectViewer
+#   # on the bucket BEFORE running this module.
 #   { name = "internal-bam", type = "gcs", bucket = "my-co-bam" },
+#
+#   # Cross-cloud / external S3 — IAM access keys required.
 #   { name = "vendor-data",  type = "s3",  bucket = "vendor-bucket", region = "us-east-1",
 #     access_key = "AKIA...", secret_key = "..." },
 # ]

@@ -131,16 +131,123 @@ preflight() {
 
 collect_inputs() {
   bold "Deployment inputs"
-  prompt_var       DEPLOYMENT_NAME    "Deployment name (lowercase letters/digits/dashes)" "platforma"
-  prompt_var       IM_LOCATION        "IM deployment region"                              "${IM_LOCATION_DEFAULT}"
-  prompt_var       REGION             "GCP region for the cluster"                        "europe-west1"
-  prompt_var       ZONE_SUFFIX        "Zone suffix (a/b/c/d) for zonal resources"         "b"
-  prompt_var       DEPLOYMENT_SIZE    "Deployment size (small|medium|large|xlarge)"       "small"
-  prompt_var       DOMAIN_NAME        "Domain for the Platforma URL (e.g. platforma.example.com)"
-  prompt_var       DNS_ZONE_NAME      "Cloud DNS managed zone name controlling that domain"
-  prompt_var       CONTACT_EMAIL      "Email for quota/notification mail"                 "$(gcloud config get-value account 2>/dev/null || echo '')"
-  prompt_var       ENABLE_DEMO        "Enable MiLaboratories demo data library? (true|false)" "true"
-  prompt_secret_var LICENSE_KEY       "Platforma license key (E-…)"
+  prompt_var DEPLOYMENT_NAME "Deployment name (lowercase letters/digits/dashes)"   "platforma"
+  prompt_var IM_LOCATION     "IM deployment region"                                "${IM_LOCATION_DEFAULT}"
+  prompt_var REGION          "GCP region for the cluster"                          "europe-west1"
+  prompt_var ZONE_SUFFIX     "Zone suffix (a/b/c/d) for zonal resources"           "b"
+  prompt_var DEPLOYMENT_SIZE "Deployment size (small|medium|large|xlarge)"         "small"
+  prompt_var DOMAIN_NAME     "Domain for the Platforma URL (e.g. platforma.example.com)"
+  prompt_var DNS_ZONE_NAME   "Cloud DNS managed zone name controlling that domain"
+  prompt_var CONTACT_EMAIL   "Email for quota/notification mail"                   "$(gcloud config get-value account 2>/dev/null || echo '')"
+  prompt_secret_var LICENSE_KEY "Platforma license key (E-…)"
+  echo
+
+  collect_auth_inputs
+  collect_data_libraries
+}
+
+# -----------------------------------------------------------------------------
+# Auth: htpasswd (auto-gen / user-supplied content) or LDAP
+# -----------------------------------------------------------------------------
+
+collect_auth_inputs() {
+  bold "Authentication"
+  cat <<EOF
+  How will users sign in to Platforma?
+
+    htpasswd  — file-based local auth. Pick this for testing or single-team
+                use. By default the installer auto-generates a random admin
+                password and stores it in Secret Manager (TESTING ONLY — the
+                password ends up in Terraform state). For production set
+                HTPASSWD_CONTENT env var to pre-bcrypted content.
+    ldap      — corporate directory integration (Active Directory, OpenLDAP,
+                etc.). Use this in production when access should be governed
+                by your central directory.
+
+EOF
+  prompt_var AUTH_METHOD "Auth method (htpasswd|ldap)" "htpasswd"
+
+  case "${AUTH_METHOD}" in
+    htpasswd)
+      if [[ -n "${HTPASSWD_CONTENT:-}" ]]; then
+        info "htpasswd content provided via env (${#HTPASSWD_CONTENT} bytes)."
+      else
+        warn "Auto-generating random htpasswd password (testing only)."
+        warn "For production: pre-generate with 'htpasswd -nB <user>' and export HTPASSWD_CONTENT before re-running."
+      fi
+      ;;
+    ldap)
+      prompt_var       LDAP_SERVER         "LDAP server URL (e.g. ldaps://ldap.example.com:636)"
+      prompt_var       LDAP_START_TLS      "Enable StartTLS? (true|false)" "false"
+      info "Pick ONE bind mode below — leave the other empty."
+      prompt_var       LDAP_BIND_DN        "Direct-bind DN template (e.g. cn=%u,ou=users,dc=example,dc=com) — empty to use search bind" ""
+      if [[ -z "${LDAP_BIND_DN}" ]]; then
+        prompt_var     LDAP_SEARCH_RULES   "Search bind rules — SEMICOLON-separated 'filter|baseDN' entries (e.g. (uid=%u)|ou=users,dc=example,dc=com;(cn=%u)|ou=admins,dc=example,dc=com)"
+        prompt_var     LDAP_SEARCH_USER    "Search service account DN"
+        prompt_secret_var LDAP_SEARCH_PASSWORD "Search service account password"
+      fi
+      ;;
+    *)
+      red "Invalid auth_method '${AUTH_METHOD}' — must be htpasswd or ldap."; exit 1
+      ;;
+  esac
+  echo
+}
+
+# -----------------------------------------------------------------------------
+# Data libraries: external read-only buckets (where users keep their fastq /
+# input data). Up to 3 prompted interactively; power users can pre-fill the
+# DATA_LIBRARIES_YAML env var with full YAML for arbitrary entries and skip
+# the prompts.
+# -----------------------------------------------------------------------------
+
+collect_data_libraries() {
+  bold "Data libraries"
+  cat <<EOF
+  External buckets containing your input data (e.g. fastq files). Without
+  data libraries, the cluster has no real input data — only the included
+  demo dataset (if enabled).
+
+EOF
+  prompt_var ENABLE_DEMO "Enable MiLaboratories demo data library? (true|false)" "true"
+
+  if [[ -n "${DATA_LIBRARIES_YAML:-}" ]]; then
+    info "Custom data libraries provided via DATA_LIBRARIES_YAML env var (${#DATA_LIBRARIES_YAML} bytes)."
+    return
+  fi
+
+  prompt_var DATA_LIBRARY_COUNT "Number of additional data libraries (0-3)" "0"
+
+  DATA_LIBRARIES_BUILT=()
+  local i
+  for ((i=1; i<=DATA_LIBRARY_COUNT; i++)); do
+    bold "Library ${i}"
+    local name_var="LIB_${i}_NAME"
+    local type_var="LIB_${i}_TYPE"
+    local bucket_var="LIB_${i}_BUCKET"
+    local prefix_var="LIB_${i}_PREFIX"
+    local region_var="LIB_${i}_REGION"
+    local key_var="LIB_${i}_ACCESS_KEY"
+    local secret_var="LIB_${i}_SECRET_KEY"
+
+    prompt_var "${name_var}"   "Name (lowercase, alphanumeric+dash; shows in Desktop App)"
+    prompt_var "${type_var}"   "Type (gcs|s3)" "gcs"
+    prompt_var "${bucket_var}" "Bucket name"
+    prompt_var "${prefix_var}" "Path prefix within bucket (optional)" ""
+
+    if [[ "${!type_var}" == "s3" ]]; then
+      prompt_var "${region_var}" "AWS region (required for AWS S3)" "us-east-1"
+      prompt_var "${key_var}"    "Access key (leave empty for IAM-role / Workload Identity access)" ""
+      if [[ -n "${!key_var}" ]]; then
+        prompt_secret_var "${secret_var}" "Secret key"
+      fi
+    else
+      info "Same-project GCS uses Workload Identity. For cross-project access, grant 'platforma-server@${PROJECT_ID}.iam.gserviceaccount.com' the roles/storage.objectViewer role on the bucket BEFORE running this installer."
+      # No key prompts for GCS — Workload Identity handles auth.
+    fi
+
+    DATA_LIBRARIES_BUILT+=("${i}")
+  done
   echo
 }
 
@@ -177,22 +284,86 @@ ensure_im_service_account() {
 # Submit / update IM deployment
 # -----------------------------------------------------------------------------
 
-build_input_values() {
-  # Comma-separated key=value pairs for --input-values. Quote nothing — IM
-  # parses by splitting on commas first then '='.
-  cat <<EOF | tr '\n' ',' | sed 's/,$//'
-project_id=${PROJECT_ID}
-region=${REGION}
-zone_suffix=${ZONE_SUFFIX}
-cluster_name=${DEPLOYMENT_NAME}-cluster
-deployment_size=${DEPLOYMENT_SIZE}
-ingress_enabled=true
-domain_name=${DOMAIN_NAME}
-dns_zone_name=${DNS_ZONE_NAME}
-contact_email=${CONTACT_EMAIL}
-license_key=${LICENSE_KEY}
-enable_demo_data_library=${ENABLE_DEMO}
+# Builds a YAML file at $1 with all TF inputs. Uses YAML (not the simpler
+# inline --input-values=key=value form) because data_libraries is a list of
+# objects and ldap_search_rules is a list of strings — neither is expressible
+# in the comma-separated inline format.
+build_inputs_file() {
+  local out="$1"
+  : > "${out}"
+
+  cat >> "${out}" <<EOF
+project_id: "${PROJECT_ID}"
+region: "${REGION}"
+zone_suffix: "${ZONE_SUFFIX}"
+cluster_name: "${DEPLOYMENT_NAME}-cluster"
+deployment_size: "${DEPLOYMENT_SIZE}"
+ingress_enabled: true
+domain_name: "${DOMAIN_NAME}"
+dns_zone_name: "${DNS_ZONE_NAME}"
+contact_email: "${CONTACT_EMAIL}"
+license_key: "${LICENSE_KEY}"
+enable_demo_data_library: ${ENABLE_DEMO}
+auth_method: "${AUTH_METHOD}"
 EOF
+
+  # Auth — emit only the path that's relevant.
+  if [[ "${AUTH_METHOD}" == "htpasswd" && -n "${HTPASSWD_CONTENT:-}" ]]; then
+    # Use printf so newlines/specials inside HTPASSWD_CONTENT survive.
+    printf 'htpasswd_content: %s\n' "$(yaml_quote "${HTPASSWD_CONTENT}")" >> "${out}"
+  fi
+  if [[ "${AUTH_METHOD}" == "ldap" ]]; then
+    cat >> "${out}" <<EOF
+ldap_server: "${LDAP_SERVER}"
+ldap_start_tls: ${LDAP_START_TLS}
+ldap_bind_dn: "${LDAP_BIND_DN}"
+ldap_search_user: "${LDAP_SEARCH_USER:-}"
+EOF
+    if [[ -n "${LDAP_SEARCH_PASSWORD:-}" ]]; then
+      printf 'ldap_search_password: %s\n' "$(yaml_quote "${LDAP_SEARCH_PASSWORD}")" >> "${out}"
+    fi
+    # Semicolon-separated rules → YAML list (commas appear inside DNs so they
+    # can't be the separator).
+    if [[ -n "${LDAP_SEARCH_RULES:-}" ]]; then
+      echo "ldap_search_rules:" >> "${out}"
+      local IFS=';'
+      for rule in ${LDAP_SEARCH_RULES}; do
+        printf '  - %s\n' "$(yaml_quote "${rule}")" >> "${out}"
+      done
+    fi
+  fi
+
+  # Data libraries — preserve a user-supplied YAML block verbatim, otherwise
+  # synthesize from the per-library prompts.
+  if [[ -n "${DATA_LIBRARIES_YAML:-}" ]]; then
+    printf 'data_libraries:\n%s\n' "${DATA_LIBRARIES_YAML}" >> "${out}"
+  elif (( ${#DATA_LIBRARIES_BUILT[@]} > 0 )); then
+    echo "data_libraries:" >> "${out}"
+    local i
+    for i in "${DATA_LIBRARIES_BUILT[@]}"; do
+      local name="LIB_${i}_NAME"
+      local type="LIB_${i}_TYPE"
+      local bucket="LIB_${i}_BUCKET"
+      local prefix="LIB_${i}_PREFIX"
+      local region="LIB_${i}_REGION"
+      local key="LIB_${i}_ACCESS_KEY"
+      local secret="LIB_${i}_SECRET_KEY"
+
+      printf '  - name: %s\n'   "$(yaml_quote "${!name}")"   >> "${out}"
+      printf '    type: %s\n'   "$(yaml_quote "${!type}")"   >> "${out}"
+      printf '    bucket: %s\n' "$(yaml_quote "${!bucket}")" >> "${out}"
+      [[ -n "${!prefix}"   ]] && printf '    prefix: %s\n'     "$(yaml_quote "${!prefix}")" >> "${out}" || true
+      [[ -n "${!region:-}" ]] && printf '    region: %s\n'     "$(yaml_quote "${!region}")" >> "${out}" || true
+      [[ -n "${!key:-}"    ]] && printf '    access_key: %s\n' "$(yaml_quote "${!key}")"    >> "${out}" || true
+      [[ -n "${!secret:-}" ]] && printf '    secret_key: %s\n' "$(yaml_quote "${!secret}")" >> "${out}" || true
+    done
+  fi
+  return 0
+}
+
+# YAML-quote a string by single-quoting and escaping single quotes.
+yaml_quote() {
+  printf "'%s'" "${1//\'/\'\'}"
 }
 
 submit_deployment() {
@@ -200,7 +371,13 @@ submit_deployment() {
   info "Bundle: ${IM_BUNDLE_URL}"
 
   local deployment_path="projects/${PROJECT_ID}/locations/${IM_LOCATION}/deployments/${DEPLOYMENT_NAME}"
-  local input_values; input_values="$(build_input_values)"
+  local inputs_file; inputs_file="$(mktemp -t platforma-im-inputs-XXXX.yaml)"
+  trap 'rm -f "${inputs_file}"' EXIT
+  build_inputs_file "${inputs_file}"
+
+  info "Inputs file: ${inputs_file}"
+  info "Inputs (with secrets redacted):"
+  sed -E 's/(license_key|.*password|.*secret_key|htpasswd_content): .*/\1: "***"/' "${inputs_file}" | sed 's/^/    /'
 
   if gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
        --location="${IM_LOCATION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
@@ -212,7 +389,7 @@ submit_deployment() {
   gcloud infra-manager deployments apply "${deployment_path}" \
     --gcs-source="${IM_BUNDLE_URL}" \
     --service-account="projects/${PROJECT_ID}/serviceAccounts/${IM_SA_EMAIL}" \
-    --input-values="${input_values}" \
+    --input-values-file="${inputs_file}" \
     --quiet
 
   echo

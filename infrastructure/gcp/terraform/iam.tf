@@ -52,6 +52,42 @@ resource "google_storage_bucket_iam_member" "jobs_bucket_admin" {
   member = "serviceAccount:${google_service_account.jobs.email}"
 }
 
+# Auto-grant the runtime SAs read access to same-project GCS data library
+# buckets. The user lists buckets in var.data_libraries; for any GCS entry
+# whose project_id is empty (defaults to this project) or matches var.project_id,
+# we grant roles/storage.objectViewer to both runtime SAs (server reads /
+# imports; jobs may also need to read raw inputs in some workflows).
+#
+# Cross-project entries (project_id set to a different project) are skipped —
+# the deployer SA can't touch IAM on a foreign project without extra setup, so
+# the user must pre-grant manually. S3 entries are skipped (auth via HMAC keys).
+#
+# Without this, fresh installs of same-project data libraries silently fail
+# at pod-init time with "AccessDenied" listing the bucket — discovered only
+# when the pod can't initialise its data sources.
+locals {
+  same_project_gcs_libraries = {
+    for lib in var.data_libraries : lib.name => lib
+    if lib.type == "gcs" && (lib.project_id == "" || lib.project_id == var.project_id)
+  }
+}
+
+resource "google_storage_bucket_iam_member" "data_library_server_objectviewer" {
+  for_each = local.same_project_gcs_libraries
+
+  bucket = each.value.bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.server.email}"
+}
+
+resource "google_storage_bucket_iam_member" "data_library_jobs_objectviewer" {
+  for_each = local.same_project_gcs_libraries
+
+  bucket = each.value.bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.jobs.email}"
+}
+
 # Workload Identity: bind GCP SA -> K8s SA.
 # This grants the K8s SA permission to impersonate the GCP SA.
 resource "google_service_account_iam_member" "server_wi" {

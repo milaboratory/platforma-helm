@@ -125,7 +125,7 @@ dataset.
 
 | Type | Same project | Cross-project / cross-cloud |
 |---|---|---|
-| `gcs` | Workload Identity — grant `platforma-server@<project>.iam.gserviceaccount.com` `roles/storage.objectViewer` on the bucket before installing | HMAC keys for the bucket's project; pass via `access_key`/`secret_key` |
+| `gcs` | Workload Identity — Terraform auto-grants `platforma-server` and `platforma-jobs` `roles/storage.objectViewer` on the bucket. Just list it in `data_libraries`. | Set `project_id` on the entry to point at the bucket's project. Then grant `platforma-server@<deployment-project>.iam.gserviceaccount.com` `roles/storage.objectViewer` on the bucket from that other project (the deployer SA can't reach across projects). Or use HMAC + `access_key`/`secret_key`. |
 | `s3` | n/a | IAM access keys |
 
 The MiLaboratories **demo data library** (`enable_demo_data_library=true`,

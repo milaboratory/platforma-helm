@@ -153,10 +153,16 @@ Get the admin password from Secret Manager (URL above). Open the Desktop App,
 enable_demo_data_library = true   # MiLab demo data, default true
 
 data_libraries = [
-  # Same-project GCS — Workload Identity, no creds. Grant
-  # platforma-server@<project>.iam.gserviceaccount.com
-  # roles/storage.objectViewer on the bucket BEFORE applying.
+  # Same-project GCS — Workload Identity, no creds. The TF module
+  # auto-grants platforma-server / platforma-jobs roles/storage.objectViewer
+  # on the bucket; just list it.
   { name = "internal-bam", type = "gcs", bucket = "my-co-bam" },
+
+  # Cross-project GCS — set project_id; grant the runtime SAs
+  # roles/storage.objectViewer on the bucket from the OTHER project before
+  # applying (the deployer SA can't reach across projects).
+  { name = "shared-fastq", type = "gcs", bucket = "shared-co-fastq",
+    project_id = "shared-data-project" },
 
   # Cross-cloud / external S3 — IAM access keys required.
   { name = "vendor-data", type = "s3", bucket = "vendor-bucket",

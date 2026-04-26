@@ -70,6 +70,26 @@ mycompany-bio     mycompany.bio.
 for example `platforma.mycompany.bio`. You'll provide both pieces in the
 next step.
 
+## About deployment sizes
+
+Pick a size that matches your team's parallelism needs. All sizes share the
+same **per-job cap of 62 vCPU / 500 GiB RAM** — the preset only controls
+how many such jobs can run **in parallel**.
+
+| Preset | Parallel jobs | UI nodes max | Filestore (GiB) |
+|---|---:|---:|---:|
+| `small`  |  4 |  4 | 1024 |
+| `medium` |  8 |  8 | 2048 |
+| `large`  | 16 | 16 | 4096 |
+| `xlarge` | 32 | 16 | 8192 |
+
+Larger sizes also request larger GCP quotas (CPUs, N2D CPUs, PD SSD,
+Instances, Filestore). The installer auto-submits these via the Cloud
+Quotas API on first run; small/medium typically auto-approve in seconds,
+xlarge often needs human review (24–72 h). If your project already has
+user-managed quota preferences, the installer detects them and warns if
+their current values are below what your chosen size needs.
+
 ## Step 3 — Run the installer
 
 The installer script collects the remaining inputs (deployment name, region,

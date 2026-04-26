@@ -1,60 +1,125 @@
-output "project_id" {
-  value = var.project_id
+# =============================================================================
+# Outputs — what the user needs after deployment
+# =============================================================================
+# Tier 1 (basic user, just deployed): platforma_url, default_username,
+#   password_secret_console_url, post_deploy_steps.
+# Tier 2 (debugging / power user): kubectl/port-forward commands, GCS bucket
+#   name, cluster name/region/zone.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Application access
+# -----------------------------------------------------------------------------
+
+output "platforma_url" {
+  description = "Endpoint to connect the Platforma Desktop App. HTTPS when ingress_enabled=true; otherwise the user must port-forward (see port_forward_command)."
+  value = var.ingress_enabled ? "https://${var.domain_name}" : "(ingress disabled — use port_forward_command, then connect Desktop App to grpc://localhost:6345)"
 }
 
-output "region" {
-  value = var.region
+output "default_username" {
+  description = "Default admin username (htpasswd auth)."
+  value       = var.admin_username
 }
 
-output "zone" {
-  value = local.zone
+output "password_secret_console_url" {
+  description = "Cloud Console URL to view the auto-generated admin password. Click → Secret Manager → 'View secret value'."
+  value       = "https://console.cloud.google.com/security/secret-manager/secret/${google_secret_manager_secret.admin_password.secret_id}/versions?project=${var.project_id}"
 }
 
-output "cluster_name" {
-  value = google_container_cluster.primary.name
+output "password_retrieve_command" {
+  description = "CLI command to fetch the admin password (alternative to the Console URL)."
+  value       = "gcloud secrets versions access latest --secret=${google_secret_manager_secret.admin_password.secret_id} --project=${var.project_id}"
 }
 
-output "cluster_endpoint" {
-  value     = google_container_cluster.primary.endpoint
-  sensitive = true
+locals {
+  _password_console_url = "https://console.cloud.google.com/security/secret-manager/secret/${google_secret_manager_secret.admin_password.secret_id}/versions?project=${var.project_id}"
+  _password_cli_command = "gcloud secrets versions access latest --secret=${google_secret_manager_secret.admin_password.secret_id} --project=${var.project_id}"
+
+  _post_deploy_steps_with_ingress = <<-EOT
+    Platforma is being deployed. Once the deploy completes:
+
+    1. Wait for the TLS certificate to provision (5-15 min after deploy).
+       Check: gcloud certificate-manager certificates describe ${var.cluster_name}-cert --location=global --project=${var.project_id}
+       Status should be ACTIVE.
+
+    2. Retrieve your admin password:
+       Open: ${local._password_console_url}
+       (or run: ${local._password_cli_command})
+
+    3. Open the Platforma Desktop App, click "Add Connection" → "Remote Server",
+       enter https://${var.domain_name}, log in as ${var.admin_username} with the password above.
+  EOT
+
+  _post_deploy_steps_port_forward = <<-EOT
+    Platforma is being deployed. Once the deploy completes:
+
+    1. Authenticate kubectl to the cluster:
+       gcloud container clusters get-credentials ${google_container_cluster.primary.name} --zone ${local.zone} --project ${var.project_id}
+
+    2. Start a port-forward (leave running):
+       kubectl port-forward -n ${var.platforma_namespace} svc/${var.helm_release_name} 6345:6345
+
+    3. Retrieve your admin password:
+       Open: ${local._password_console_url}
+       (or run: ${local._password_cli_command})
+
+    4. Open the Platforma Desktop App, click "Add Connection" → "Remote Server",
+       enter grpc://localhost:6345, log in as ${var.admin_username} with the password above.
+
+    For production, set ingress_enabled=true with domain_name + dns_zone_name to enable HTTPS access.
+  EOT
 }
 
-output "get_credentials_command" {
-  value = "gcloud container clusters get-credentials ${google_container_cluster.primary.name} --zone ${local.zone} --project ${var.project_id}"
+output "post_deploy_steps" {
+  description = "What to do after the deploy completes."
+  value       = var.ingress_enabled ? local._post_deploy_steps_with_ingress : local._post_deploy_steps_port_forward
 }
 
-output "gcs_bucket" {
-  value = google_storage_bucket.primary.name
-}
+# -----------------------------------------------------------------------------
+# Cluster operations (power user / debugging)
+# -----------------------------------------------------------------------------
 
-output "filestore_ip" {
-  value = google_filestore_instance.workspace.networks[0].ip_addresses[0]
-}
-
-output "filestore_share" {
-  value = google_filestore_instance.workspace.file_shares[0].name
-}
-
-output "server_sa_email" {
-  value = google_service_account.server.email
-}
-
-output "jobs_sa_email" {
-  value = google_service_account.jobs.email
-}
-
-output "admin_username" {
-  value = var.admin_username
-}
-
-output "admin_password_secret_manager_path" {
-  value = "projects/${var.project_id}/secrets/${google_secret_manager_secret.admin_password.secret_id}/versions/latest"
-}
-
-output "admin_password_retrieve_command" {
-  value = "gcloud secrets versions access latest --secret=${google_secret_manager_secret.admin_password.secret_id} --project=${var.project_id}"
+output "kubectl_credentials_command" {
+  description = "Command to populate kubeconfig for kubectl access to the cluster."
+  value       = "gcloud container clusters get-credentials ${google_container_cluster.primary.name} --zone ${local.zone} --project ${var.project_id}"
 }
 
 output "port_forward_command" {
-  value = "kubectl port-forward -n ${var.platforma_namespace} svc/${var.helm_release_name} 6345:6345"
+  description = "Port-forward to the Platforma gRPC service (for development / fallback when ingress is disabled)."
+  value       = "kubectl port-forward -n ${var.platforma_namespace} svc/${var.helm_release_name} 6345:6345"
+}
+
+# -----------------------------------------------------------------------------
+# Resources
+# -----------------------------------------------------------------------------
+
+output "cluster_name" {
+  description = "GKE cluster name."
+  value       = google_container_cluster.primary.name
+}
+
+output "cluster_endpoint" {
+  description = "GKE control plane endpoint."
+  value       = google_container_cluster.primary.endpoint
+  sensitive   = true
+}
+
+output "region" {
+  description = "GCP region the cluster runs in."
+  value       = var.region
+}
+
+output "zone" {
+  description = "GCP zone for zonal resources (Filestore, persistent disks)."
+  value       = local.zone
+}
+
+output "gcs_bucket" {
+  description = "Primary GCS bucket name (Platforma stores results here; visible in Desktop App)."
+  value       = google_storage_bucket.primary.name
+}
+
+output "ingress_ip" {
+  description = "Static external IP of the Platforma load balancer (only when ingress_enabled=true)."
+  value       = var.ingress_enabled ? google_compute_global_address.ingress[0].address : null
 }

@@ -85,7 +85,7 @@ resource "google_container_node_pool" "ui" {
 
   autoscaling {
     min_node_count = 0
-    max_node_count = var.ui_pool_max_nodes
+    max_node_count = local.effective_ui_pool_max_nodes
   }
 
   node_config {
@@ -129,7 +129,7 @@ resource "google_container_node_pool" "batch" {
 
   autoscaling {
     min_node_count = 0
-    max_node_count = var.batch_pool_max_nodes
+    max_node_count = local.effective_batch_pool_max_nodes
   }
 
   node_config {

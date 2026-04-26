@@ -9,7 +9,10 @@ resource "google_storage_bucket" "primary" {
   storage_class = "STANDARD"
 
   uniform_bucket_level_access = true
-  force_destroy               = false
+  # force_destroy = false — primary storage holds user project data. tofu destroy
+  # leaves the bucket in place; users must delete it manually if they really want
+  # the data gone (matches AWS S3 retention pattern in the CloudFormation runbook).
+  force_destroy = false
 
   versioning {
     enabled = false
@@ -37,7 +40,7 @@ resource "google_filestore_instance" "workspace" {
   tier     = var.filestore_tier
 
   file_shares {
-    capacity_gb = var.workspace_capacity_gb
+    capacity_gb = local.effective_workspace_capacity_gb
     name        = var.workspace_share_name
 
     nfs_export_options {

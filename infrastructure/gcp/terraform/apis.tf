@@ -12,6 +12,7 @@ locals {
     "cloudresourcemanager.googleapis.com",
     "storage.googleapis.com",
     "config.googleapis.com",
+    "cloudquotas.googleapis.com",
   ]
 }
 

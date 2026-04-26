@@ -672,12 +672,35 @@ submit_deployment() {
       | map(if (.key | test("license_key|password|secret_key|htpasswd_content")) then .value = "***" else . end)
       | from_entries' "${work_dir}/inputs.auto.tfvars.json" | sed 's/^/    /'
 
-  if gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
-       --location="${IM_LOCATION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    bold "Updating existing deployment ${DEPLOYMENT_NAME}…"
-  else
-    bold "Creating deployment ${DEPLOYMENT_NAME}…"
-  fi
+  # Detect a previous deployment in a state that 'apply' can't recover from
+  # (FAILED with no successful revision — the apply path tries to read the
+  # latestRevision and crashes with IndexError). We delete + recreate.
+  local existing_state existing_revision
+  existing_state="$(gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
+    --location="${IM_LOCATION}" --project="${PROJECT_ID}" \
+    --format='value(state)' 2>/dev/null || echo NOTFOUND)"
+  existing_revision="$(gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
+    --location="${IM_LOCATION}" --project="${PROJECT_ID}" \
+    --format='value(latestRevision)' 2>/dev/null || echo "")"
+
+  case "${existing_state}" in
+    NOTFOUND)
+      bold "Creating deployment ${DEPLOYMENT_NAME}…"
+      ;;
+    ACTIVE|FAILED)
+      if [[ -z "${existing_revision}" ]]; then
+        warn "Existing deployment is in ${existing_state} state with no revision (initial creation never succeeded). Deleting before recreating…"
+        gcloud infra-manager deployments delete "${DEPLOYMENT_NAME}" \
+          --location="${IM_LOCATION}" --project="${PROJECT_ID}" --quiet
+        bold "Creating deployment ${DEPLOYMENT_NAME}…"
+      else
+        bold "Updating existing deployment ${DEPLOYMENT_NAME} (state: ${existing_state})…"
+      fi
+      ;;
+    *)
+      bold "Creating/updating deployment ${DEPLOYMENT_NAME} (state: ${existing_state})…"
+      ;;
+  esac
 
   gcloud infra-manager deployments apply "${deployment_path}" \
     --local-source="${work_dir}" \

@@ -79,7 +79,13 @@ locals {
   #   ldap                                → ldap.* block
   #   htpasswd + htpasswd_content         → reference user-supplied secret
   #   htpasswd + empty content (auto-gen) → inline credentials list with random_password
-  auth_helm_value = var.auth_method == "ldap" ? {
+  #
+  # Built via merge() of mutually-exclusive single-key objects rather than a
+  # straight ternary because Terraform 1.5 strictly unifies conditional branch
+  # types — the htpasswd content path produces {secretName, secretKey} while
+  # the auto-gen path produces {credentials = [...]}. merge with empty-object
+  # fallbacks sidesteps the unify check.
+  _auth_ldap = {
     ldap = merge(
       {
         server      = var.ldap_server
@@ -95,19 +101,29 @@ locals {
         }
       } : {},
     )
-    } : (var.htpasswd_content != "" ? {
-      htpasswd = {
-        secretName = "platforma-htpasswd-provided"
-        secretKey  = "htpasswd"
-      }
-      } : {
-      htpasswd = {
-        credentials = [{
-          username = var.admin_username
-          password = random_password.admin.result
-        }]
-      }
-  })
+  }
+
+  _auth_htpasswd_content = {
+    htpasswd = {
+      secretName = "platforma-htpasswd-provided"
+      secretKey  = "htpasswd"
+    }
+  }
+
+  _auth_htpasswd_auto = {
+    htpasswd = {
+      credentials = [{
+        username = var.admin_username
+        password = random_password.admin.result
+      }]
+    }
+  }
+
+  auth_helm_value = merge(
+    (var.auth_method == "ldap")                                       ? local._auth_ldap             : {},
+    (var.auth_method == "htpasswd" && var.htpasswd_content != "")     ? local._auth_htpasswd_content : {},
+    (var.auth_method == "htpasswd" && var.htpasswd_content == "")     ? local._auth_htpasswd_auto    : {},
+  )
 }
 
 resource "kubernetes_namespace" "platforma" {

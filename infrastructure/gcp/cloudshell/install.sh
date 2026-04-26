@@ -252,6 +252,97 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
+# Detect existing user-managed quota preferences in the project — Cloud Quotas
+# API rejects duplicate creates and exposes no DELETE method, so any quota the
+# user already has a preference for must be passed via skip_quota_requests
+# instead of letting our TF module create one.
+#
+# Also warns when the existing preferred value is below what the chosen
+# deployment_size needs (the deployment will succeed but may run out of
+# quota during scale-up).
+#
+# Lookup table mirrors presets.tf — keep in sync on each preset change.
+# -----------------------------------------------------------------------------
+
+declare -A PRESET_CPUS_GLOBAL=(    [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
+declare -A PRESET_N2D_CPUS=(       [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
+declare -A PRESET_PD_SSD_GB=(      [small]=2048 [medium]=4096 [large]=8192 [xlarge]=16384 )
+declare -A PRESET_INSTANCES=(      [small]=32   [medium]=48   [large]=64   [xlarge]=128   )
+declare -A PRESET_FILESTORE_GB=(   [small]=1024 [medium]=2048 [large]=4096 [xlarge]=8192  )
+
+# Map GCP quota ID → our preset_key + required-value lookup.
+declare -A QUOTA_TO_PRESET_KEY=(
+  ["CPUS-ALL-REGIONS-per-project"]="cpus_global"
+  ["N2D-CPUS-per-project-region"]="n2d_cpus_region"
+  ["SSD-TOTAL-GB-per-project-region"]="pd_ssd_region"
+  ["INSTANCES-per-project-region"]="instances_region"
+  ["EnterpriseStorageGibPerRegion"]="filestore_zonal_region"
+)
+
+# What value each preset key needs for the chosen DEPLOYMENT_SIZE.
+required_for_preset_key() {
+  local key="$1"
+  case "${key}" in
+    cpus_global)             echo "${PRESET_CPUS_GLOBAL[$DEPLOYMENT_SIZE]}"   ;;
+    n2d_cpus_region)         echo "${PRESET_N2D_CPUS[$DEPLOYMENT_SIZE]}"      ;;
+    pd_ssd_region)           echo "${PRESET_PD_SSD_GB[$DEPLOYMENT_SIZE]}"     ;;
+    instances_region)        echo "${PRESET_INSTANCES[$DEPLOYMENT_SIZE]}"     ;;
+    filestore_zonal_region)  echo "${PRESET_FILESTORE_GB[$DEPLOYMENT_SIZE]}"  ;;
+  esac
+}
+
+detect_existing_quota_prefs() {
+  bold "Checking existing quota preferences"
+  SKIP_QUOTA_REQUESTS_AUTO=()
+
+  # The beta component is required and may not be installed in raw envs.
+  if ! gcloud beta quotas preferences list --help >/dev/null 2>&1; then
+    info "Installing gcloud beta component (one-time)…"
+    gcloud components install beta --quiet >/dev/null
+  fi
+
+  local prefs_json
+  prefs_json="$(gcloud beta quotas preferences list --project="${PROJECT_ID}" --format=json 2>/dev/null || echo '[]')"
+
+  if [[ "${prefs_json}" == "[]" || -z "${prefs_json}" ]]; then
+    info "No existing user-managed quota preferences."
+    echo
+    return 0
+  fi
+
+  local count
+  count="$(echo "${prefs_json}" | jq 'length')"
+  info "Found ${count} existing preference(s) — checking for collisions with our presets."
+
+  local has_warning=0
+  while IFS=$'\t' read -r quota_id region preferred; do
+    local preset_key="${QUOTA_TO_PRESET_KEY[${quota_id}]:-}"
+    [[ -z "${preset_key}" ]] && continue   # unrelated quota — ignore
+    SKIP_QUOTA_REQUESTS_AUTO+=("${preset_key}")
+    local required; required="$(required_for_preset_key "${preset_key}")"
+    local label="${quota_id}${region:+ (region=${region})}"
+    if (( preferred < required )); then
+      warn "Existing quota ${label}: current=${preferred} < required=${required} for ${DEPLOYMENT_SIZE}"
+      warn "  → deployment will succeed but may run out of quota during job scale-up."
+      warn "  → bump at: https://console.cloud.google.com/iam-admin/quotas?project=${PROJECT_ID}"
+      has_warning=1
+    else
+      info "Existing quota ${label}: ${preferred} ≥ ${required} ✓ (will skip auto-request)"
+    fi
+  done < <(echo "${prefs_json}" | jq -r '.[] | "\(.quotaId)\t\(.dimensions.region // "")\t\(.quotaConfig.preferredValue // "0")"')
+
+  if (( has_warning > 0 )); then
+    echo
+    read -r -p "  Existing quotas are below preset requirements. Continue anyway? [y/N] " confirm
+    case "${confirm}" in
+      y|Y|yes|YES) ;;
+      *) red "Aborted."; exit 1 ;;
+    esac
+  fi
+  echo
+}
+
+# -----------------------------------------------------------------------------
 # Service account for Infrastructure Manager
 # -----------------------------------------------------------------------------
 
@@ -306,6 +397,23 @@ license_key: "${LICENSE_KEY}"
 enable_demo_data_library: ${ENABLE_DEMO}
 auth_method: "${AUTH_METHOD}"
 EOF
+
+  # Auto-detected quota preference collisions (and any user-supplied additions).
+  local skip_list=("${SKIP_QUOTA_REQUESTS_AUTO[@]:-}")
+  if [[ -n "${SKIP_QUOTA_REQUESTS:-}" ]]; then
+    local IFS=','
+    for k in ${SKIP_QUOTA_REQUESTS}; do skip_list+=("${k}"); done
+  fi
+  if (( ${#skip_list[@]} > 0 )); then
+    # Dedupe + drop empty entries.
+    local unique; unique="$(printf '%s\n' "${skip_list[@]}" | awk 'NF && !seen[$0]++')"
+    if [[ -n "${unique}" ]]; then
+      echo "skip_quota_requests:" >> "${out}"
+      while IFS= read -r k; do
+        printf '  - %s\n' "$(yaml_quote "${k}")" >> "${out}"
+      done <<< "${unique}"
+    fi
+  fi
 
   # Auth — emit only the path that's relevant.
   if [[ "${AUTH_METHOD}" == "htpasswd" && -n "${HTPASSWD_CONTENT:-}" ]]; then
@@ -464,6 +572,7 @@ main() {
 
   preflight
   collect_inputs
+  detect_existing_quota_prefs
   ensure_im_service_account
 
   bold "Review"

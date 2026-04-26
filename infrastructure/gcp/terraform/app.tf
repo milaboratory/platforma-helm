@@ -120,9 +120,9 @@ locals {
   }
 
   auth_helm_value = merge(
-    (var.auth_method == "ldap")                                       ? local._auth_ldap             : {},
-    (var.auth_method == "htpasswd" && var.htpasswd_content != "")     ? local._auth_htpasswd_content : {},
-    (var.auth_method == "htpasswd" && var.htpasswd_content == "")     ? local._auth_htpasswd_auto    : {},
+    (var.auth_method == "ldap") ? local._auth_ldap : {},
+    (var.auth_method == "htpasswd" && var.htpasswd_content != "") ? local._auth_htpasswd_content : {},
+    (var.auth_method == "htpasswd" && var.htpasswd_content == "") ? local._auth_htpasswd_auto : {},
   )
 }
 
@@ -248,125 +248,125 @@ resource "helm_release" "platforma" {
       } : {},
       { dataSources = local.helm_data_sources },
       {
-      environment = "gcp"
+        environment = "gcp"
 
-      storage = {
-        database = {
-          size         = "50Gi"
-          storageClass = "premium-rwo"
-        }
-        workspace = {
-          filestore = {
-            enabled      = true
-            instanceName = google_filestore_instance.workspace.name
-            location     = google_filestore_instance.workspace.location
-            shareName    = google_filestore_instance.workspace.file_shares[0].name
-            ip           = google_filestore_instance.workspace.networks[0].ip_addresses[0]
-            path         = "/"
+        storage = {
+          database = {
+            size         = "50Gi"
+            storageClass = "premium-rwo"
           }
-        }
-        main = {
-          type = "gcs"
-          gcs = {
-            bucket         = google_storage_bucket.primary.name
-            projectId      = var.project_id
-            serviceAccount = google_service_account.server.email
-          }
-        }
-      }
-
-      auth = local.auth_helm_value
-
-      license = {
-        secretName = kubernetes_secret.license.metadata[0].name
-        secretKey  = "MI_LICENSE"
-      }
-
-      serviceAccount = {
-        create = true
-        annotations = {
-          "iam.gke.io/gcp-service-account" = google_service_account.server.email
-        }
-      }
-
-      jobServiceAccount = {
-        create = true
-        annotations = {
-          "iam.gke.io/gcp-service-account" = google_service_account.jobs.email
-        }
-      }
-
-      # Chart's built-in ingress disabled — we provision a GKE Gateway + HTTPRoute
-      # externally in dns_tls.tf when var.ingress_enabled = true.
-      ingress = {
-        enabled = false
-      }
-
-      kueue = {
-        mode = "dedicated"
-        maxJobResources = {
-          cpu    = local.effective_kueue_max_job_cpu
-          memory = local.effective_kueue_max_job_memory
-        }
-        pools = {
-          ui = {
-            nodeSelector = {
-              role = "ui"
+          workspace = {
+            filestore = {
+              enabled      = true
+              instanceName = google_filestore_instance.workspace.name
+              location     = google_filestore_instance.workspace.location
+              shareName    = google_filestore_instance.workspace.file_shares[0].name
+              ip           = google_filestore_instance.workspace.networks[0].ip_addresses[0]
+              path         = "/"
             }
-            tolerations = [{
-              key    = "dedicated"
-              value  = "ui"
-              effect = "NoSchedule"
-            }]
           }
-          batch = {
-            nodeSelector = {
-              role = "batch"
+          main = {
+            type = "gcs"
+            gcs = {
+              bucket         = google_storage_bucket.primary.name
+              projectId      = var.project_id
+              serviceAccount = google_service_account.server.email
             }
-            tolerations = [{
-              key    = "dedicated"
-              value  = "batch"
-              effect = "NoSchedule"
-            }]
           }
         }
-        dedicated = {
-          resources = {
+
+        auth = local.auth_helm_value
+
+        license = {
+          secretName = kubernetes_secret.license.metadata[0].name
+          secretKey  = "MI_LICENSE"
+        }
+
+        serviceAccount = {
+          create = true
+          annotations = {
+            "iam.gke.io/gcp-service-account" = google_service_account.server.email
+          }
+        }
+
+        jobServiceAccount = {
+          create = true
+          annotations = {
+            "iam.gke.io/gcp-service-account" = google_service_account.jobs.email
+          }
+        }
+
+        # Chart's built-in ingress disabled — we provision a GKE Gateway + HTTPRoute
+        # externally in dns_tls.tf when var.ingress_enabled = true.
+        ingress = {
+          enabled = false
+        }
+
+        kueue = {
+          mode = "dedicated"
+          maxJobResources = {
+            cpu    = local.effective_kueue_max_job_cpu
+            memory = local.effective_kueue_max_job_memory
+          }
+          pools = {
             ui = {
-              cpu    = 16
-              memory = "64Gi"
+              nodeSelector = {
+                role = "ui"
+              }
+              tolerations = [{
+                key    = "dedicated"
+                value  = "ui"
+                effect = "NoSchedule"
+              }]
             }
             batch = {
-              cpu    = local.effective_kueue_batch_queue_cpu
-              memory = local.effective_kueue_batch_queue_memory
+              nodeSelector = {
+                role = "batch"
+              }
+              tolerations = [{
+                key    = "dedicated"
+                value  = "batch"
+                effect = "NoSchedule"
+              }]
+            }
+          }
+          dedicated = {
+            resources = {
+              ui = {
+                cpu    = 16
+                memory = "64Gi"
+              }
+              batch = {
+                cpu    = local.effective_kueue_batch_queue_cpu
+                memory = local.effective_kueue_batch_queue_memory
+              }
             }
           }
         }
-      }
 
-      app = {
-        resources = {
-          requests = {
-            cpu    = 2
-            memory = "8Gi"
+        app = {
+          resources = {
+            requests = {
+              cpu    = 2
+              memory = "8Gi"
+            }
+            limits = {
+              cpu    = 4
+              memory = "12Gi"
+            }
           }
-          limits = {
-            cpu    = 4
-            memory = "12Gi"
+          nodeSelector = {
+            role = "system"
+          }
+          logging = {
+            persistence = {
+              enabled = false
+            }
+          }
+          debug = {
+            enabled = true
           }
         }
-        nodeSelector = {
-          role = "system"
-        }
-        logging = {
-          persistence = {
-            enabled = false
-          }
-        }
-        debug = {
-          enabled = true
-        }
-      }
       }
     ))
   ]

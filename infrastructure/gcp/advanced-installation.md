@@ -212,15 +212,29 @@ The `deployment_size` preset sets sensible defaults. Override individually:
 ```hcl
 deployment_size = "large"
 
-# Overrides (any of these can be omitted to use the preset)
-batch_pool_machine_type = "n2d-highmem-128"   # default n2d-highmem-64
-batch_pool_max_nodes    = 24                   # preset large = 16
-ui_pool_max_nodes       = 8                    # preset large = 16
-workspace_capacity_gb   = 8192                 # preset large = 4096
+# Per-batch-pool overrides — keys are pool shapes; only listed pools are
+# overridden, the rest fall back to preset defaults. Mirror AWS pool families:
+#   16c-64g  → n2d-standard-16  (small jobs)
+#   32c-128g → n2d-standard-32
+#   64c-256g → n2d-standard-64
+#   32c-256g → n2d-highmem-32   (memory-heavy)
+#   64c-512g → n2d-highmem-64   (largest pool)
+batch_pool_max_nodes_overrides = {
+  "16c-64g"  = 32   # double the preset (large default = 16) for small-job heavy load
+  "64c-512g" = 8    # double large-mem capacity
+}
 
-# Kueue caps for very large jobs (default 62 CPU / 500Gi)
-kueue_max_job_cpu      = 124
-kueue_max_job_memory   = "1000Gi"
+ui_pool_max_nodes      = 8       # preset large = 16
+workspace_capacity_gb  = 8192    # preset large = 4096
+
+# Kueue caps for very large jobs (default 62 CPU / 500Gi).
+# Note: per-job cap must fit within a SINGLE pool's allocatable resources,
+# not the sum across pools. The largest pool (64c-512g, n2d-highmem-64) has
+# ~62 vCPU / ~500 GiB allocatable after GKE daemonset overhead — that's the
+# upper bound. Raising this without also adding a larger machine-type pool
+# means jobs won't be schedulable.
+kueue_max_job_cpu     = 62
+kueue_max_job_memory  = "500Gi"
 ```
 
 ### Skip quota auto-request

@@ -136,14 +136,83 @@ collect_inputs() {
   prompt_var REGION          "GCP region for the cluster"                          "europe-west1"
   prompt_var ZONE_SUFFIX     "Zone suffix (a/b/c/d) for zonal resources"           "b"
   prompt_var DEPLOYMENT_SIZE "Deployment size (small|medium|large|xlarge)"         "small"
-  prompt_var DOMAIN_NAME     "Domain for the Platforma URL (e.g. platforma.example.com)"
-  prompt_var DNS_ZONE_NAME   "Cloud DNS managed zone name controlling that domain"
+  echo
+
+  pick_dns_zone_and_domain
+
   prompt_var CONTACT_EMAIL   "Email for quota/notification mail"                   "$(gcloud config get-value account 2>/dev/null || echo '')"
   prompt_secret_var LICENSE_KEY "Platforma license key (E-…)"
   echo
 
   collect_auth_inputs
   collect_data_libraries
+}
+
+# -----------------------------------------------------------------------------
+# DNS zone + domain — pick from existing Cloud DNS managed zones in the project
+# and derive the FQDN from a subdomain prefix. Avoids users typing a domain
+# that doesn't match any zone they own.
+# -----------------------------------------------------------------------------
+
+pick_dns_zone_and_domain() {
+  bold "Domain"
+
+  if [[ -n "${DOMAIN_NAME:-}" && -n "${DNS_ZONE_NAME:-}" ]]; then
+    info "DOMAIN_NAME=${DOMAIN_NAME}, DNS_ZONE_NAME=${DNS_ZONE_NAME} from env."
+    echo
+    return 0
+  fi
+
+  local zones_json
+  zones_json="$(gcloud dns managed-zones list --project="${PROJECT_ID}" --format=json 2>/dev/null || echo '[]')"
+  local count
+  count="$(echo "${zones_json}" | jq 'length')"
+
+  if (( count == 0 )); then
+    red "No Cloud DNS managed zones in project ${PROJECT_ID}."
+    red "Create one first, then re-run this script:"
+    red "  gcloud dns managed-zones create my-zone \\"
+    red "    --dns-name=mycompany.com. --visibility=public --project=${PROJECT_ID}"
+    red "Then delegate NS records from your registrar — see infrastructure/gcp/domain-guide.md."
+    exit 1
+  fi
+
+  echo "  Available Cloud DNS managed zones in ${PROJECT_ID}:"
+  local idx=1
+  declare -a ZONE_NAMES=() ZONE_DNS=()
+  while IFS=$'\t' read -r name dns_name; do
+    printf '    %d. %-32s  (%s)\n' "${idx}" "${name}" "${dns_name}"
+    ZONE_NAMES+=("${name}")
+    ZONE_DNS+=("${dns_name%.}")  # strip trailing dot
+    ((idx++))
+  done < <(echo "${zones_json}" | jq -r '.[] | "\(.name)\t\(.dnsName)"')
+  echo
+
+  local pick
+  if (( count == 1 )); then
+    pick=1
+    info "Only one zone — auto-selected: ${ZONE_NAMES[0]} (${ZONE_DNS[0]})"
+  else
+    read -r -p "  Select zone [1-${count}]: " pick
+    if [[ ! "${pick}" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > count )); then
+      red "Invalid selection '${pick}'."; exit 1
+    fi
+  fi
+
+  DNS_ZONE_NAME="${ZONE_NAMES[$((pick-1))]}"
+  local zone_dns="${ZONE_DNS[$((pick-1))]}"
+
+  local prefix
+  read -r -p "  Subdomain for Platforma (full domain will be <prefix>.${zone_dns}) [${DEPLOYMENT_NAME}]: " prefix
+  prefix="${prefix:-${DEPLOYMENT_NAME}}"
+  if [[ ! "${prefix}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]]; then
+    red "Invalid subdomain '${prefix}' — must be alphanumeric + hyphens, not starting/ending with hyphen."; exit 1
+  fi
+
+  DOMAIN_NAME="${prefix}.${zone_dns}"
+  green "  ✓ DOMAIN_NAME   = ${DOMAIN_NAME}"
+  green "  ✓ DNS_ZONE_NAME = ${DNS_ZONE_NAME}"
+  echo
 }
 
 # -----------------------------------------------------------------------------

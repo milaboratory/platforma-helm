@@ -30,7 +30,7 @@ trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
 # no remote tarball, no bucket, no publishing workflow. Users (or Cloud Shell)
 # get the right version by cloning the repo at the desired ref:
 #   - main (default for Cloud Shell button)  → latest
-#   - tag  (e.g. gcp-im-v0.1.0)              → pinned release
+#   - tag  (e.g. gcp-im-v1.0.0)              → pinned release
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 GCP_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"             # infrastructure/gcp
 REPO_ROOT="$(cd -- "${GCP_DIR}/../.." &>/dev/null && pwd)"           # platforma-helm

@@ -98,6 +98,23 @@ prompt_var() {
   printf -v "${name}" '%s' "${input}"
 }
 
+# prompt_yn <prompt>  → exit 0 if user explicitly says yes, exit 1 if no.
+# Loops on empty / invalid input rather than treating empty as a default,
+# so users don't lose all their inputs if they accidentally hit Enter at
+# the final confirmation.
+prompt_yn() {
+  local prompt="$1"
+  while :; do
+    local input
+    read -r -p "  ${prompt} [y/n]: " input
+    case "${input}" in
+      y|Y|yes|YES|Yes) return 0 ;;
+      n|N|no|NO|No)    return 1 ;;
+      *) red "  Please answer y or n." ;;
+    esac
+  done
+}
+
 prompt_secret_var() {
   local name="$1"; local prompt="$2"
   local current="${!name:-}"
@@ -526,11 +543,9 @@ detect_existing_quota_prefs() {
 
   if (( has_warning > 0 )); then
     echo
-    read -r -p "  Existing quotas are below preset requirements. Continue anyway? [y/N] " confirm
-    case "${confirm}" in
-      y|Y|yes|YES) ;;
-      *) red "Aborted."; exit 1 ;;
-    esac
+    if ! prompt_yn "Existing quotas are below preset requirements. Continue anyway?"; then
+      red "Aborted."; exit 1
+    fi
   fi
   echo
 }
@@ -845,11 +860,9 @@ main() {
   Source:          ${REPO_ROOT} @ ${source_ref}
 
 EOF
-  read -r -p "Proceed? [y/N] " confirm
-  case "${confirm}" in
-    y|Y|yes|YES) ;;
-    *) echo "Aborted."; exit 0 ;;
-  esac
+  if ! prompt_yn "Proceed?"; then
+    echo "Aborted."; exit 0
+  fi
   echo
 
   submit_deployment

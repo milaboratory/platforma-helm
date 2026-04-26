@@ -444,6 +444,12 @@ detect_existing_quota_prefs() {
   local prefs_json
   prefs_json="$(gcloud beta quotas preferences list --project="${PROJECT_ID}" --format=json 2>/dev/null || echo '[]')"
 
+  # gcloud emits "Listed 0 items." (plain text, not JSON) on empty lists in
+  # some configurations even with --format=json — defend against parse error.
+  if ! echo "${prefs_json}" | jq -e . >/dev/null 2>&1; then
+    prefs_json='[]'
+  fi
+
   if [[ "${prefs_json}" == "[]" || -z "${prefs_json}" ]]; then
     info "No existing user-managed quota preferences."
     echo

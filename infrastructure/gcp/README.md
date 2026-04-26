@@ -148,11 +148,111 @@ to users.
 
 ## Updates
 
-Re-running `install.sh` (Tier-1 / Tier-2) detects the existing Infrastructure
-Manager deployment and creates a new revision. Roll back via the IM Console
-**Revisions** tab if needed.
+There are three update paths depending on what you're changing and which tier
+you installed with. **All three submit a new IM revision (or `tofu apply`) on
+top of the existing state — no data loss.** The on-disk database (Filestore
+PVC) survives across updates.
 
-For Tier-3 (local Terraform), edit tfvars and `tofu apply` again.
+### What you typically update
+
+- **New backend release** (monthly chart bump): pull a newer release tag and
+  re-deploy. The chart's `appVersion` flows to the running pod, which rolls
+  with ~15-30 sec of gRPC blip. Desktop App reconnects automatically.
+- **Add / remove / edit data libraries**: bump the list, re-deploy.
+- **Switch auth** (htpasswd ↔ LDAP): change vars, re-deploy.
+- **Resize**: change `deployment_size`, re-deploy. The installer auto-submits
+  the new quota requests; node pools resize on next scheduling.
+- **Recreation-required changes** (`region`, `cluster_name`, `zone_suffix`,
+  `filestore_tier`): the plan will show resource recreation. Treat these as
+  destroy + re-install rather than updates.
+
+### Path 1 — re-run `install.sh` with env-var pre-fill (Tier-1 / Tier-2)
+
+Re-running `install.sh` detects the existing IM deployment and creates a new
+revision against it. Today the script re-prompts every input from scratch
+(future improvement: pre-populate from the previous IM revision). To skip the
+prompts, set every collected variable as an environment variable before
+running:
+
+```bash
+# Copy-paste the values you used last time:
+export PROJECT_ID=your-gcp-project
+export DEPLOYMENT_NAME=platforma
+export IM_LOCATION=europe-west1
+export REGION=europe-west1
+export ZONE_SUFFIX=b
+export DEPLOYMENT_SIZE=small
+export CONTACT_EMAIL=ops@yourcompany.bio
+export LICENSE_KEY='E-XXXXXXXXX...'
+export INGRESS_ENABLED=true
+export DOMAIN_NAME=platforma.yourcompany.bio
+export DNS_ZONE_NAME=yourcompany-bio
+export AUTH_METHOD=ldap                                        # or 'htpasswd'
+export LDAP_SERVER='ldaps://ldap.yourcompany.bio:636'
+export LDAP_START_TLS=false
+export LDAP_BIND_DN=''                                         # search-bind mode
+export LDAP_SEARCH_RULES='(uid=%u)|ou=users,dc=yourcompany,dc=bio'
+export LDAP_SEARCH_USER='cn=svc-platforma,ou=services,dc=yourcompany,dc=bio'
+export LDAP_SEARCH_PASSWORD='...'
+export ENABLE_DEMO=true
+
+# Full data-libraries YAML — INCLUDING existing libraries, otherwise they're
+# dropped from the deployment. Add the new entry at the end.
+export DATA_LIBRARIES_YAML='
+- name: existing-lib
+  type: gcs
+  bucket: existing-bucket
+- name: new-lib
+  type: gcs
+  bucket: new-bucket
+'
+
+# Pull latest before re-running to pick up new chart / TF module changes:
+git pull
+bash infrastructure/gcp/cloudshell/install.sh
+```
+
+Without env vars set the script will prompt for each one — fine for the first
+install, tedious for repeated updates. Pick a stable release tag (e.g.
+`gcp-im-v1.0.0`) for production; pull the new tag when a release is announced.
+
+### Path 2 — edit inputs in the IM Console (no script)
+
+If you only need to change one or two inputs and don't want to set up env
+vars:
+
+1. Open `https://console.cloud.google.com/infra-manager/deployments?project=YOUR_PROJECT`.
+2. Click the `platforma` deployment.
+3. **Edit** → modify the inputs JSON directly (you'll see the full input set
+   from the previous revision; just append to the `data_libraries` array,
+   bump `deployment_size`, etc.).
+4. **Submit** — IM creates a new revision against the same Terraform module.
+
+Same end result as Path 1, GUI-driven.
+
+### Path 3 — Tier-3 local Terraform (recommended for ongoing ops)
+
+Once you're past the initial install, switching to Tier-3 makes updates a
+one-liner:
+
+```bash
+cd platforma-helm/infrastructure/gcp/terraform
+$EDITOR terraform.tfvars        # change one line
+tofu plan -out=tfplan
+tofu apply tfplan
+```
+
+State is in your own GCS bucket, inputs are git-trackable, no re-prompting.
+See [`advanced-installation.md`](advanced-installation.md) for the migration
+from IM-managed state to your own backend.
+
+### Rollbacks
+
+- **Tier-1 / Tier-2**: IM Console → **Revisions** tab → "Rollback to revision N".
+- **Tier-3**: revert the tfvars change in git, `tofu apply`.
+
+Both keep cluster + data intact and just re-roll the Helm release / TF resources
+to the previous shape.
 
 ## Tearing down
 

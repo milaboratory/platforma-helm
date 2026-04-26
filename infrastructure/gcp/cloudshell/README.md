@@ -87,14 +87,14 @@ user gets is whatever ref their `git clone` resolved to.
 | Audience | Ref |
 |---|---|
 | Cloud Shell button (default) | `main` — always latest |
-| Pinned production | tag like `gcp-im-v0.1.0` (clone with `-b`) |
+| Pinned production | tag like `gcp-im-v1.0.0` (clone with `-b`) |
 | Power user fork | their own branch |
 
 ### Releasing
 
-1. Cut a git tag in `platforma-helm` (e.g. `gcp-im-v0.1.0`).
+1. Cut a git tag in `platforma-helm` (e.g. `gcp-im-v1.0.0`).
 2. Update the runbook docs to reference the tag in the Cloud Shell URL
-   when documenting a stable release: append `&cloudshell_git_branch=gcp-im-v0.1.0`
+   when documenting a stable release: append `&cloudshell_git_branch=gcp-im-v1.0.0`
    to the button URL.
 3. That's it. No bucket upload, no CI workflow.
 

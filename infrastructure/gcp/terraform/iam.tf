@@ -90,16 +90,28 @@ resource "google_storage_bucket_iam_member" "data_library_jobs_objectviewer" {
 
 # Workload Identity: bind GCP SA -> K8s SA.
 # This grants the K8s SA permission to impersonate the GCP SA.
+#
+# depends_on the cluster: the WI Identity Pool (<project>.svc.id.goog)
+# is created lazily by GKE after the cluster comes up. Without this
+# explicit dep, Terraform parallelises resource creation and can submit
+# the IAM binding before the pool exists, producing:
+#   Error 400: Identity Pool does not exist
+# Adding the cluster dep forces TF to serialise: cluster first, then
+# bindings.
 resource "google_service_account_iam_member" "server_wi" {
   service_account_id = google_service_account.server.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${var.project_id}.svc.id.goog[${local.k8s_namespace}/${local.k8s_sa_server}]"
+
+  depends_on = [google_container_cluster.primary]
 }
 
 resource "google_service_account_iam_member" "jobs_wi" {
   service_account_id = google_service_account.jobs.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${var.project_id}.svc.id.goog[${local.k8s_namespace}/${local.k8s_sa_jobs}]"
+
+  depends_on = [google_container_cluster.primary]
 }
 
 # Self-impersonation for signBlob: Platforma server presigns GCS URLs for the

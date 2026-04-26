@@ -433,6 +433,159 @@ verify_dns_delegation() {
   echo
 }
 
+# Validate LDAP configuration before submitting the deployment. Three tiers:
+#   1. Syntax — URL parses, ports are numeric, search rules well-formed,
+#      mode-specific fields populated. Hard fail on issue.
+#   2. TCP reachability from this machine — best effort, warning only.
+#   3. LDAP bind from this machine — only in search-bind mode if `ldapsearch`
+#      is available and credentials provided. Warning only.
+#
+# Important caveat: reachability from the user's machine != reachability from
+# the GKE cluster. Cloud Shell often can't reach corporate LDAP at all, while
+# the cluster (with proper VPC/firewall rules) can. We warn-only on network
+# checks and tell the user that the cluster's view is what ultimately matters.
+verify_ldap_config() {
+  if [[ "${AUTH_METHOD:-}" != "ldap" ]]; then
+    return 0
+  fi
+
+  bold "LDAP config precheck"
+
+  # ---- Tier 1: syntax (hard fail) ----------------------------------------
+  local server="${LDAP_SERVER:-}"
+  if [[ -z "${server}" ]]; then
+    red "✗ LDAP_SERVER is empty."; exit 1
+  fi
+  if [[ ! "${server}" =~ ^(ldap|ldaps)://([^/:[:space:]]+)(:([0-9]+))?/?$ ]]; then
+    red "✗ LDAP_SERVER='${server}' is not a valid URL."
+    red "  Expected: ldap://host[:port] or ldaps://host[:port]"
+    exit 1
+  fi
+  local scheme="${BASH_REMATCH[1]}"
+  local host="${BASH_REMATCH[2]}"
+  local port="${BASH_REMATCH[4]:-}"
+  if [[ -z "${port}" ]]; then
+    if [[ "${scheme}" == "ldaps" ]]; then port=636; else port=389; fi
+  fi
+  info "Server:    ${scheme}://${host}:${port}"
+
+  # StartTLS only makes sense on ldap:// (plain). On ldaps:// it's a misconfig.
+  if [[ "${scheme}" == "ldaps" && "${LDAP_START_TLS:-false}" == "true" ]]; then
+    warn "LDAP_START_TLS=true with ldaps:// — StartTLS is for plain ldap://; ignored on ldaps."
+  fi
+
+  # Direct-bind vs search-bind — exactly one should be configured.
+  if [[ -n "${LDAP_BIND_DN:-}" ]]; then
+    info "Mode:      direct-bind"
+    if [[ "${LDAP_BIND_DN}" != *"%u"* ]]; then
+      warn "LDAP_BIND_DN does not contain '%u' — direct-bind needs the username placeholder, e.g. 'cn=%u,ou=users,dc=...'"
+    fi
+    if [[ -n "${LDAP_SEARCH_RULES:-}${LDAP_SEARCH_USER:-}${LDAP_SEARCH_PASSWORD:-}" ]]; then
+      red "✗ Both direct-bind (LDAP_BIND_DN) and search-bind fields are set."
+      red "  Pick ONE mode — leave the other empty."
+      exit 1
+    fi
+  else
+    info "Mode:      search-bind"
+    if [[ -z "${LDAP_SEARCH_RULES:-}" ]]; then
+      red "✗ Neither LDAP_BIND_DN nor LDAP_SEARCH_RULES is set. Need one."
+      exit 1
+    fi
+    # Each rule entry is "(filter)|baseDN", semicolon-separated.
+    local IFS_BAK="${IFS}"
+    IFS=';' read -ra rules <<<"${LDAP_SEARCH_RULES}"
+    IFS="${IFS_BAK}"
+    local rule
+    for rule in "${rules[@]}"; do
+      [[ -z "${rule}" ]] && continue
+      if [[ ! "${rule}" =~ ^\([^|]+\)\|.+$ ]]; then
+        red "✗ Search rule '${rule}' is malformed."
+        red "  Expected format: '(filter)|baseDN'  e.g. '(uid=%u)|ou=users,dc=example,dc=com'"
+        exit 1
+      fi
+      if [[ "${rule}" != *"%u"* ]]; then
+        warn "Rule '${rule}' has no '%u' — username will not be substituted."
+      fi
+    done
+  fi
+
+  green "  ✓ Syntax OK"
+
+  # ---- Tier 2: TCP reachability from this machine (warn only) ------------
+  # Use nc with timeout — flag form (-z -w 5) is identical on BSD nc (macOS)
+  # and Cloud Shell's nc, so this is the most portable probe. `timeout` from
+  # coreutils is missing on macOS by default; bash builtin /dev/tcp can hang
+  # on slow nets without it. nc handles timeout itself.
+  local tcp_ok=1
+  if command -v nc &>/dev/null && nc -z -w 5 "${host}" "${port}" &>/dev/null; then
+    green "  ✓ TCP ${host}:${port} reachable from this machine"
+  else
+    tcp_ok=0
+    if command -v nc &>/dev/null; then
+      warn "TCP ${host}:${port} unreachable from this machine."
+    else
+      warn "nc not found — skipping TCP reachability check."
+    fi
+    warn "  This may be expected — Cloud Shell sits behind GCP NAT and often can't"
+    warn "  reach corporate LDAP. What matters is reachability from the GKE cluster."
+    warn "  If your LDAP is on a private network, ensure the cluster has VPC peering"
+    warn "  / VPN / Private Service Connect to it before pods try to authenticate."
+  fi
+
+  # ---- Tier 2b: TLS handshake for ldaps:// (warn only) -------------------
+  if [[ "${scheme}" == "ldaps" && ${tcp_ok} -eq 1 ]] && command -v openssl &>/dev/null; then
+    local tls_out
+    # openssl has its own connect timeout (-connect_timeout, but flag name
+    # varies; rely on nc TCP probe above to gate this — once TCP works, the
+    # handshake either completes fast or fails fast on its own).
+    tls_out="$(echo | openssl s_client -connect "${host}:${port}" \
+      -servername "${host}" -verify_return_error 2>&1 </dev/null || true)"
+    if echo "${tls_out}" | grep -q "Verify return code: 0 (ok)"; then
+      green "  ✓ TLS handshake OK (cert chain verified)"
+    elif echo "${tls_out}" | grep -q "Verify return code:"; then
+      local code; code="$(echo "${tls_out}" | grep "Verify return code:" | head -1)"
+      warn "TLS connected but cert verification: ${code#*Verify return code: }"
+      warn "  Self-signed / private-CA certs are common for corporate LDAP — the chart"
+      warn "  supports trusting custom CAs via Helm values; not validated here."
+    else
+      warn "TLS handshake failed — server may not be ldaps:// on port ${port}."
+    fi
+  fi
+
+  # ---- Tier 3: LDAP bind (search-bind mode only, warn only) --------------
+  # Direct-bind can't be tested without a real user's password; skip there.
+  if [[ -z "${LDAP_BIND_DN:-}" ]] && [[ -n "${LDAP_SEARCH_USER:-}" ]] \
+     && [[ -n "${LDAP_SEARCH_PASSWORD:-}" ]] && command -v ldapsearch &>/dev/null \
+     && [[ ${tcp_ok} -eq 1 ]]; then
+    # Use the first rule's baseDN for the search base.
+    local first_rule="${LDAP_SEARCH_RULES%%;*}"
+    local base_dn="${first_rule#*|}"
+    local starttls_args=()
+    if [[ "${scheme}" == "ldap" && "${LDAP_START_TLS:-false}" == "true" ]]; then
+      starttls_args=(-ZZ)
+    fi
+    local out rc
+    out="$(LDAPTLS_REQCERT=allow ldapsearch -LLL -x -H "${server}" \
+      "${starttls_args[@]}" \
+      -D "${LDAP_SEARCH_USER}" -w "${LDAP_SEARCH_PASSWORD}" \
+      -b "${base_dn}" -s base "(objectClass=*)" dn 2>&1)"
+    rc=$?
+    if [[ ${rc} -eq 0 ]]; then
+      green "  ✓ LDAP bind succeeded (search service account can read ${base_dn})"
+    else
+      warn "LDAP bind failed (rc=${rc}):"
+      warn "  $(echo "${out}" | head -3 | tr '\n' ' ')"
+      warn "  Could be wrong credentials, wrong base DN, or network — but if your"
+      warn "  cluster has different network access than this machine, the cluster"
+      warn "  may still bind successfully. Watch pod logs after deploy if unsure."
+    fi
+  elif [[ -n "${LDAP_BIND_DN:-}" ]]; then
+    info "Bind test skipped — direct-bind mode (needs a real user's password)."
+  fi
+
+  echo
+}
+
 # -----------------------------------------------------------------------------
 # Auth: htpasswd (auto-gen / user-supplied content) or LDAP
 # -----------------------------------------------------------------------------
@@ -960,6 +1113,7 @@ main() {
   preflight
   collect_inputs
   verify_dns_delegation
+  verify_ldap_config
   detect_existing_quota_prefs
   ensure_im_service_account
 

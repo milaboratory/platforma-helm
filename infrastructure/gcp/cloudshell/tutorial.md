@@ -118,9 +118,35 @@ The script will:
 5. Poll the deployment until it reaches **ACTIVE** (~15-25 min).
 6. Print the connection details when done.
 
-While it runs you can watch progress in the
-[Infrastructure Manager Console](https://console.cloud.google.com/infra-manager/deployments)
-or tail the Cloud Build logs from there.
+### Monitoring + recovery
+
+The deployment takes **15-25 minutes**. Cloud Shell sessions disconnect
+after ~1 hour idle, and installing.sh's poll loop dies with the session.
+**That's fine — the deployment continues in the background**, and you
+can watch progress / errors from the Console:
+
+* **Infrastructure Manager** — deployment object, current state, revisions:
+  `https://console.cloud.google.com/infra-manager/deployments?project=YOUR_PROJECT`
+
+* **Cloud Build** — the underlying Terraform plan/apply runs that IM
+  triggers (best place to read TF errors when something fails):
+  `https://console.cloud.google.com/cloud-build/builds?project=YOUR_PROJECT`
+
+Both URLs are also printed by `install.sh` right after it submits the
+deployment, so you can copy them from the terminal output.
+
+If a deployment fails: the IM Console shows a red banner with the
+revision's error log. Common cases:
+
+* **Quota exceeded** during cluster creation → wait for the quota request
+  email (small bumps auto-approve in seconds; xlarge needs human review).
+  Re-run `bash install.sh` once the quota lands.
+* **Cert validation pending** (not a failure — just slow): TLS cert
+  status takes 5-15 min after the load balancer is up. Visible in
+  Certificate Manager Console.
+
+Re-running `install.sh` is always safe — it detects the existing
+deployment and updates in place via a new IM revision.
 
 ## Step 4 — Connect the Platforma Desktop App
 

@@ -20,7 +20,7 @@ set -euo pipefail
 
 # IM bundle version. Bump on each release. Released bundles live at
 # gs://platforma-infrastructure-manager/platforma-gcp-<version>.tar.gz
-IM_BUNDLE_VERSION="${IM_BUNDLE_VERSION:-dev-787bc64}"
+IM_BUNDLE_VERSION="${IM_BUNDLE_VERSION:-dev-3df088e}"
 IM_BUNDLE_URL="gs://platforma-infrastructure-manager/platforma-gcp-${IM_BUNDLE_VERSION}.tar.gz"
 
 # Service account that Infrastructure Manager runs Terraform under. Created

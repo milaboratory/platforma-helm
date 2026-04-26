@@ -2,3 +2,33 @@ project_id   = "your-gcp-project-id"
 region       = "europe-west1"
 zone_suffix  = "b"
 cluster_name = "platforma-cluster"
+
+# Sizing preset. small=4 parallel jobs, medium=8, large=16, xlarge=32.
+# All sizes share the same per-job cap (62 vCPU / 500 GiB RAM).
+deployment_size = "small"
+
+# Quota auto-request — required when enable_quota_auto_request is true (default).
+# Google sends approval/rejection notifications to this address.
+contact_email = "you@example.com"
+
+# License key from MiLaboratories.
+license_key = "E-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+# ---------------------------------------------------------------------------
+# Optional: HTTPS ingress (Desktop App connects over TLS to this domain).
+# ---------------------------------------------------------------------------
+# ingress_enabled  = true
+# domain_name      = "platforma.example.com"
+# dns_zone_name    = "example-com"      # Cloud DNS managed zone name
+# dns_zone_project = ""                 # if zone is in a different project
+
+# ---------------------------------------------------------------------------
+# Optional: external read-only data libraries shown in the Desktop App.
+# ---------------------------------------------------------------------------
+# enable_demo_data_library = false      # MiLaboratories' public demo data (default: enabled)
+#
+# data_libraries = [
+#   { name = "internal-bam", type = "gcs", bucket = "my-co-bam" },
+#   { name = "vendor-data",  type = "s3",  bucket = "vendor-bucket", region = "us-east-1",
+#     access_key = "AKIA...", secret_key = "..." },
+# ]

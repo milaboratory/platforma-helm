@@ -31,6 +31,17 @@ variable "cluster_name" {
   }
 }
 
+variable "deployment_size" {
+  type        = string
+  description = "Cluster sizing profile. Controls node pool maxes, Kueue batch queue quotas, Filestore default capacity, and quota auto-request amounts. All sizes share the same per-job cap (62 vCPU / 500 GiB). small=4 parallel jobs, medium=8, large=16, xlarge=32. Mirrors AWS CloudFormation parallelism."
+  default     = "small"
+
+  validation {
+    condition     = contains(["small", "medium", "large", "xlarge"], var.deployment_size)
+    error_message = "deployment_size must be one of: small, medium, large, xlarge."
+  }
+}
+
 variable "vpc_name" {
   type        = string
   description = "VPC network name."
@@ -75,8 +86,8 @@ variable "ui_pool_machine_type" {
 
 variable "ui_pool_max_nodes" {
   type        = number
-  description = "Max nodes in the UI pool (scales from 0)."
-  default     = 4
+  description = "Override max nodes in the UI pool (scales from 0). null = use deployment_size preset default."
+  default     = null
 }
 
 variable "batch_pool_machine_type" {
@@ -87,8 +98,8 @@ variable "batch_pool_machine_type" {
 
 variable "batch_pool_max_nodes" {
   type        = number
-  description = "Max nodes in the batch pool (scales from 0)."
-  default     = 4
+  description = "Override max nodes in the batch pool (scales from 0). null = use deployment_size preset default (= parallel jobs supported)."
+  default     = null
 }
 
 variable "batch_pool_disk_size_gb" {
@@ -99,26 +110,26 @@ variable "batch_pool_disk_size_gb" {
 
 variable "kueue_max_job_cpu" {
   type        = number
-  description = "Max vCPU per single job. Must fit in batch machine type after GKE daemonset overhead (~1.5 vCPU)."
-  default     = 62
+  description = "Override max vCPU per single job. null = 62 (fixed across all presets, fits n2d-highmem-64 after daemonset overhead). Lower this only if your batch machine type is smaller."
+  default     = null
 }
 
 variable "kueue_max_job_memory" {
   type        = string
-  description = "Max memory per single job. Must fit in batch machine type after overhead (~10 GiB)."
-  default     = "500Gi"
+  description = "Override max memory per single job. null = 500Gi (fixed across all presets)."
+  default     = null
 }
 
 variable "kueue_batch_queue_cpu" {
   type        = number
-  description = "ClusterQueue CPU quota for the batch pool (total across parallel jobs)."
-  default     = 256
+  description = "Override batch ClusterQueue CPU quota (total across parallel jobs). null = preset.parallel_jobs * 62."
+  default     = null
 }
 
 variable "kueue_batch_queue_memory" {
   type        = string
-  description = "ClusterQueue memory quota for the batch pool."
-  default     = "2048Gi"
+  description = "Override batch ClusterQueue memory quota. null = preset.parallel_jobs * 500Gi."
+  default     = null
 }
 
 variable "filestore_tier" {
@@ -134,12 +145,12 @@ variable "filestore_tier" {
 
 variable "workspace_capacity_gb" {
   type        = number
-  description = "Filestore capacity in GiB (min 1024 for ZONAL; resize later via gcloud)."
-  default     = 1024
+  description = "Override Filestore capacity in GiB. null = deployment_size preset default. Min 1024 for ZONAL/REGIONAL/ENTERPRISE/BASIC_HDD; min 2560 for BASIC_SSD. Resize up later via gcloud (online, no downtime)."
+  default     = null
 
   validation {
-    condition     = var.workspace_capacity_gb >= 1024
-    error_message = "workspace_capacity_gb must be >= 1024 (1 TiB)."
+    condition     = var.workspace_capacity_gb == null || var.workspace_capacity_gb >= 1024
+    error_message = "workspace_capacity_gb must be null (use preset) or >= 1024 (1 TiB)."
   }
 }
 
@@ -193,12 +204,110 @@ variable "platforma_chart_version" {
 
 variable "ingress_enabled" {
   type        = bool
-  description = "Enable ingress. Spike default: false (use kubectl port-forward)."
+  description = "Enable HTTPS ingress (Cloud DNS A record + Certificate Manager managed cert + GKE Gateway). When false, connect via kubectl port-forward (development only). Required for the Desktop App in production. When true, you must also set domain_name and dns_zone_name."
   default     = false
+}
+
+variable "domain_name" {
+  type        = string
+  description = "Fully-qualified domain for Platforma (e.g. platforma.example.com). The Desktop App connects here over HTTPS. Required when ingress_enabled = true."
+  default     = ""
+}
+
+variable "dns_zone_name" {
+  type        = string
+  description = "Cloud DNS managed zone name that controls domain_name (e.g. 'example-com'). Required when ingress_enabled = true. The zone must already exist; create it via 'gcloud dns managed-zones create' and delegate from your registrar — see infrastructure/gcp/domain-guide.md."
+  default     = ""
+}
+
+variable "dns_zone_project" {
+  type        = string
+  description = "GCP project hosting the Cloud DNS managed zone, if different from project_id. Empty = same as project_id."
+  default     = ""
 }
 
 variable "admin_username" {
   type        = string
   description = "Default admin username for htpasswd auth."
   default     = "platforma"
+}
+
+# =============================================================================
+# Data libraries
+# =============================================================================
+
+variable "enable_demo_data_library" {
+  type        = bool
+  description = "Mount MiLaboratories' public demo data library (public GCS bucket with sample bioinformatics datasets) as a read-only data source visible in the Desktop App. Enabled by default — set to false to deploy without it."
+  default     = true
+}
+
+variable "data_libraries" {
+  type = list(object({
+    name       = string
+    type       = string
+    bucket     = string
+    prefix     = optional(string, "")
+    # GCS-only fields
+    project_id = optional(string, "")
+    # S3-only fields (also works for cross-project GCS via HMAC + custom endpoint)
+    region            = optional(string, "")
+    endpoint          = optional(string, "")
+    external_endpoint = optional(string, "")
+    access_key        = optional(string, "")
+    secret_key        = optional(string, "")
+  }))
+  default     = []
+  description = <<-EOT
+    External read-only data libraries shown in the Desktop App. Each entry:
+      name       — display name (lowercase alphanumeric + dash)
+      type       — "gcs" or "s3"
+      bucket     — bucket name
+      prefix     — optional path prefix within the bucket
+    GCS (type="gcs"):
+      project_id — bucket's project; same-project = uses Workload Identity (no keys needed);
+                   cross-project = grant Platforma server SA roles/storage.objectViewer on the
+                   bucket beforehand (done outside this module).
+    S3 (type="s3"):
+      region            — AWS region (required for AWS S3)
+      endpoint          — S3-compatible custom endpoint (MinIO, Ceph). Empty = AWS S3.
+      external_endpoint — public URL the Desktop App should use (if different from endpoint)
+      access_key        — IAM access key (for AWS S3 or HMAC for cross-project GCS)
+      secret_key        — IAM secret key
+    Leave access_key/secret_key empty for same-project GCS (Workload Identity).
+  EOT
+}
+
+variable "platforma_image_override" {
+  type        = string
+  description = "Override Platforma container image (full repository:tag, e.g. 'quay.io/milaboratories/platforma:3.4.0'). Empty = use chart default."
+  default     = ""
+}
+
+variable "deploy_platforma" {
+  type        = bool
+  description = "Deploy the Platforma application via Helm. Set to false to install only infrastructure + cluster controllers (Kueue, AppWrapper) — useful for testing the infra layer in isolation."
+  default     = true
+}
+
+# =============================================================================
+# Quota auto-request
+# =============================================================================
+
+variable "enable_quota_auto_request" {
+  type        = bool
+  description = "Submit quota-increase requests via google_cloud_quotas_quota_preference based on the deployment_size preset. Small bumps auto-approve in seconds; larger requests (xlarge tier and above) typically need human review (24-72h). Set to false to manage quotas manually."
+  default     = true
+}
+
+variable "contact_email" {
+  type        = string
+  description = "Email for GCP to send quota approval/rejection notifications. Required when enable_quota_auto_request = true."
+  default     = ""
+}
+
+variable "skip_quota_requests" {
+  type        = list(string)
+  description = "Quota request keys to skip even when enable_quota_auto_request = true. Use when a project already has existing user-managed QuotaPreference records for the same (service, quota_id, dimensions) — Cloud Quotas API rejects duplicate creates and offers no DELETE. Valid keys: cpus_global, n2d_cpus_region, pd_ssd_region, instances_region, filestore_zonal_region."
+  default     = []
 }

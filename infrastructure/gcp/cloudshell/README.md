@@ -78,22 +78,29 @@ no DELETE method. `install.sh` handles this automatically:
 3. Compares the existing `preferredValue` against the preset's required
    value — emits a warning + asks for confirmation when below.
 
-## Bumping the bundle version
+## Versioning and updates
 
-`install.sh` references a published Infrastructure Manager bundle:
+There is no separate publishing step — the IM source bundle is assembled
+locally from the same git checkout `install.sh` runs from. The version a
+user gets is whatever ref their `git clone` resolved to.
 
-```bash
-IM_BUNDLE_VERSION="${IM_BUNDLE_VERSION:-dev-787bc64}"
-```
+| Audience | Ref |
+|---|---|
+| Cloud Shell button (default) | `main` — always latest |
+| Pinned production | tag like `gcp-im-v0.1.0` (clone with `-b`) |
+| Power user fork | their own branch |
 
-On each tagged release of the chart repo:
-1. CI workflow `publish-gcp-im.yaml` publishes
-   `gs://platforma-infrastructure-manager/platforma-gcp-<version>.tar.gz`
-2. Update `IM_BUNDLE_VERSION` in `install.sh` to the new version.
-3. Merge to `main`. Next user click of the Cloud Shell button picks up
-   the new version automatically (Cloud Shell always clones HEAD).
+### Releasing
 
-The bundle URL is intentionally **versioned, not `latest.tar.gz`** —
-deployments are reproducible and updates are explicit (parity with the
-AWS CloudFormation runbook approach, where the YAML filename includes
-the version).
+1. Cut a git tag in `platforma-helm` (e.g. `gcp-im-v0.1.0`).
+2. Update the runbook docs to reference the tag in the Cloud Shell URL
+   when documenting a stable release: append `&cloudshell_git_branch=gcp-im-v0.1.0`
+   to the button URL.
+3. That's it. No bucket upload, no CI workflow.
+
+### Updating an existing deployment
+
+User re-opens Cloud Shell (which re-clones HEAD of the configured ref),
+re-runs `install.sh`. The script detects the existing IM deployment and
+runs an update — IM creates a new revision against the new TF source.
+Roll back via the IM Console **Revisions** tab if needed.

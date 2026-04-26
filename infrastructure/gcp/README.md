@@ -185,6 +185,7 @@ to users.
 - [`domain-guide.md`](domain-guide.md) — Cloud DNS zone creation + delegation from external registrars (Route53, Cloudflare, GoDaddy, Namecheap).
 - [`permissions.md`](permissions.md) — fine-grained IAM role set replacing `roles/owner` on the deployer SA.
 - [`advanced-installation.md`](advanced-installation.md) — Tier-3 local-Terraform path with manual gcloud auth, custom backends, full customization.
+- [`architecture-decisions.md`](architecture-decisions.md) — ADR log: non-obvious choices made during the build (multi-pool batch, Filestore tier, Workload Identity, custom HCL vs standard modules, etc.). Read this before making structural changes.
 
 ## Updates
 

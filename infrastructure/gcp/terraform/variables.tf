@@ -92,8 +92,24 @@ variable "ui_pool_max_nodes" {
 
 variable "batch_pool_machine_type" {
   type        = string
-  description = "Machine type for batch node pool."
-  default     = "n2d-standard-16"
+  description = <<-EOT
+    Machine type for the batch node pool. Default n2d-highmem-64 (64 vCPU /
+    512 GiB) — sized for Platforma's per-job cap (kueue_max_job_cpu = 62
+    vCPU / 500 GiB) so each batch node fits exactly one large job.
+
+    Smaller types (e.g. n2d-standard-16) appear to "save money" but lock you
+    out: jobs request 16+ vCPU per pod, and after GKE's daemonset/system
+    overhead a 16-vCPU node has only ~15.9 vCPU allocatable, so pods sit
+    Pending forever. If you override to a smaller type, also lower
+    kueue_max_job_cpu and kueue_max_job_memory accordingly.
+
+    Quota implications: n2d-highmem-64 × <preset.parallel_jobs> nodes plus
+    UI + system pools must fit within your N2D-CPUS-per-project-region
+    quota. The installer auto-requests the right size (see presets.tf
+    n2d_cpus_quota); first installs may need to wait for human approval on
+    larger sizes.
+  EOT
+  default     = "n2d-highmem-64"
 }
 
 variable "batch_pool_max_nodes" {
@@ -312,10 +328,10 @@ variable "enable_demo_data_library" {
 
 variable "data_libraries" {
   type = list(object({
-    name       = string
-    type       = string
-    bucket     = string
-    prefix     = optional(string, "")
+    name   = string
+    type   = string
+    bucket = string
+    prefix = optional(string, "")
     # GCS-only fields
     project_id = optional(string, "")
     # S3-only fields (also works for cross-project GCS via HMAC + custom endpoint)

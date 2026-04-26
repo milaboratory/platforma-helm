@@ -764,6 +764,17 @@ submit_deployment() {
       ;;
   esac
 
+  # Print monitoring URLs BEFORE the long-running gcloud apply call. If the
+  # Cloud Shell session times out / disconnects during the ~20 min provision,
+  # the user can come back and watch progress / errors here.
+  echo
+  bold "Monitor progress (open in browser if Cloud Shell disconnects):"
+  cat <<EOF
+  Infrastructure Manager:  https://console.cloud.google.com/infra-manager/deployments/details/${IM_LOCATION}/${DEPLOYMENT_NAME}?project=${PROJECT_ID}
+  Cloud Build (TF runs):   https://console.cloud.google.com/cloud-build/builds?project=${PROJECT_ID}
+EOF
+  echo
+
   gcloud infra-manager deployments apply "${deployment_path}" \
     --local-source="${work_dir}" \
     --service-account="projects/${PROJECT_ID}/serviceAccounts/${IM_SA_EMAIL}" \

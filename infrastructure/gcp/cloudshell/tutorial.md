@@ -103,7 +103,7 @@ script — useful when re-running.
 </walkthrough-info-message>
 
 ```bash
-bash infrastructure/gcp/cloudshell/install.sh
+bash install.sh
 ```
 
 The script will:

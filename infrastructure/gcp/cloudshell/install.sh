@@ -376,19 +376,31 @@ verify_dns_delegation() {
   actual_ns="$(dig +short +time=5 +tries=2 NS "${zone_dns_name}" 2>/dev/null \
     | sed 's/\.$//' | sort)"
 
+  # Print remediation guidance covering both cases — the user might own the
+  # root domain (registrar points NS at Cloud DNS) or might be using a
+  # subdomain delegated from a parent zone they control.
+  print_dns_fix() {
+    red "  Set these 4 nameservers as authoritative for '${zone_dns_name}':"
+    while IFS= read -r ns; do red "    ${ns}"; done <<<"${expected_ns}"
+    red ""
+    red "  Where to set them:"
+    red "    - If '${zone_dns_name}' is a domain you own at a registrar"
+    red "      (GoDaddy, Namecheap, Cloudflare, Route53, Cloud Domains, etc.):"
+    red "      update the domain's nameservers in the registrar admin."
+    red "    - If '${zone_dns_name}' is a subdomain of a zone you already control:"
+    red "      add an NS record for '${zone_dns_name%%.*}' on the parent zone."
+    red ""
+    red "  Step-by-step (Route53 / Cloudflare / GoDaddy / Namecheap / generic):"
+    red "    infrastructure/gcp/domain-guide.md"
+  }
+
   if [[ -z "${actual_ns}" ]]; then
     red "✗ ${zone_dns_name} returns no NS records from public DNS."
     red ""
-    red "  This means the parent of '${zone_dns_name}' has not delegated"
-    red "  authority to your Cloud DNS zone. Cert validation will fail and"
-    red "  the cert will sit in PROVISIONING forever."
+    red "  Public resolvers can't find your Cloud DNS zone. Cert validation"
+    red "  will fail and the cert will sit in PROVISIONING forever."
     red ""
-    red "  Fix: add an NS record at the parent zone for '${zone_dns_name%%.*}'"
-    red "  pointing to these 4 nameservers:"
-    while IFS= read -r ns; do red "    ${ns}"; done <<<"${expected_ns}"
-    red ""
-    red "  Step-by-step (Route53/Cloudflare/GoDaddy/Namecheap):"
-    red "    infrastructure/gcp/domain-guide.md"
+    print_dns_fix
     red ""
     if prompt_yn "Proceed anyway (cert will not validate until you fix this)?"; then
       warn "Continuing without DNS delegation. Fix it within ~30 min of deploy."
@@ -398,17 +410,16 @@ verify_dns_delegation() {
     exit 1
   fi
 
-  # Compare actual to expected. Mismatch = delegation points elsewhere.
+  # Compare actual to expected. Mismatch = NS points somewhere other than
+  # this Cloud DNS zone (typical: registrar still points at default
+  # nameservers, or zone exists in a different DNS provider too).
   if [[ "$(echo "${actual_ns}" | tr '\n' ' ')" != "$(echo "${expected_ns}" | tr '\n' ' ')" ]]; then
     red "✗ ${zone_dns_name} resolves to nameservers that don't match your Cloud DNS zone."
     red ""
-    red "  Got:"
+    red "  Got from public DNS:"
     while IFS= read -r ns; do red "    ${ns}"; done <<<"${actual_ns}"
-    red "  Expected (from Cloud DNS):"
-    while IFS= read -r ns; do red "    ${ns}"; done <<<"${expected_ns}"
     red ""
-    red "  Fix the parent-zone NS delegation, or pick a different zone."
-    red "  See: infrastructure/gcp/domain-guide.md"
+    print_dns_fix
     red ""
     if prompt_yn "Proceed anyway (cert will not validate until you fix this)?"; then
       warn "Continuing with mismatched delegation."

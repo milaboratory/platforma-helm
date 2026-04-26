@@ -51,12 +51,20 @@ require_command() {
 # If the var is already set in the environment, keeps it. Otherwise prompts
 # (with optional default). Stops if user enters empty for a no-default field.
 prompt_var() {
-  local name="$1"; local prompt="$2"; local default="${3:-}"
+  # Calling conventions:
+  #   prompt_var NAME "prompt"            → required (empty input rejected)
+  #   prompt_var NAME "prompt" "default"  → has default; empty input → default
+  #   prompt_var NAME "prompt" ""         → optional (empty input accepted as "")
+  local name="$1"; local prompt="$2"
+  local default="" had_default=0
+  if (( $# >= 3 )); then default="$3"; had_default=1; fi
+
   local current="${!name:-}"
   if [[ -n "${current}" ]]; then
     info "${name} = ${current}  (from env)"
     return
   fi
+
   local input
   if [[ -n "${default}" ]]; then
     read -r -p "  ${prompt} [${default}]: " input
@@ -64,7 +72,13 @@ prompt_var() {
   else
     read -r -p "  ${prompt}: " input
   fi
+
   if [[ -z "${input}" ]]; then
+    if (( had_default )); then
+      # Empty default explicitly passed → optional; accept empty.
+      printf -v "${name}" '%s' ""
+      return
+    fi
     red "${name} is required."; exit 1
   fi
   printf -v "${name}" '%s' "${input}"

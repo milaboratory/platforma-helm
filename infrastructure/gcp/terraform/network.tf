@@ -34,6 +34,8 @@ resource "google_compute_global_address" "private_service_access" {
   purpose       = "VPC_PEERING"
   address_type  = "INTERNAL"
   prefix_length = 20
+
+  depends_on = [google_project_service.enabled]
 }
 
 resource "google_service_networking_connection" "psa" {

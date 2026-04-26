@@ -53,6 +53,8 @@ resource "google_dns_record_set" "platforma" {
   type         = "A"
   ttl          = 300
   rrdatas      = [google_compute_global_address.ingress[0].address]
+
+  depends_on = [google_project_service.enabled]
 }
 
 # -- DNS authorization for Certificate Manager (proves we control the domain)
@@ -64,6 +66,8 @@ resource "google_certificate_manager_dns_authorization" "platforma" {
   location    = "global"
   domain      = var.domain_name
   description = "DNS authorization for Platforma TLS cert"
+
+  depends_on = [google_project_service.enabled]
 }
 
 # -- CNAME validation record (created in the user's zone, points at GCP-managed target)
@@ -76,6 +80,8 @@ resource "google_dns_record_set" "cert_validation" {
   type         = google_certificate_manager_dns_authorization.platforma[0].dns_resource_record[0].type
   ttl          = 300
   rrdatas      = [google_certificate_manager_dns_authorization.platforma[0].dns_resource_record[0].data]
+
+  depends_on = [google_project_service.enabled]
 }
 
 # -- Google-managed certificate
@@ -92,7 +98,10 @@ resource "google_certificate_manager_certificate" "platforma" {
     dns_authorizations = [google_certificate_manager_dns_authorization.platforma[0].id]
   }
 
-  depends_on = [google_dns_record_set.cert_validation]
+  depends_on = [
+    google_dns_record_set.cert_validation,
+    google_project_service.enabled,
+  ]
 }
 
 # -- Cert map (Gateway references the map, not individual certs)
@@ -102,6 +111,8 @@ resource "google_certificate_manager_certificate_map" "platforma" {
   name        = "${var.cluster_name}-cert-map"
   project     = var.project_id
   description = "Platforma cert map for Gateway"
+
+  depends_on = [google_project_service.enabled]
 }
 
 resource "google_certificate_manager_certificate_map_entry" "platforma" {
@@ -112,6 +123,8 @@ resource "google_certificate_manager_certificate_map_entry" "platforma" {
   map          = google_certificate_manager_certificate_map.platforma[0].name
   certificates = [google_certificate_manager_certificate.platforma[0].id]
   hostname     = var.domain_name
+
+  depends_on = [google_project_service.enabled]
 }
 
 # =============================================================================

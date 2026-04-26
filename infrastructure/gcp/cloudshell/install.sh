@@ -24,10 +24,18 @@ trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
 # Constants
 # -----------------------------------------------------------------------------
 
-# IM bundle version. Bump on each release. Released bundles live at
-# gs://platforma-infrastructure-manager/platforma-gcp-<version>.tar.gz
-IM_BUNDLE_VERSION="${IM_BUNDLE_VERSION:-dev-9e00369}"
-IM_BUNDLE_URL="gs://platforma-infrastructure-manager/platforma-gcp-${IM_BUNDLE_VERSION}.tar.gz"
+# Source layout: this script lives at infrastructure/gcp/cloudshell/install.sh
+# inside the platforma-helm repo. The TF module + chart are siblings (resolved
+# below). The IM deployment source bundle is assembled from these locally —
+# no remote tarball, no bucket, no publishing workflow. Users (or Cloud Shell)
+# get the right version by cloning the repo at the desired ref:
+#   - main (default for Cloud Shell button)  → latest
+#   - tag  (e.g. gcp-im-v0.1.0)              → pinned release
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+GCP_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"             # infrastructure/gcp
+REPO_ROOT="$(cd -- "${GCP_DIR}/../.." &>/dev/null && pwd)"           # platforma-helm
+BUNDLE_TF_DIR="${GCP_DIR}/terraform"
+BUNDLE_CHART_DIR="${REPO_ROOT}/charts/platforma"
 
 # Service account that Infrastructure Manager runs Terraform under. Created
 # in the user's project on first run; granted Owner so it can provision GKE,
@@ -326,11 +334,33 @@ EOF
 
   case "${AUTH_METHOD}" in
     htpasswd)
+      # Three input modes (in priority order):
+      #   HTPASSWD_CONTENT env var → use as-is
+      #   HTPASSWD_FILE env var    → read from file
+      #   Interactive prompt       → optional path, empty = auto-gen
       if [[ -n "${HTPASSWD_CONTENT:-}" ]]; then
         info "htpasswd content provided via env (${#HTPASSWD_CONTENT} bytes)."
+      elif [[ -n "${HTPASSWD_FILE:-}" ]]; then
+        if [[ ! -r "${HTPASSWD_FILE}" ]]; then
+          red "HTPASSWD_FILE='${HTPASSWD_FILE}' is not readable."; exit 1
+        fi
+        HTPASSWD_CONTENT="$(< "${HTPASSWD_FILE}")"
+        info "Read $(wc -l < "${HTPASSWD_FILE}" | tr -d ' ') line(s) from ${HTPASSWD_FILE}"
       else
-        warn "Auto-generating random htpasswd password (testing only)."
-        warn "For production: pre-generate with 'htpasswd -nB <user>' and export HTPASSWD_CONTENT before re-running."
+        info "Generate htpasswd content with: htpasswd -nB <username> > ~/htpasswd"
+        local htpasswd_path
+        read -r -p "  Path to htpasswd file (empty = auto-generate, TESTING ONLY): " htpasswd_path
+        htpasswd_path="${htpasswd_path/#\~/$HOME}"   # expand ~ for the user
+        if [[ -n "${htpasswd_path}" ]]; then
+          if [[ ! -r "${htpasswd_path}" ]]; then
+            red "  File not found or unreadable: ${htpasswd_path}"; exit 1
+          fi
+          HTPASSWD_CONTENT="$(< "${htpasswd_path}")"
+          green "  ✓ Read $(wc -l < "${htpasswd_path}" | tr -d ' ') line(s) from ${htpasswd_path}"
+        else
+          warn "Auto-generating random htpasswd password (TESTING ONLY)."
+          warn "For production: generate with 'htpasswd -nB <user> > /tmp/htpasswd' and re-run."
+        fi
       fi
       ;;
     ldap)
@@ -653,15 +683,32 @@ build_tfvars_json() {
 
 submit_deployment() {
   bold "Submitting deployment"
-  info "Bundle: ${IM_BUNDLE_URL}"
+
+  local source_ref
+  source_ref="$(git -C "${REPO_ROOT}" describe --tags --always --dirty 2>/dev/null || echo "(unknown)")"
+  info "Source: ${REPO_ROOT} @ ${source_ref}"
 
   local deployment_path="projects/${PROJECT_ID}/locations/${IM_LOCATION}/deployments/${DEPLOYMENT_NAME}"
   local work_dir="${INSTALL_TMPDIR}/im-bundle"
   mkdir -p "${work_dir}"
 
-  info "Downloading bundle…"
-  gcloud storage cp "${IM_BUNDLE_URL}" "${INSTALL_TMPDIR}/bundle.tar.gz" --quiet
-  tar -xzf "${INSTALL_TMPDIR}/bundle.tar.gz" -C "${work_dir}"
+  # Assemble the IM source bundle from the local checkout:
+  #   - drop backend.tf (IM manages state internally)
+  #   - drop dev-only files
+  #   - bundle the chart at terraform/platforma/ and rewrite the chart path
+  #     in app.tf for the IM context (will be replaced by a chart pull from
+  #     oci://ghcr.io once PR #70 merges and a 3.4.0 release is cut).
+  info "Assembling bundle from local checkout…"
+  cp -R "${BUNDLE_TF_DIR}/." "${work_dir}/"
+  rm -f  "${work_dir}/backend.tf" "${work_dir}/terraform.tfvars" \
+         "${work_dir}/tfplan" "${work_dir}/errored.tfstate"
+  rm -rf "${work_dir}/.terraform"
+  rm -f  "${work_dir}/.terraform.lock.hcl"
+  cp -R "${BUNDLE_CHART_DIR}" "${work_dir}/platforma"
+  if grep -q '"${path.module}/../../../charts/platforma"' "${work_dir}/app.tf"; then
+    sed -i.bak 's|"${path.module}/../../../charts/platforma"|"${path.module}/platforma"|' "${work_dir}/app.tf"
+    rm -f "${work_dir}/app.tf.bak"
+  fi
 
   # Embed user-supplied inputs as a tfvars file the bundle picks up
   # automatically (Terraform auto-loads any *.auto.tfvars.json).
@@ -774,7 +821,9 @@ EOF
 
 main() {
   bold "Platforma on GCP — Infrastructure Manager installer"
-  echo "Bundle version: ${IM_BUNDLE_VERSION}"
+  local source_ref
+  source_ref="$(git -C "${REPO_ROOT}" describe --tags --always --dirty 2>/dev/null || echo "(unknown)")"
+  echo "Source: ${REPO_ROOT} @ ${source_ref}"
   echo
 
   preflight
@@ -793,7 +842,7 @@ main() {
   Demo library:    ${ENABLE_DEMO}
   Contact email:   ${CONTACT_EMAIL}
   IM service acct: ${IM_SA_EMAIL}
-  Bundle:          ${IM_BUNDLE_URL}
+  Source:          ${REPO_ROOT} @ ${source_ref}
 
 EOF
   read -r -p "Proceed? [y/N] " confirm

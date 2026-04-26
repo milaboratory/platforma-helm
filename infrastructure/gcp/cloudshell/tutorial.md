@@ -113,8 +113,8 @@ The script will:
    contact email, demo library toggle, and license key.
 3. Create a service account `platforma-im-deployer@…` in your project and
    grant it Owner.
-4. Submit the IM deployment pointing at the latest published bundle in
-   `gs://platforma-infrastructure-manager/`.
+4. Submit the IM deployment using the Terraform source from this repo
+   checkout (the same files Cloud Shell just cloned).
 5. Poll the deployment until it reaches **ACTIVE** (~15-25 min).
 6. Print the connection details when done.
 

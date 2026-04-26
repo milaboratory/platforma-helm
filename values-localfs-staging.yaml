@@ -1,0 +1,106 @@
+# Platforma Local — staging values for dev-htz-fra1
+# Prerequisites:
+#   kubectl --kubeconfig ~/.kube/dev-htz-fra1.yaml create secret generic platforma-ldap-password \
+#     -n platforma-e2e --from-literal=password='by6NGMJ3SL50e0A1'
+#
+# Install:
+#   helm install platforma-local ./pl/helm/charts/platforma-local \
+#     -n platforma-e2e \
+#     --kubeconfig ~/.kube/dev-htz-fra1.yaml \
+#     -f pl/helm/values-localfs-staging.yaml
+
+image:
+  repository: quay.io/milaboratories/platforma
+  tag: "3.3.3"
+  pullPolicy: IfNotPresent
+
+# --- License ---
+license:
+  secretName: platforma-license
+  secretKey: pl-license-key
+
+# --- Auth (LDAP) ---
+auth:
+  ldap:
+    server: ldaps://ldap.eu.foxpass.com
+    startTLS: false
+    searchRules:
+      - "(&(uid=%u)(memberOf=cn=milaboratories,ou=groups,dc=milaboratories,dc=com))|dc=milaboratories,dc=com"
+    searchUser: "cn=r2d2,dc=milaboratories,dc=com"
+    searchPassword: ""
+    searchPasswordSecretRef:
+      name: platforma-ldap-password
+      key: password
+    tls:
+      insecureSkipVerify: true
+
+# --- Storage (local FS) ---
+storage:
+  fsExternalUrl: "https://storage-local-staging.dev.platforma.bio"
+
+# --- Ingress (gRPC via Traefik with h2c backend) ---
+ingress:
+  enabled: true
+  className: traefik
+  host: local-staging.dev.platforma.bio
+  tls:
+    enabled: true
+    secretName: k8s-staging-dev-platforma-bio-tls
+
+# --- Additional ingress (HTTP storage) ---
+additionalIngress:
+  enabled: true
+  className: traefik
+  host: storage-local-staging.dev.platforma.bio
+  tls:
+    enabled: true
+
+# --- Service ---
+service:
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: h2c
+
+# --- Service ---
+service:
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: h2c
+
+# --- App ---
+app:
+  debug:
+    enabled: true
+  extraArgs:
+    - "--data-library-s3=corp-library=https://fsn1.your-objectstorage.com/milab-fsn1-prod-data-s3-platforma-demo/corp-library/"
+    - "--data-library-s3-key=corp-library=$(PL_DATA_LIBRARY_S3_KEY)"
+    - "--data-library-s3-secret=corp-library=$(PL_DATA_LIBRARY_S3_SECRET)"
+    - "--data-library-s3-external-endpoint=corp-library=https://fsn1.your-objectstorage.com"
+    - "--auth-sessions-gen=1"
+  extraEnv:
+    - name: PL_DATA_LIBRARY_S3_KEY
+      valueFrom:
+        secretKeyRef:
+          name: platforma-data-library-s3
+          key: access-key
+    - name: PL_DATA_LIBRARY_S3_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: platforma-data-library-s3
+          key: secret-key
+
+resources:
+  requests:
+    cpu: 2
+    memory: 8Gi
+  limits:
+    cpu: 8
+    memory: 64Gi
+
+volumes:
+  storage:
+    sizeLimit: 100Gi
+  workspace:
+    sizeLimit: 100Gi
+  database:
+    sizeLimit: 10Gi
+  main:
+    sizeLimit: 50Gi

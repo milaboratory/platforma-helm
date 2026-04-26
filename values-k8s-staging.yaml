@@ -1,0 +1,132 @@
+# Platforma — staging values for dev-htz-fra1
+# Prerequisites:
+#   kubectl --kubeconfig ~/.kube/dev-htz-fra1.yaml create secret generic platforma-ldap-password \
+#     -n platforma-e2e --from-literal=password='by6NGMJ3SL50e0A1'
+#
+# Install:
+#   helm install platforma ./platforma-helm/charts/platforma \
+#     -n platforma-e2e \
+#     --kubeconfig ~/.kube/dev-htz-fra1.yaml \
+#     -f pl/helm/values-k8s-staging.yaml
+# Check:
+#   kubectl -n platforma-e2e --kubeconfig ~/.kube/dev-htz-fra1.yaml get pods -l app.kubernetes.io/name=platforma
+#   kubectl --kubeconfig ~/.kube/dev-htz-fra1.yaml get clusterqueues
+#   kubectl --kubeconfig ~/.kube/dev-htz-fra1.yaml get resourceflavors
+#   kubectl --kubeconfig ~/.kube/dev-htz-fra1.yaml get localqueues -n platforma-e2e
+
+image:
+  repository: quay.io/milaboratories/platforma
+  tag: "3.3.3"
+  pullPolicy: IfNotPresent
+
+environment: ""
+
+# --- License ---
+license:
+  secretName: platforma-license
+  secretKey: pl-license-key
+
+# --- Auth (LDAP) ---
+auth:
+  ldap:
+    server: ldaps://ldap.eu.foxpass.com
+    startTLS: false
+    searchRules:
+      - "(&(uid=%u)(memberOf=cn=milaboratories,ou=groups,dc=milaboratories,dc=com))|dc=milaboratories,dc=com"
+    searchUser: "cn=r2d2,dc=milaboratories,dc=com"
+    searchPassword: ""
+    searchPasswordSecretRef:
+      name: platforma-ldap-password
+      key: password
+    tls:
+      insecureSkipVerify: true
+
+# --- Storage ---
+storage:
+  database:
+    size: 5Gi
+
+  workspace:
+    existingClaim: platforma-workspace
+
+  main:
+    type: s3
+    s3:
+      bucket: platforma-storage
+      region: garage
+      endpoint: http://garage.common-services.svc:3900
+      externalEndpoint: "https://s3.dev.platforma.bio"
+      noDataIntegrity: false
+      secretRef:
+        name: platforma-e2e-s3-credentials
+        accessKeyField: access-key
+        secretKeyField: secret-key
+
+# --- Data Library ---
+dataSources:
+  - name: corp-library
+    type: s3
+    s3:
+      bucket: milab-fsn1-prod-data-s3-platforma-demo
+      prefix: corp-library/
+      endpoint: https://fsn1.your-objectstorage.com
+      externalEndpoint: https://fsn1.your-objectstorage.com
+      secretRef:
+        name: platforma-data-library-s3
+        accessKeyField: access-key
+        secretKeyField: secret-key
+
+# --- Kueue (dedicated mode — chart creates all resources) ---
+kueue:
+  mode: dedicated
+  provisioningRequest:
+    enabled: false  # Hetzner cluster has no Cluster Autoscaler
+  maxJobResources:
+    cpu: 14
+    memory: 128Gi
+  pools:
+    ui:
+      nodeSelector: {}
+      tolerations: []
+    batch:
+      nodeSelector: {}
+      tolerations: []
+  dedicated:
+    createClusterResources: true
+    resources:
+      ui:
+        cpu: 14
+        memory: 128Gi
+      batch:
+        cpu: 14
+        memory: 128Gi
+
+# --- Ingress ---
+ingress:
+  enabled: true
+  className: traefik
+  host: k8s-staging.dev.platforma.bio
+  tls:
+    enabled: true
+    secretName: k8s-staging-dev-platforma-bio-tls
+
+# --- App ---
+app:
+  serviceAnnotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: h2c
+  resources:
+    requests:
+      cpu: 4
+      memory: 8Gi
+    limits:
+      cpu: 4
+      memory: 8Gi
+  debug:
+    enabled: true
+  logging:
+    persistence:
+      enabled: false
+
+# --- Jobs ---
+jobs:
+  secretName: platforma-license

@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: garage-s3
+  namespace: common-services
+spec:
+  tls:
+    - hosts:
+        - s3.dev.platforma.bio
+  rules:
+    - host: s3.dev.platforma.bio
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: garage
+                port:
+                  number: 3900

@@ -1,0 +1,15 @@
+storage:
+  workspace:
+    pvc:
+      enabled: true
+      size: 1Gi
+      storageClass: standard
+  main:
+    type: s3
+    s3:
+      bucket: test-bucket
+      region: us-east-1
+
+app:
+  extraArgs:
+    - "--no-auth"

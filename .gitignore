@@ -1,8 +1,3 @@
-.idea
-.DS_Store
-# personal values files
-values-* 
-# review notes / scratch docs
-docs/
-
-.grepai
+values-dev.yaml
+values-dev.yml
+values-*-dev.yaml

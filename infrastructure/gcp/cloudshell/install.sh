@@ -14,6 +14,12 @@
 
 set -euo pipefail
 
+# Per-run temp directory + cleanup. Created lazily on first reference; we
+# initialise it here so any function in the script can use ${INSTALL_TMPDIR}
+# and rely on EXIT trap cleanup without each function maintaining its own.
+INSTALL_TMPDIR="$(mktemp -d -t platforma-im-XXXX)"
+trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
+
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
@@ -521,103 +527,117 @@ ensure_im_service_account() {
 # Submit / update IM deployment
 # -----------------------------------------------------------------------------
 
-# Builds a YAML file at $1 with all TF inputs. Uses YAML (not the simpler
-# inline --input-values=key=value form) because data_libraries is a list of
-# objects and ldap_search_rules is a list of strings — neither is expressible
-# in the comma-separated inline format.
-build_inputs_file() {
+# Builds a JSON file at $1 with all TF inputs. We embed this in the IM source
+# bundle as inputs.auto.tfvars.json — Terraform auto-loads any *.auto.tfvars.json
+# in its working directory, so the user-supplied values become the deployment
+# inputs without ever passing through gcloud's --input-values flag (which has
+# no way to express list/object types like data_libraries or ldap_search_rules).
+build_tfvars_json() {
   local out="$1"
-  : > "${out}"
 
-  cat >> "${out}" <<EOF
-project_id: "${PROJECT_ID}"
-region: "${REGION}"
-zone_suffix: "${ZONE_SUFFIX}"
-cluster_name: "${DEPLOYMENT_NAME}-cluster"
-deployment_size: "${DEPLOYMENT_SIZE}"
-ingress_enabled: true
-domain_name: "${DOMAIN_NAME}"
-dns_zone_name: "${DNS_ZONE_NAME}"
-contact_email: "${CONTACT_EMAIL}"
-license_key: "${LICENSE_KEY}"
-enable_demo_data_library: ${ENABLE_DEMO}
-auth_method: "${AUTH_METHOD}"
-EOF
+  # Base scalars — start a JSON document via jq.
+  local doc
+  doc="$(jq -n \
+    --arg     project_id     "${PROJECT_ID}" \
+    --arg     region         "${REGION}" \
+    --arg     zone_suffix    "${ZONE_SUFFIX}" \
+    --arg     cluster_name   "${DEPLOYMENT_NAME}-cluster" \
+    --arg     deployment_size "${DEPLOYMENT_SIZE}" \
+    --argjson ingress_enabled true \
+    --arg     domain_name    "${DOMAIN_NAME}" \
+    --arg     dns_zone_name  "${DNS_ZONE_NAME}" \
+    --arg     contact_email  "${CONTACT_EMAIL}" \
+    --arg     license_key    "${LICENSE_KEY}" \
+    --argjson enable_demo_data_library "${ENABLE_DEMO}" \
+    --arg     auth_method    "${AUTH_METHOD}" \
+    '{
+       project_id:               $project_id,
+       region:                   $region,
+       zone_suffix:              $zone_suffix,
+       cluster_name:             $cluster_name,
+       deployment_size:          $deployment_size,
+       ingress_enabled:          $ingress_enabled,
+       domain_name:              $domain_name,
+       dns_zone_name:            $dns_zone_name,
+       contact_email:            $contact_email,
+       license_key:              $license_key,
+       enable_demo_data_library: $enable_demo_data_library,
+       auth_method:              $auth_method
+     }')"
 
-  # Auto-detected quota preference collisions (and any user-supplied additions).
+  # Auth: htpasswd-content path
+  if [[ "${AUTH_METHOD}" == "htpasswd" && -n "${HTPASSWD_CONTENT:-}" ]]; then
+    doc="$(echo "${doc}" | jq --arg v "${HTPASSWD_CONTENT}" '. + {htpasswd_content: $v}')"
+  fi
+
+  # Auth: LDAP path
+  if [[ "${AUTH_METHOD}" == "ldap" ]]; then
+    doc="$(echo "${doc}" | jq \
+      --arg     ldap_server      "${LDAP_SERVER}" \
+      --argjson ldap_start_tls   "${LDAP_START_TLS}" \
+      --arg     ldap_bind_dn     "${LDAP_BIND_DN}" \
+      --arg     ldap_search_user "${LDAP_SEARCH_USER:-}" \
+      '. + {
+         ldap_server:      $ldap_server,
+         ldap_start_tls:   $ldap_start_tls,
+         ldap_bind_dn:     $ldap_bind_dn,
+         ldap_search_user: $ldap_search_user
+       }')"
+    if [[ -n "${LDAP_SEARCH_PASSWORD:-}" ]]; then
+      doc="$(echo "${doc}" | jq --arg v "${LDAP_SEARCH_PASSWORD}" '. + {ldap_search_password: $v}')"
+    fi
+    if [[ -n "${LDAP_SEARCH_RULES:-}" ]]; then
+      local rules_json
+      rules_json="$(printf '%s' "${LDAP_SEARCH_RULES}" | tr ';' '\n' | awk 'NF' | jq -R . | jq -s .)"
+      doc="$(echo "${doc}" | jq --argjson v "${rules_json}" '. + {ldap_search_rules: $v}')"
+    fi
+  fi
+
+  # skip_quota_requests — auto-detected collisions + any user additions.
   local skip_list=("${SKIP_QUOTA_REQUESTS_AUTO[@]:-}")
   if [[ -n "${SKIP_QUOTA_REQUESTS:-}" ]]; then
     local IFS=','
     for k in ${SKIP_QUOTA_REQUESTS}; do skip_list+=("${k}"); done
   fi
   if (( ${#skip_list[@]} > 0 )); then
-    # Dedupe + drop empty entries.
     local unique; unique="$(printf '%s\n' "${skip_list[@]}" | awk 'NF && !seen[$0]++')"
     if [[ -n "${unique}" ]]; then
-      echo "skip_quota_requests:" >> "${out}"
-      while IFS= read -r k; do
-        printf '  - %s\n' "$(yaml_quote "${k}")" >> "${out}"
-      done <<< "${unique}"
+      local skip_json; skip_json="$(printf '%s' "${unique}" | jq -R . | jq -s .)"
+      doc="$(echo "${doc}" | jq --argjson v "${skip_json}" '. + {skip_quota_requests: $v}')"
     fi
   fi
 
-  # Auth — emit only the path that's relevant.
-  if [[ "${AUTH_METHOD}" == "htpasswd" && -n "${HTPASSWD_CONTENT:-}" ]]; then
-    # Use printf so newlines/specials inside HTPASSWD_CONTENT survive.
-    printf 'htpasswd_content: %s\n' "$(yaml_quote "${HTPASSWD_CONTENT}")" >> "${out}"
-  fi
-  if [[ "${AUTH_METHOD}" == "ldap" ]]; then
-    cat >> "${out}" <<EOF
-ldap_server: "${LDAP_SERVER}"
-ldap_start_tls: ${LDAP_START_TLS}
-ldap_bind_dn: "${LDAP_BIND_DN}"
-ldap_search_user: "${LDAP_SEARCH_USER:-}"
-EOF
-    if [[ -n "${LDAP_SEARCH_PASSWORD:-}" ]]; then
-      printf 'ldap_search_password: %s\n' "$(yaml_quote "${LDAP_SEARCH_PASSWORD}")" >> "${out}"
-    fi
-    # Semicolon-separated rules → YAML list (commas appear inside DNs so they
-    # can't be the separator).
-    if [[ -n "${LDAP_SEARCH_RULES:-}" ]]; then
-      echo "ldap_search_rules:" >> "${out}"
-      local IFS=';'
-      for rule in ${LDAP_SEARCH_RULES}; do
-        printf '  - %s\n' "$(yaml_quote "${rule}")" >> "${out}"
-      done
-    fi
-  fi
-
-  # Data libraries — preserve a user-supplied YAML block verbatim, otherwise
-  # synthesize from the per-library prompts.
-  if [[ -n "${DATA_LIBRARIES_YAML:-}" ]]; then
-    printf 'data_libraries:\n%s\n' "${DATA_LIBRARIES_YAML}" >> "${out}"
+  # Data libraries — power-user JSON env var wins, else build from prompts.
+  if [[ -n "${DATA_LIBRARIES_JSON:-}" ]]; then
+    doc="$(echo "${doc}" | jq --argjson v "${DATA_LIBRARIES_JSON}" '. + {data_libraries: $v}')"
   elif (( ${#DATA_LIBRARIES_BUILT[@]} > 0 )); then
-    echo "data_libraries:" >> "${out}"
+    local libs="[]"
     local i
     for i in "${DATA_LIBRARIES_BUILT[@]}"; do
-      local name="LIB_${i}_NAME"
-      local type="LIB_${i}_TYPE"
-      local bucket="LIB_${i}_BUCKET"
-      local prefix="LIB_${i}_PREFIX"
-      local region="LIB_${i}_REGION"
-      local key="LIB_${i}_ACCESS_KEY"
-      local secret="LIB_${i}_SECRET_KEY"
+      local name="LIB_${i}_NAME"   type="LIB_${i}_TYPE"
+      local bucket="LIB_${i}_BUCKET" prefix="LIB_${i}_PREFIX"
+      local region="LIB_${i}_REGION" key="LIB_${i}_ACCESS_KEY" secret="LIB_${i}_SECRET_KEY"
 
-      printf '  - name: %s\n'   "$(yaml_quote "${!name}")"   >> "${out}"
-      printf '    type: %s\n'   "$(yaml_quote "${!type}")"   >> "${out}"
-      printf '    bucket: %s\n' "$(yaml_quote "${!bucket}")" >> "${out}"
-      [[ -n "${!prefix}"   ]] && printf '    prefix: %s\n'     "$(yaml_quote "${!prefix}")" >> "${out}" || true
-      [[ -n "${!region:-}" ]] && printf '    region: %s\n'     "$(yaml_quote "${!region}")" >> "${out}" || true
-      [[ -n "${!key:-}"    ]] && printf '    access_key: %s\n' "$(yaml_quote "${!key}")"    >> "${out}" || true
-      [[ -n "${!secret:-}" ]] && printf '    secret_key: %s\n' "$(yaml_quote "${!secret}")" >> "${out}" || true
+      local lib
+      lib="$(jq -n \
+        --arg name       "${!name}" \
+        --arg type       "${!type}" \
+        --arg bucket     "${!bucket}" \
+        --arg prefix     "${!prefix:-}" \
+        --arg region     "${!region:-}" \
+        --arg access_key "${!key:-}" \
+        --arg secret_key "${!secret:-}" \
+        '{name: $name, type: $type, bucket: $bucket}
+         + (if $prefix     != "" then {prefix:     $prefix}     else {} end)
+         + (if $region     != "" then {region:     $region}     else {} end)
+         + (if $access_key != "" then {access_key: $access_key} else {} end)
+         + (if $secret_key != "" then {secret_key: $secret_key} else {} end)')"
+      libs="$(echo "${libs}" | jq --argjson lib "${lib}" '. + [$lib]')"
     done
+    doc="$(echo "${doc}" | jq --argjson v "${libs}" '. + {data_libraries: $v}')"
   fi
-  return 0
-}
 
-# YAML-quote a string by single-quoting and escaping single quotes.
-yaml_quote() {
-  printf "'%s'" "${1//\'/\'\'}"
+  echo "${doc}" > "${out}"
 }
 
 submit_deployment() {
@@ -625,13 +645,21 @@ submit_deployment() {
   info "Bundle: ${IM_BUNDLE_URL}"
 
   local deployment_path="projects/${PROJECT_ID}/locations/${IM_LOCATION}/deployments/${DEPLOYMENT_NAME}"
-  local inputs_file; inputs_file="$(mktemp -t platforma-im-inputs-XXXX.yaml)"
-  trap 'rm -f "${inputs_file}"' EXIT
-  build_inputs_file "${inputs_file}"
+  local work_dir="${INSTALL_TMPDIR}/im-bundle"
+  mkdir -p "${work_dir}"
 
-  info "Inputs file: ${inputs_file}"
+  info "Downloading bundle…"
+  gcloud storage cp "${IM_BUNDLE_URL}" "${INSTALL_TMPDIR}/bundle.tar.gz" --quiet
+  tar -xzf "${INSTALL_TMPDIR}/bundle.tar.gz" -C "${work_dir}"
+
+  # Embed user-supplied inputs as a tfvars file the bundle picks up
+  # automatically (Terraform auto-loads any *.auto.tfvars.json).
+  build_tfvars_json "${work_dir}/inputs.auto.tfvars.json"
+
   info "Inputs (with secrets redacted):"
-  sed -E 's/(license_key|.*password|.*secret_key|htpasswd_content): .*/\1: "***"/' "${inputs_file}" | sed 's/^/    /'
+  jq 'to_entries
+      | map(if (.key | test("license_key|password|secret_key|htpasswd_content")) then .value = "***" else . end)
+      | from_entries' "${work_dir}/inputs.auto.tfvars.json" | sed 's/^/    /'
 
   if gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
        --location="${IM_LOCATION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
@@ -641,9 +669,8 @@ submit_deployment() {
   fi
 
   gcloud infra-manager deployments apply "${deployment_path}" \
-    --gcs-source="${IM_BUNDLE_URL}" \
+    --local-source="${work_dir}" \
     --service-account="projects/${PROJECT_ID}/serviceAccounts/${IM_SA_EMAIL}" \
-    --input-values-file="${inputs_file}" \
     --quiet
 
   echo

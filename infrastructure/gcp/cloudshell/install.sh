@@ -141,11 +141,68 @@ collect_inputs() {
   pick_dns_zone_and_domain
 
   prompt_var CONTACT_EMAIL   "Email for quota/notification mail"                   "$(gcloud config get-value account 2>/dev/null || echo '')"
-  prompt_secret_var LICENSE_KEY "Platforma license key (E-…)"
+  prompt_and_validate_license
   echo
 
   collect_auth_inputs
   collect_data_libraries
+}
+
+# -----------------------------------------------------------------------------
+# License key — visible input (so the user can spot typos when pasting) and
+# on-the-fly validation against MiLaboratories' licensing API. Same endpoint
+# the Platforma server itself hits at runtime, so a key that passes here is
+# effectively certain to work in the cluster.
+# -----------------------------------------------------------------------------
+
+LICENSING_API_URL="${LICENSING_API_URL:-https://licensing-api.milaboratories.com/refresh-token}"
+
+prompt_and_validate_license() {
+  if [[ -n "${LICENSE_KEY:-}" ]]; then
+    info "LICENSE_KEY from env, validating…"
+    if validate_license "${LICENSE_KEY}"; then
+      green "  ✓ License OK"
+      return 0
+    fi
+    red "License from env failed validation."
+    LICENSE_KEY=""
+  fi
+
+  while :; do
+    local input
+    read -r -p "  Platforma license key (E-…) — input visible so you can spot typos: " input
+    input="${input// /}"  # strip stray whitespace from paste
+    if [[ -z "${input}" ]]; then
+      red "  License key is required."
+      continue
+    fi
+    if validate_license "${input}"; then
+      LICENSE_KEY="${input}"
+      green "  ✓ License OK"
+      return 0
+    fi
+    red "  License validation failed — try again or Ctrl-C to abort."
+  done
+}
+
+# 0 = valid, 1 = invalid (with error printed)
+validate_license() {
+  local key="$1"
+  local body; body="$(mktemp)"
+  local code
+  code="$(curl -s -o "${body}" -w '%{http_code}' --max-time 15 \
+    "${LICENSING_API_URL}?code=$(printf '%s' "${key}" | jq -sRr @uri)")"
+  if [[ "${code}" == "200" ]]; then
+    rm -f "${body}"
+    return 0
+  fi
+  red "    HTTP ${code} from ${LICENSING_API_URL}"
+  if command -v jq >/dev/null 2>&1; then
+    local msg; msg="$(jq -r '.message // .error // .errors // empty' "${body}" 2>/dev/null | head -3)"
+    [[ -n "${msg}" ]] && printf '    %s\n' "${msg}" | sed 's/^/    /'
+  fi
+  rm -f "${body}"
+  return 1
 }
 
 # -----------------------------------------------------------------------------

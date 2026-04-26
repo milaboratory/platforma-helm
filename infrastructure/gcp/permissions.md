@@ -33,7 +33,7 @@ granting it the ability to:
 | Role | Why needed |
 |---|---|
 | `roles/serviceusage.serviceUsageAdmin` | Enable GCP APIs (`compute`, `container`, `file`, etc.) |
-| `roles/compute.networkAdmin` | Create VPC, subnet, static IPs, service-networking peering |
+| `roles/compute.networkAdmin` | Create VPC, subnet, static IPs, service-networking peering, Cloud Router + Cloud NAT (private-node egress) |
 | `roles/container.admin` | Create the GKE cluster + node pools, full kubectl/Helm access via OIDC |
 | `roles/file.editor` | Create Filestore instance |
 | `roles/storage.admin` | Create primary GCS bucket + grant runtime SAs `storage.objectAdmin` on it |

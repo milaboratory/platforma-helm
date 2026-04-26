@@ -60,6 +60,13 @@ locals {
       preferred     = local.preset.filestore_zonal_quota_gb
       justification = "Filestore Zonal/Regional/Enterprise SSD. Default quota is 0 on fresh projects; required for the recommended ZONAL tier workspace storage."
     }
+    in_use_addresses_region = {
+      service       = "compute.googleapis.com"
+      quota_id      = "IN-USE-ADDRESSES-per-project-region"
+      dimensions    = { region = var.region }
+      preferred     = local.preset.in_use_addresses_quota
+      justification = "In-use external IPs per region. With private nodes + Cloud NAT, only NAT IPs (1-2) and the GKE Gateway static IP consume this quota. Default is 8; we request modest headroom."
+    }
   }
 }
 

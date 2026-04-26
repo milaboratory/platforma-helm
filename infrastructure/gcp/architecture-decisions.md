@@ -508,6 +508,44 @@ the demo library to `type=gcs`.
 
 ---
 
+## 22. Private nodes + Cloud NAT for egress
+
+**Decision.** GKE worker nodes are **private** (no external IPs). Egress to
+the public internet (container registries, cross-cloud demo data, external
+LDAP, licensing API) routes through a regional **Cloud NAT** attached to a
+**Cloud Router**. Google APIs (Storage, IAM, Logging, Monitoring) bypass NAT
+via **Private Google Access** on the nodes subnet. The control plane endpoint
+stays public, so kubectl from any machine still works without a bastion or
+IAP tunnel.
+
+**Why.** With multi-pool batch (5 batch shapes + UI + system, up to ~30
+nodes at xlarge), the previous public-nodes design consumed 1
+`IN_USE_ADDRESSES` quota slot per node — far above the default 8. Fresh-
+project installs hit the limit before scale-up could complete, with
+confusing error messages from Cloud Autoscaler. Private nodes drop that
+quota use to 2-3 slots total (1 NAT IP + 1 GKE Gateway static IP, plus
+maybe a NAT IP under heavy egress). Better security too: nodes not
+directly reachable from the internet.
+
+**Trade-offs.**
+
+- Cloud NAT adds ~$0.045/h base + $0.045/GB processed. For typical
+  bioinformatics workloads (mostly egress to GCS via Private Google Access,
+  which bypasses NAT) the per-GB cost is negligible. Container-image pulls
+  on cluster scale-up are the main NAT-billed traffic — bounded.
+- One more resource type to maintain (Router + NAT). Stable APIs, low churn.
+- `master_ipv4_cidr_block` (default `10.10.0.0/28`) must not overlap with
+  any peered networks. Configurable via variable for unusual setups.
+
+**Revisit.** If GCP introduces "shared NAT" or per-cluster NAT primitives
+that simplify the topology, migrate. If we ever need static egress IPs
+(e.g. customer firewalls whitelisting outbound traffic), switch
+`nat_ip_allocate_option` from `AUTO_ONLY` to a reserved IP pool.
+
+**See:** ADR 4 (multi-pool batch — drove the IN_USE_ADDRESSES pressure).
+
+---
+
 ## How to add a new ADR
 
 1. Append a new section at the bottom — do not renumber existing ones.

@@ -51,7 +51,36 @@ resource "google_container_cluster" "primary" {
     autoscaling_profile = "OPTIMIZE_UTILIZATION"
   }
 
-  depends_on = [google_project_service.enabled]
+  # Private nodes (no external IPs); public control plane endpoint kept so
+  # kubectl from anywhere works without a bastion / IAP tunnel.
+  #
+  # Why private nodes:
+  #   - Each public-IP node consumes 1 IN_USE_ADDRESSES quota slot. With 30+
+  #     possible nodes (5 batch pools + UI + system), the default 8-IP regional
+  #     quota was a constant blocker on first installs.
+  #   - Better security posture: nodes not directly reachable from the
+  #     internet, only through the cluster's load balancers.
+  #
+  # Egress is via Cloud NAT in network.tf. Google APIs (Storage, IAM, Logging,
+  # Monitoring) go through Private Google Access on the nodes subnet — faster
+  # and avoids NAT processing fees on the high-volume GCS traffic.
+  #
+  # master_ipv4_cidr_block is the /28 range used for the master's PRIVATE
+  # endpoint. Even with public endpoint enabled (enable_private_endpoint = false),
+  # GCP requires this CIDR to be reserved. Configurable via var.master_ipv4_cidr_block
+  # if it conflicts with existing peerings.
+  private_cluster_config {
+    enable_private_nodes    = true
+    enable_private_endpoint = false # public control plane — kubectl from anywhere
+    master_ipv4_cidr_block  = var.master_ipv4_cidr_block
+  }
+
+  depends_on = [
+    google_project_service.enabled,
+    # NAT must exist before the cluster comes up — otherwise the first node
+    # pulls (system pods) hang trying to reach the internet from internal IPs.
+    google_compute_router_nat.primary,
+  ]
 }
 
 resource "google_container_node_pool" "system" {

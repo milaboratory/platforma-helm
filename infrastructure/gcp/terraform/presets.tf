@@ -91,6 +91,7 @@ locals {
       pd_ssd_quota_gb          = 2048
       filestore_zonal_quota_gb = 1024
       instances_quota          = 32
+      in_use_addresses_quota   = 16
     }
     medium = {
       ui_max_nodes = 8
@@ -107,6 +108,7 @@ locals {
       pd_ssd_quota_gb          = 4096
       filestore_zonal_quota_gb = 2048
       instances_quota          = 48
+      in_use_addresses_quota   = 16
     }
     large = {
       ui_max_nodes = 16
@@ -123,6 +125,7 @@ locals {
       pd_ssd_quota_gb          = 8192
       filestore_zonal_quota_gb = 4096
       instances_quota          = 64
+      in_use_addresses_quota   = 24
     }
     xlarge = {
       # Heavy production. Quota requests at this size typically need human
@@ -141,6 +144,7 @@ locals {
       pd_ssd_quota_gb          = 16384
       filestore_zonal_quota_gb = 8192
       instances_quota          = 128
+      in_use_addresses_quota   = 32
     }
   }
 

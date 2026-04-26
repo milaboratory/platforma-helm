@@ -66,6 +66,17 @@ variable "subnet_services_cidr" {
   default     = "10.2.0.0/20"
 }
 
+variable "master_ipv4_cidr_block" {
+  type        = string
+  description = "Reserved /28 CIDR for the GKE master's private endpoint. Must not overlap with subnet_nodes_cidr / subnet_pods_cidr / subnet_services_cidr or any peered network. Required by GCP even when enable_private_endpoint = false (public control plane)."
+  default     = "10.10.0.0/28"
+
+  validation {
+    condition     = can(regex("/28$", var.master_ipv4_cidr_block))
+    error_message = "master_ipv4_cidr_block must be a /28 CIDR (GCP requires exactly /28 for the master endpoint)."
+  }
+}
+
 variable "system_pool_machine_type" {
   type        = string
   description = "Machine type for system node pool (Platforma server, Kueue, controllers)."

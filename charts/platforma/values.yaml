@@ -392,6 +392,22 @@ app:
   # -- Annotations added to the main Service resource
   serviceAnnotations: {}
 
+  # -- Per-port appProtocol declarations on the main Service.
+  # Map of port name → appProtocol value (Kubernetes Service port spec).
+  # Tells cluster ingress controllers (GKE Gateway, AWS Load Balancer Controller
+  # ≥v2.6, etc.) what protocol the backend speaks so they configure the load
+  # balancer correctly. Only set if a specific port needs an explicit protocol —
+  # most setups can leave empty.
+  # Common values:
+  #   kubernetes.io/h2c — HTTP/2 cleartext (REQUIRED for gRPC backends behind
+  #                       GKE Gateway; AWS ALB picks this up automatically with
+  #                       Load Balancer Controller v2.6+).
+  #   kubernetes.io/ws  — WebSocket
+  # See: https://kubernetes.io/docs/concepts/services-networking/service/#application-protocol
+  service:
+    appProtocols: {}
+    #  grpc: "kubernetes.io/h2c"
+
   # -- Pod resources
   resources:
     requests:

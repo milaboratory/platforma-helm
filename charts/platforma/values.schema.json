@@ -712,6 +712,17 @@
         "serviceAnnotations": {
           "type": "object"
         },
+        "service": {
+          "type": "object",
+          "properties": {
+            "appProtocols": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
         "env": {
           "type": "object",
           "properties": {

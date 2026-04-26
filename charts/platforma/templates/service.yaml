@@ -19,10 +19,16 @@ spec:
       port: 6345
       targetPort: grpc
       protocol: TCP
+      {{- with (index .Values.app.service.appProtocols "grpc") }}
+      appProtocol: {{ . | quote }}
+      {{- end }}
     - name: http
       port: 6347
       targetPort: http
       protocol: TCP
+      {{- with (index .Values.app.service.appProtocols "http") }}
+      appProtocol: {{ . | quote }}
+      {{- end }}
   selector:
     {{- include "platforma.selectorLabels" . | nindent 4 }}
 ---

@@ -512,20 +512,31 @@ verify_ldap_config() {
   green "  ✓ Syntax OK"
 
   # ---- Tier 2: TCP reachability from this machine (warn only) ------------
-  # Use nc with timeout — flag form (-z -w 5) is identical on BSD nc (macOS)
-  # and Cloud Shell's nc, so this is the most portable probe. `timeout` from
-  # coreutils is missing on macOS by default; bash builtin /dev/tcp can hang
-  # on slow nets without it. nc handles timeout itself.
-  local tcp_ok=1
-  if command -v nc &>/dev/null && nc -z -w 5 "${host}" "${port}" &>/dev/null; then
-    green "  ✓ TCP ${host}:${port} reachable from this machine"
+  # Cloud Shell ships without nc; macOS has BSD nc; Linux distros often have
+  # GNU netcat. Try a chain: python3 (universal on Cloud Shell + modern macOS)
+  # → nc (if present) → bash /dev/tcp builtin (no clean timeout, but fast-fails
+  # on most networks). At least one will work everywhere this script runs.
+  local tcp_ok=1 tcp_method=""
+  if command -v python3 &>/dev/null && python3 -c "
+import socket, sys
+try:
+    socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5).close()
+except Exception:
+    sys.exit(1)
+" "${host}" "${port}" &>/dev/null; then
+    tcp_method="python3"
+  elif command -v nc &>/dev/null && nc -z -w 5 "${host}" "${port}" &>/dev/null; then
+    tcp_method="nc"
+  elif (bash -c "exec 3<>/dev/tcp/${host}/${port}") &>/dev/null; then
+    tcp_method="bash"
   else
     tcp_ok=0
-    if command -v nc &>/dev/null; then
-      warn "TCP ${host}:${port} unreachable from this machine."
-    else
-      warn "nc not found — skipping TCP reachability check."
-    fi
+  fi
+
+  if [[ ${tcp_ok} -eq 1 ]]; then
+    green "  ✓ TCP ${host}:${port} reachable from this machine (${tcp_method})"
+  else
+    warn "TCP ${host}:${port} unreachable from this machine."
     warn "  This may be expected — Cloud Shell sits behind GCP NAT and often can't"
     warn "  reach corporate LDAP. What matters is reachability from the GKE cluster."
     warn "  If your LDAP is on a private network, ensure the cluster has VPC peering"

@@ -71,7 +71,13 @@ resource "google_service_networking_connection" "psa" {
 # for headroom).
 # -----------------------------------------------------------------------------
 
+# Cloud Router + NAT are only useful when nodes are private (no external IPs).
+# Public-node deployments (var.enable_private_nodes = false, mostly legacy
+# upgrades) skip both — public nodes egress directly through their own
+# external IPs and don't need NAT.
 resource "google_compute_router" "primary" {
+  count = var.enable_private_nodes ? 1 : 0
+
   name    = "${var.cluster_name}-router"
   project = var.project_id
   region  = var.region
@@ -81,10 +87,12 @@ resource "google_compute_router" "primary" {
 }
 
 resource "google_compute_router_nat" "primary" {
+  count = var.enable_private_nodes ? 1 : 0
+
   name    = "${var.cluster_name}-nat"
   project = var.project_id
   region  = var.region
-  router  = google_compute_router.primary.name
+  router  = google_compute_router.primary[0].name
 
   # AUTO_ONLY: Google manages NAT IPs. We don't need static IPs (no
   # downstream service whitelists outbound traffic from these nodes).

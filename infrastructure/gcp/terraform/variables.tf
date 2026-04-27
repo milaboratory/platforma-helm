@@ -77,6 +77,27 @@ variable "master_ipv4_cidr_block" {
   }
 }
 
+variable "enable_private_nodes" {
+  type        = bool
+  description = <<-EOT
+    Whether GKE worker nodes have only internal IPs (true) or get external
+    IPs (false). Default true — production-recommended; saves IN_USE_ADDRESSES
+    quota and improves security posture. Egress for private nodes routes
+    through Cloud NAT (created automatically when this is true).
+
+    Set to false ONLY for one specific case: existing public-nodes deployments
+    that are upgrading to a chart version with this flag, where flipping it
+    would require cluster recreation. private_cluster_config.enable_private_nodes
+    is a ForceNew field — TF will recreate the entire cluster, destroying all
+    workspace data along the way. Until you're ready for a destroy+recreate
+    migration cycle, keep this false on existing deployments and migrate later
+    via a deliberate plan.
+
+    For fresh installs: leave the default (true).
+  EOT
+  default     = true
+}
+
 variable "system_pool_machine_type" {
   type        = string
   description = "Machine type for system node pool (Platforma server, Kueue, controllers)."

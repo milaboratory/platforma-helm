@@ -54,6 +54,11 @@ resource "google_container_cluster" "primary" {
   # Private nodes (no external IPs); public control plane endpoint kept so
   # kubectl from anywhere works without a bastion / IAP tunnel.
   #
+  # Gated on var.enable_private_nodes (default true) so existing public-nodes
+  # deployments can upgrade without forcing cluster recreation. Flipping the
+  # flag is a destroy+recreate operation; new deployments get private-by-
+  # default.
+  #
   # Why private nodes:
   #   - Each public-IP node consumes 1 IN_USE_ADDRESSES quota slot. With 30+
   #     possible nodes (5 batch pools + UI + system), the default 8-IP regional
@@ -61,24 +66,30 @@ resource "google_container_cluster" "primary" {
   #   - Better security posture: nodes not directly reachable from the
   #     internet, only through the cluster's load balancers.
   #
-  # Egress is via Cloud NAT in network.tf. Google APIs (Storage, IAM, Logging,
-  # Monitoring) go through Private Google Access on the nodes subnet — faster
-  # and avoids NAT processing fees on the high-volume GCS traffic.
+  # Egress is via Cloud NAT in network.tf (also gated on this variable).
+  # Google APIs (Storage, IAM, Logging, Monitoring) go through Private Google
+  # Access on the nodes subnet — faster and avoids NAT processing fees on the
+  # high-volume GCS traffic.
   #
   # master_ipv4_cidr_block is the /28 range used for the master's PRIVATE
   # endpoint. Even with public endpoint enabled (enable_private_endpoint = false),
   # GCP requires this CIDR to be reserved. Configurable via var.master_ipv4_cidr_block
   # if it conflicts with existing peerings.
-  private_cluster_config {
-    enable_private_nodes    = true
-    enable_private_endpoint = false # public control plane — kubectl from anywhere
-    master_ipv4_cidr_block  = var.master_ipv4_cidr_block
+  dynamic "private_cluster_config" {
+    for_each = var.enable_private_nodes ? [1] : []
+    content {
+      enable_private_nodes    = true
+      enable_private_endpoint = false # public control plane — kubectl from anywhere
+      master_ipv4_cidr_block  = var.master_ipv4_cidr_block
+    }
   }
 
   depends_on = [
     google_project_service.enabled,
     # NAT must exist before the cluster comes up — otherwise the first node
     # pulls (system pods) hang trying to reach the internet from internal IPs.
+    # Resource has count = enable_private_nodes ? 1 : 0; depends_on accepts
+    # the whole resource address and resolves the empty case as a no-op.
     google_compute_router_nat.primary,
   ]
 }

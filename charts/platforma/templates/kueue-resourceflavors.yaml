@@ -43,4 +43,20 @@ spec:
   {{- end }}
   {{- else }} {}
   {{- end }}
+{{- if .Values.kueue.pools.gpu.enabled }}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: {{ include "platforma.kueue.clusterResourceName" . }}-gpu-flavor
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+spec:
+  {{- /* GPU flavor only sets tolerations — nodeAffinity on platforma.bio/gpu-memory-gib is set by the job template */}}
+  {{- if .Values.kueue.pools.gpu.tolerations }}
+  tolerations:
+    {{- toYaml .Values.kueue.pools.gpu.tolerations | nindent 4 }}
+  {{- else }} {}
+  {{- end }}
+{{- end }}
 {{- end }}

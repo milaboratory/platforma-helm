@@ -60,6 +60,28 @@ spec:
     reclaimWithinCohort: Never   # Jobs not retryable, never preempt
     withinClusterQueue: Never    # No preemption within batch queue
   resourceGroups:
+{{- if .Values.kueue.pools.gpu.enabled }}
+    - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
+      flavors:
+        - name: {{ include "platforma.kueue.clusterResourceName" . }}-gpu-flavor
+          resources:
+            - name: cpu
+              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.cpu | quote }}
+            - name: memory
+              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.memory | quote }}
+            - name: "nvidia.com/gpu"
+              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.gpu | quote }}
+        - name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-flavor
+          resources:
+            - name: cpu
+              nominalQuota: {{ .Values.kueue.dedicated.resources.batch.cpu | quote }}
+              borrowingLimit: {{ .Values.kueue.dedicated.resources.ui.cpu | quote }}
+            - name: memory
+              nominalQuota: {{ .Values.kueue.dedicated.resources.batch.memory | quote }}
+              borrowingLimit: {{ .Values.kueue.dedicated.resources.ui.memory | quote }}
+            - name: "nvidia.com/gpu"
+              nominalQuota: "0"
+{{- else }}
     - coveredResources: ["cpu", "memory"]
       flavors:
         - name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-flavor
@@ -71,4 +93,5 @@ spec:
             - name: memory
               nominalQuota: {{ .Values.kueue.dedicated.resources.batch.memory | quote }}
               borrowingLimit: {{ .Values.kueue.dedicated.resources.ui.memory | quote }}
+{{- end }}
 {{- end }}

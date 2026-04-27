@@ -304,6 +304,17 @@ kueue:
         #   value: batch
         #   effect: NoSchedule
 
+    # -- GPU node pools
+    # Routes GPU jobs via nodeAffinity on platforma.bio/gpu-memory-gib label.
+    # K8s scheduler + Cluster Autoscaler pick the cheapest node with enough VRAM.
+    # One job per GPU node (nvidia.com/gpu: 1 enforces exclusive access).
+    gpu:
+      enabled: true
+      tolerations:
+        - key: nvidia.com/gpu
+          value: present
+          effect: NoSchedule
+
   # -- Prevents resource fragmentation by checking node-level capacity before
   # admitting batch jobs. Requires ProvisioningRequest CRD and Cluster Autoscaler.
   # Disable for clusters without Cluster Autoscaler.
@@ -338,6 +349,13 @@ kueue:
       batch:
         cpu: 256
         memory: 1024Gi
+      # -- GPU quota (only used when kueue.pools.gpu.enabled=true)
+      # One job per GPU node — nvidia.com/gpu: 1 enforces exclusive access.
+      # gpu count = max concurrent GPU jobs across all tiers.
+      gpu:
+        gpu: 8
+        cpu: 32
+        memory: 128Gi
 
   # -- Shared mode configuration
   # Point at existing Kueue resources managed outside this chart.

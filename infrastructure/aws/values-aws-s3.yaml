@@ -84,6 +84,14 @@ kueue:
         - key: dedicated
           value: batch
           effect: NoSchedule
+    # GPU node pools — routes jobs via nodeAffinity on platforma.bio/gpu-memory-gib label.
+    # K8s scheduler + Cluster Autoscaler pick the cheapest node with enough VRAM.
+    gpu:
+      enabled: true
+      tolerations:
+        - key: nvidia.com/gpu
+          value: present
+          effect: NoSchedule
   dedicated:
     # Max simultaneous resources per queue. Adjust based on your node group scaling limits.
     # Defaults match the CloudFormation "small" deployment size.
@@ -94,6 +102,10 @@ kueue:
       batch:
         cpu: 126
         memory: 500Gi
+      gpu:
+        gpu: 8
+        cpu: 32
+        memory: 128Gi
 
 # Platforma server runs on system nodes (not on compute nodes used for jobs).
 app:

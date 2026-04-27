@@ -79,6 +79,34 @@ data:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
                   <<- else >>
+                  {{- if .Values.kueue.pools.gpu.enabled }}
+                  <<- if and .Resources .Resources.HasGPU >>
+                  {{- /* GPU job: nodeAffinity routes to GPU nodes by VRAM.
+                         Required Gt: hard minimum — node must have enough VRAM.
+                         Preferred Lt: soft maximum — prefer smaller nodes to avoid waste,
+                         but allow larger ones if nothing smaller is available. */}}
+                  affinity:
+                    nodeAffinity:
+                      requiredDuringSchedulingIgnoredDuringExecution:
+                        nodeSelectorTerms:
+                          - matchExpressions:
+                              - key: platforma.bio/gpu-memory-gib
+                                operator: Gt
+                                values:
+                                  - "<< .Resources.GPUMemoryGiBGt >>"
+                      preferredDuringSchedulingIgnoredDuringExecution:
+                        - weight: 100
+                          preference:
+                            matchExpressions:
+                              - key: platforma.bio/gpu-memory-gib
+                                operator: Lt
+                                values:
+                                  - "<< .Resources.GPUMemoryGiBLt >>"
+                  {{- with .Values.kueue.pools.gpu.tolerations }}
+                  tolerations:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  <<- else >>
                   {{- with .Values.kueue.pools.batch.nodeSelector }}
                   nodeSelector:
                     {{- toYaml . | nindent 20 }}
@@ -86,6 +114,17 @@ data:
                   {{- with .Values.kueue.pools.batch.tolerations }}
                   tolerations:
                     {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  <<- end >>
+                  {{- else }}
+                  {{- with .Values.kueue.pools.batch.nodeSelector }}
+                  nodeSelector:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  {{- with .Values.kueue.pools.batch.tolerations }}
+                  tolerations:
+                    {{- toYaml . | nindent 20 }}
+                  {{- end }}
                   {{- end }}
                   <<- end >>
                   containers:
@@ -115,6 +154,16 @@ data:
                           value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .CompletionMarkerRelativePath >>
                         <<- end >>
                         <<- end >>
+                        {{- if .Values.kueue.pools.gpu.enabled }}
+                        <<- if and .Resources .Resources.HasGPU >>
+                        - name: NVIDIA_VISIBLE_DEVICES
+                          value: "all"
+                        - name: NVIDIA_DRIVER_CAPABILITIES
+                          value: "compute,utility"
+                        - name: PLATFORMA_GPU_MEMORY
+                          value: "<< .Resources.GPUMemory >>"
+                        <<- end >>
+                        {{- end }}
                         <<- range .Env >>
                         - name: << .Name >>
                           <<- if .SecretKey >>
@@ -145,6 +194,11 @@ data:
                           <<- if .Resources.Memory >>
                           memory: "<< .Resources.Memory >>"
                           <<- end >>
+                          {{- if .Values.kueue.pools.gpu.enabled }}
+                          <<- if .Resources.HasGPU >>
+                          nvidia.com/gpu: "1"
+                          <<- end >>
+                          {{- end }}
                         limits:
                           <<- if .Resources.CPU >>
                           cpu: "<< .Resources.CPU >>"
@@ -152,6 +206,11 @@ data:
                           <<- if .Resources.Memory >>
                           memory: "<< .Resources.Memory >>"
                           <<- end >>
+                          {{- if .Values.kueue.pools.gpu.enabled }}
+                          <<- if .Resources.HasGPU >>
+                          nvidia.com/gpu: "1"
+                          <<- end >>
+                          {{- end }}
                       <<- end >>
                       volumeMounts:
                         - name: workspace

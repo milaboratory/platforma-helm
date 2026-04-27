@@ -19,12 +19,14 @@ graph TD
         dns --> platforma["Platforma Server"]
         platforma --> ui["UI pool: t3.xlarge, scale-from-zero"]
         platforma --> batch["Batch pools: m7i.4xl–16xl + r7i.8xl–16xl, scale-from-zero"]
+        platforma --> gpu["GPU pools: g6f/g6/g6e, 4 VRAM tiers, scale-from-zero"]
         platforma --- ebs[("EBS gp3: database")]
     end
 
     platforma --- s3
     platforma --- efs[("EFS: shared workspace")]
     batch --- efs
+    gpu --- efs
 ```
 
 ### What you'll do
@@ -46,6 +48,30 @@ records.
 - **Platforma license key** — request one at [platforma.bio/getlicense](https://platforma.bio/getlicense) or
   email [licensing@milaboratories.com](mailto:licensing@milaboratories.com).
 - **Platforma Desktop App** — download from [https://platforma.bio/downloads](https://platforma.bio/downloads)
+
+### Supported regions
+
+GPU node groups use g6f, g6, and g6e instance families which are not available in all AWS regions. Deploy in one of these regions for full GPU support:
+
+| Region             | Location    | GPU support            |
+|--------------------|-------------|------------------------|
+| **us-east-1**      | N. Virginia | Full (all 4 GPU tiers) |
+| **us-east-2**      | Ohio        | Full                   |
+| **us-west-2**      | Oregon      | Full                   |
+| **eu-central-1**   | Frankfurt   | Full                   |
+| **eu-north-1**     | Stockholm   | Full                   |
+| **ap-northeast-1** | Tokyo       | Full                   |
+
+Other regions (eu-west-1, eu-west-2, ap-south-1, ca-central-1) have partial or no GPU instance availability. CPU-only workloads work in any region.
+
+**GPU node groups (4 tiers, all scale from zero):**
+
+| Tier    | Instance     | GPU        | VRAM   | $/hr   | Use case                                    |
+|---------|--------------|------------|--------|--------|---------------------------------------------|
+| gpu-3g  | g6f.xlarge   | partial L4 | 3 GB   | $0.24  | Small inference, embedding lookups          |
+| gpu-24g | g6.2xlarge   | 1× L4      | 24 GB  | $0.98  | UMAP, sequence search, standard ML          |
+| gpu-48g | g6e.2xlarge  | 1× L40S    | 48 GB  | $2.36  | Large language models, structure prediction |
+| gpu-96g | g6e.12xlarge | 4× L40S    | 192 GB | $10.59 | Multi-GPU, large model complexes            |
 
 ## 1. Deploy CloudFormation stack
 
@@ -129,12 +155,12 @@ CloudFormation Console for details.
 3. In **Deployment size (controls parallelism)** select the maximum available size from the table below. Request an increase if
    needed. The stack checks the quota during deployment and fails with an error if it is too low.
 
-| Size     | Recommended vCPU quota | Max single-job    | Approximate parallelism<br>(samples in parallel) |
-|----------|------------------------|-------------------|--------------------------------------------------|
-| `small`  | ~400                   | 62 vCPU / 500 GiB | ~4 large or ~16 small jobs                       |
-| `medium` | ~700                   | 62 vCPU / 500 GiB | ~8 large or ~32 small jobs                       |
-| `large`  | ~1400                  | 62 vCPU / 500 GiB | ~16 large or ~64 small jobs                      |
-| `xlarge` | ~2700                  | 62 vCPU / 500 GiB | ~32 large or ~128 small jobs                     |
+| Size     | Recommended vCPU quota | Max single-job    | Approximate parallelism<br>(samples in parallel) | GPU nodes                                 |
+|----------|------------------------|-------------------|--------------------------------------------------|-------------------------------------------|
+| `small`  | ~400                   | 62 vCPU / 500 GiB | ~4 large or ~16 small jobs                       | ~1 medium (48GiB) to ~2 small (3GiB) jobs |
+| `medium` | ~700                   | 62 vCPU / 500 GiB | ~8 large or ~32 small jobs                       | ~1 big (192Gib) to ~4 small jobs          |
+| `large`  | ~1400                  | 62 vCPU / 500 GiB | ~16 large or ~64 small jobs                      | ~2 big to ~8 small jobs                   |
+| `xlarge` | ~2700                  | 62 vCPU / 500 GiB | ~32 large or ~128 small jobs                     | ~4 big to ~16 small jobs                  |
 
 
 | Parameter       | Default | Description                                                                                                              |

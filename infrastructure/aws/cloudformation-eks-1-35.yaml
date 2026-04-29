@@ -36,6 +36,7 @@ Metadata:
           - LicenseKey
           - PlatformaVersion
           - PlatformaImage
+          - PlatformaHelmChart
       - Label:
           default: Authentication (required when deploying Platforma)
         Parameters:
@@ -100,6 +101,8 @@ Metadata:
         default: 'Platforma chart version (empty = use built-in default)'
       PlatformaImage:
         default: Custom container image (leave empty for chart default)
+      PlatformaHelmChart:
+        default: Custom Helm chart OCI reference (leave empty for official chart)
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       DomainName:
@@ -207,6 +210,13 @@ Parameters:
     Description: >
       Custom Platforma container image (e.g. 123456.dkr.ecr.eu-central-1.amazonaws.com/repo:tag).
       Leave empty to use the chart default image.
+
+  PlatformaHelmChart:
+    Type: String
+    Default: ''
+    Description: >
+      Custom Helm chart OCI reference (e.g. oci://123456.dkr.ecr.eu-central-1.amazonaws.com/platforma).
+      Leave empty to use the official chart from ghcr.io/milaboratory/platforma-helm/platforma.
 
   # --- Authentication ---
   AuthMethod:
@@ -607,6 +617,7 @@ Conditions:
     - !Not [!Equals [!Ref DataLibrary3Bucket, '']]
     - !Equals [!Ref DataLibrary3AccessKey, '']
   UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
+  UseDefaultHelmChart: !Equals [!Ref PlatformaHelmChart, '']
   IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
   SystemAZa: !Equals [!Ref SystemNodeAZ, 'a']
   SystemAZb: !Equals [!Ref SystemNodeAZ, 'b']
@@ -1014,6 +1025,20 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Policies:
+        # Nodes pull images through a per-cluster ECR pull-through cache
+        # (prefix `quay-${ClusterName}`). The cache is always provisioned by
+        # this stack; scoping the ARN to the per-cluster prefix means stacks
+        # sharing an account/region don't grant each other write access.
+        - PolicyName: ecr-pull-through-cache
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:BatchImportUpstreamImage
+                  - ecr:CreateRepository
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/quay-${ClusterName}/*'
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2188,7 +2213,7 @@ Resources:
                 Action:
                   - servicequotas:GetServiceQuota
                 Resource: '*'
-              # Pull Helm charts from ECR
+              # Pull Helm charts and container images from ECR (needed when PlatformaHelmChart or PlatformaImage point to ECR)
               - Effect: Allow
                 Action:
                   - ecr:GetAuthorizationToken
@@ -2198,7 +2223,16 @@ Resources:
                   - ecr:BatchGetImage
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchCheckLayerAvailability
-                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/platforma'
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/*'
+              # Tag GPU ASGs for Cluster Autoscaler scale-from-zero
+              - Effect: Allow
+                Action:
+                  - autoscaling:CreateOrUpdateTags
+                  - autoscaling:DescribeTags
+                  - autoscaling:DescribeAutoScalingGroups
+                  - eks:ListNodegroups
+                  - eks:DescribeNodegroup
+                Resource: '*'
       Tags:
         - Key: platforma
           Value: !Ref ClusterName
@@ -2250,6 +2284,10 @@ Resources:
             Value: !Ref HostedZoneId
           - Name: KUBERNETES_VERSION
             Value: !FindInMap [Constants, EKS, Version]
+          # -----------------------------------------------------------------
+          # INFRA VERSIONS — duplicated in TriggerHelmDeploy properties.
+          # When changing any version below, also update TriggerHelmDeploy.
+          # -----------------------------------------------------------------
           - Name: KUEUE_VERSION
             Value: '0.16.1'
           - Name: APPWRAPPER_VERSION
@@ -2311,14 +2349,16 @@ Resources:
                 - |
                   [ "${TEARDOWN:-false}" = "true" ] && exit 0
                   echo "=== [2/5] KUEUE + APPWRAPPER ==="
+                  kubectl apply --server-side -f https://raw.githubusercontent.com/kubernetes/autoscaler/cluster-autoscaler-${KUBERNETES_VERSION}.0/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
                   helm upgrade --install kueue oci://registry.k8s.io/kueue/charts/kueue \
                     --version $KUEUE_VERSION \
                     -n kueue-system --create-namespace \
                     --set controllerManager.manager.resources.limits.cpu=500m \
-                    --set controllerManager.manager.resources.limits.memory=512Mi \
+                    --set controllerManager.manager.resources.limits.memory=1Gi \
                     --set controllerManager.manager.resources.requests.cpu=100m \
-                    --set controllerManager.manager.resources.requests.memory=256Mi \
+                    --set controllerManager.manager.resources.requests.memory=512Mi \
                     --set featureGates.AppWrapper=true \
+                    --set featureGates.ProvisioningACC=true \
                     --set 'integrations.frameworks[0]=batch/job' \
                     --set 'integrations.frameworks[1]=jobset.x-k8s.io/jobset' \
                     --set 'integrations.frameworks[2]=workload.codeflare.dev/appwrapper' \
@@ -2328,6 +2368,11 @@ Resources:
                     --set 'integrations.podOptions.namespaceSelector.matchExpressions[0].values[1]=kueue-system' \
                     --set metrics.enableClusterQueueResources=true \
                     --atomic --timeout 5m
+                  # Restart Kueue if the ProvisioningRequest CRD was just installed —
+                  # Kueue only discovers CRDs at startup and skips the provisioning
+                  # controller if the CRD wasn't present when it first started.
+                  kubectl rollout restart deployment kueue-controller-manager -n kueue-system
+                  kubectl wait --for=condition=Available deployment/kueue-controller-manager -n kueue-system --timeout=120s
                   kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml
                   kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
                   kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
@@ -2356,7 +2401,68 @@ Resources:
                     --set extraArgs.max-node-provision-time=5m \
                     --set extraArgs.initial-node-group-backoff-duration=1m \
                     --set extraArgs.max-node-group-backoff-duration=5m \
+                    --set extraArgs.enable-provisioning-requests=true \
+                    --set extraArgs.kube-api-content-type=application/json \
                     --atomic --timeout 5m
+
+                  # Grant CA access to ProvisioningRequest and PodTemplate resources.
+                  # roleRef is immutable on a ClusterRoleBinding: if an earlier install
+                  # (e.g. manual "provisioning-request-admin" role from pre-3.2.x testing)
+                  # bound this name to a different ClusterRole, `kubectl apply` fails with
+                  # "cannot change roleRef". Recreate the binding when roleRef drifts, and
+                  # drop the legacy orphan ClusterRole.
+                  EXPECTED_ROLE="cluster-autoscaler-provisioning-requests"
+                  CURRENT_ROLE=$(kubectl get clusterrolebinding cluster-autoscaler-provisioning-requests \
+                    -o jsonpath='{.roleRef.name}' 2>/dev/null || true)
+                  if [ -n "$CURRENT_ROLE" ] && [ "$CURRENT_ROLE" != "$EXPECTED_ROLE" ]; then
+                    echo "Recreating stale ClusterRoleBinding (was bound to $CURRENT_ROLE)"
+                    kubectl delete clusterrolebinding cluster-autoscaler-provisioning-requests
+                  fi
+                  kubectl delete clusterrole provisioning-request-admin --ignore-not-found
+                  kubectl apply -f - <<RBAC
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRole
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  rules:
+                    - apiGroups: ["autoscaling.x-k8s.io"]
+                      resources: ["provisioningrequests", "provisioningrequests/status"]
+                      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+                    - apiGroups: [""]
+                      resources: ["podtemplates"]
+                      verbs: ["get", "list", "watch"]
+                  ---
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRoleBinding
+                  metadata:
+                    name: cluster-autoscaler-provisioning-requests
+                  subjects:
+                    - kind: ServiceAccount
+                      name: cluster-autoscaler
+                      namespace: $NAMESPACE
+                  roleRef:
+                    kind: ClusterRole
+                    name: cluster-autoscaler-provisioning-requests
+                    apiGroup: rbac.authorization.k8s.io
+                  RBAC
+
+                  # Tag GPU ASGs with nvidia.com/gpu resource for scale-from-zero.
+                  # EKS Nodegroup Tags don't propagate to ASGs, but the Cluster Autoscaler
+                  # reads ASG tags to build node templates when scaling from zero.
+                  # Without this tag, CA can't determine GPU capacity and skips GPU node groups.
+                  for NG_NAME in $(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --region $REGION --query 'nodegroups[?contains(@, `gpu`)]' --output text); do
+                    NG_LABELS=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG_NAME --region $REGION --query 'nodegroup.labels' --output json 2>/dev/null)
+                    GPU_GIB=$(echo "$NG_LABELS" | jq -r '.["platforma.bio/gpu-memory-gib"] // empty')
+                    if [ -n "$GPU_GIB" ]; then
+                      ASG_NAME=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG_NAME --region $REGION --query 'nodegroup.resources.autoScalingGroups[0].name' --output text)
+                      echo "Tagging ASG $ASG_NAME (nodegroup $NG_NAME) with gpu-memory-gib=$GPU_GIB and nvidia.com/gpu=1"
+                      aws autoscaling create-or-update-tags --tags \
+                        "ResourceId=$ASG_NAME,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/node-template/label/platforma.bio/gpu-memory-gib,Value=$GPU_GIB,PropagateAtLaunch=true" \
+                        "ResourceId=$ASG_NAME,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/node-template/resources/nvidia.com/gpu,Value=1,PropagateAtLaunch=true" \
+                        "ResourceId=$ASG_NAME,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/node-template/taint/nvidia.com/gpu,Value=present:NoSchedule,PropagateAtLaunch=true" \
+                        --region $REGION
+                    fi
+                  done
 
                 # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---
                 - |
@@ -2474,6 +2580,11 @@ Resources:
               - !Ref PlatformaVersion
           - Name: PLATFORMA_IMAGE
             Value: !Ref PlatformaImage
+          - Name: PLATFORMA_HELM_CHART
+            Value: !If
+              - UseDefaultHelmChart
+              - 'oci://ghcr.io/milaboratory/platforma-helm/platforma'
+              - !Ref PlatformaHelmChart
           - Name: DEPLOY_PLATFORMA
             Value: !Ref DeployPlatforma
           - Name: DOMAIN_NAME
@@ -2776,6 +2887,13 @@ Resources:
                         name: platforma-library-demo-creds"
                   fi
 
+                  # Route Platforma through the per-cluster ECR pull-through
+                  # cache. The cache prefix is namespaced with the cluster name
+                  # so multiple stacks in the same account/region don't collide.
+                  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                  ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/quay-${CLUSTER_NAME}/milaboratories/pl-containers"
+                  APP_EXTRA_ARGS="[\"--default-docker-registry=${ECR_REGISTRY}\"]"
+
                   cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
                   environment: aws
                   storage:
@@ -2839,6 +2957,8 @@ Resources:
                           - key: nvidia.com/gpu
                             value: present
                             effect: NoSchedule
+                    provisioningRequest:
+                      enabled: true
                     dedicated:
                       resources:
                         ui:
@@ -2861,6 +2981,7 @@ Resources:
                         memory: 16Gi
                     nodeSelector:
                       node.kubernetes.io/pool: system
+                    extraArgs: ${APP_EXTRA_ARGS:-[]}
                   dataSources: ${DATASOURCES_YAML:-[]}
                   PLATFORMA_VALUES
 
@@ -2922,10 +3043,14 @@ Resources:
                   IMAGE_BLOCK
                   fi
 
-                  aws ecr get-login-password --region $REGION | helm registry login --username AWS --password-stdin 934685779402.dkr.ecr.$REGION.amazonaws.com
+                  # Login to ECR for helm if using a custom chart from ECR
+                  if echo "$PLATFORMA_HELM_CHART" | grep -q 'ecr.*amazonaws.com'; then
+                    HELM_ECR_HOST=$(echo "$PLATFORMA_HELM_CHART" | sed 's|oci://||' | cut -d/ -f1)
+                    aws ecr get-login-password --region $REGION | helm registry login --username AWS --password-stdin "$HELM_ECR_HOST"
+                  fi
 
-                  helm upgrade --install platforma oci://934685779402.dkr.ecr.$REGION.amazonaws.com/platforma \
-                    --version 3.3.0 \
+                  helm upgrade --install platforma $PLATFORMA_HELM_CHART \
+                    --version $PLATFORMA_VERSION \
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
                     --atomic --timeout 15m
@@ -3050,11 +3175,19 @@ Resources:
     Properties:
       ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
       CodeBuildProject: !Sub '${ClusterName}-helm-deployer'
-      # Properties below trigger re-deployment when changed during stack update.
-      # The Lambda reads CodeBuildProject; the rest exist only so CloudFormation
-      # detects property changes and sends an UPDATE event.
+      # --- Trigger properties ---
+      # CF re-invokes this resource whenever ANY property value changes.
+      # Version properties MUST match HelmDeployerProject env vars above.
+      # This duplication is intentional — CF needs property changes to
+      # detect when re-deployment is required.
       KubernetesVersion: !FindInMap [Constants, EKS, Version]
-      ForceUpdateInfra: "1"  # Bump to force infra re-deployment
+      KueueVersion: '0.16.1'
+      AppWrapperVersion: 'v1.2.0'
+      ClusterAutoscalerChartVersion: '9.56.0'
+      ExternalDnsVersion: '1.20.0'
+      AlbControllerVersion: '3.0.0'
+      # Bump for non-version buildspec changes (new flags, RBAC, install order)
+      BuildSpecRevision: '2'
 
   TriggerPlatformaDeploy:
     Type: AWS::CloudFormation::CustomResource
@@ -3187,6 +3320,55 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  # =========================================================================
+  # ECR Pull-Through Cache (optional)
+  # =========================================================================
+  # Caches container images from Quay.io (upstream of containers.pl-open.science)
+  # in a same-region ECR registry for lower pull latency and to avoid
+  # overloading the upstream HAProxy with first-boot image downloads.
+  #
+  # The cache prefix is namespaced with the cluster name so multiple
+  # Platforma stacks in the same AWS account/region coexist — AWS allows
+  # only one PullThroughCacheRule per (account, region, prefix).
+
+  ECRPullThroughCacheRule:
+    Type: AWS::ECR::PullThroughCacheRule
+    Properties:
+      EcrRepositoryPrefix: !Sub 'quay-${ClusterName}'
+      UpstreamRegistryUrl: quay.io
+
+  # Lifecycle policy applied to the main image repository.
+  # Repositories are auto-created by pull-through on first pull, but we
+  # pre-create this one to attach the lifecycle policy.
+  ECRCacheRepository:
+    Type: AWS::ECR::Repository
+    DependsOn: ECRPullThroughCacheRule
+    Properties:
+      RepositoryName: !Sub 'quay-${ClusterName}/milaboratories/pl-containers'
+      # Allow CF to delete the repo on stack teardown even if it still holds
+      # cached images — without this CF refuses and fails the delete.
+      EmptyOnDelete: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire images older than 90 days",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 90
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
       Tags:
         - Key: platforma
           Value: !Ref ClusterName

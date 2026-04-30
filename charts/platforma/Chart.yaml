@@ -2,8 +2,8 @@ apiVersion: v2
 name: platforma
 description: Platforma - Bioinformatics platform for Kubernetes
 type: application
-version: 3.3.7
-appVersion: "3.3.7"
+version: 3.3.9
+appVersion: "3.3.9"
 kubeVersion: ">=1.28.0-0"
 
 keywords:

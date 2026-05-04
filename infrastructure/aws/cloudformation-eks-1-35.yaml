@@ -52,6 +52,7 @@ Metadata:
           default: 'Cluster sizing'
         Parameters:
           - DeploymentSize
+          - EnableGpu
           - SystemNodeAZ
       - Label:
           default: Storage
@@ -457,12 +458,22 @@ Parameters:
       Cluster sizing profile. Controls node group scaling limits and Kueue quotas.
       All deployment sizes support the same maximum single-job size (62 vCPU / 500Gi).
       Larger sizes allow more jobs to run simultaneously.
-      GPU nodes (g6f/g6/g6e) are always enabled and scale from 0 — no cost when idle.
-      4 GPU tiers: 3GB (g6f, $0.24/hr), 24GB (g6, $0.98/hr), 48GB (g6e, $2.36/hr), 192GB (g6e 4×GPU, $10.59/hr).
-      small:  ~4 large CPU jobs or 16 small; GPU: 2/1/1/1 nodes (3g/24g/48g/96g).
-      medium: ~8 large CPU jobs or 32 small; GPU: 4/2/2/1 nodes.
-      large:  ~16 large CPU jobs or 64 small; GPU: 8/4/4/2 nodes.
-      xlarge: ~32 large CPU jobs or 128 small; GPU: 16/8/8/4 nodes.
+      GPU nodes (g6f/g6/g6e) scale from 0 — no cost when idle. Disable entirely with EnableGpu=false.
+      6 GPU tiers: 3GB (g6f.xl, $0.24/hr), 6GB (g6f.2xl, $0.49/hr), 12GB (g6f.4xl, $0.98/hr),
+      24GB (g6, $0.98/hr), 48GB (g6e, $2.36/hr), 192GB (g6e 4×GPU, $10.59/hr).
+      small:  ~4 large CPU jobs or 16 small; GPU: 2/2/1/1/1/1 nodes (3g/6g/12g/24g/48g/96g).
+      medium: ~8 large CPU jobs or 32 small; GPU: 4/3/2/2/2/1 nodes.
+      large:  ~16 large CPU jobs or 64 small; GPU: 8/6/4/4/4/2 nodes.
+      xlarge: ~32 large CPU jobs or 128 small; GPU: 16/12/8/8/8/4 nodes.
+
+  EnableGpu:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Whether to provision GPU node groups. Default: true.
+      Set to 'false' to deploy in regions without GPU instance availability
+      (e.g. eu-west-2, eu-west-3, ap-south-1) or to skip GPU costs entirely.
 
   SystemNodeAZ:
     Type: String
@@ -544,6 +555,8 @@ Mappings:
       MaxBatch32c256g: '2'
       MaxBatch64c512g: '1'
       MaxGpu3g: '2'
+      MaxGpu6g: '2'
+      MaxGpu12g: '1'
       MaxGpu24g: '1'
       MaxGpu48g: '1'
       MaxGpu96g: '1'
@@ -560,6 +573,8 @@ Mappings:
       MaxBatch32c256g: '4'
       MaxBatch64c512g: '2'
       MaxGpu3g: '4'
+      MaxGpu6g: '3'
+      MaxGpu12g: '2'
       MaxGpu24g: '2'
       MaxGpu48g: '2'
       MaxGpu96g: '1'
@@ -576,6 +591,8 @@ Mappings:
       MaxBatch32c256g: '8'
       MaxBatch64c512g: '4'
       MaxGpu3g: '8'
+      MaxGpu6g: '6'
+      MaxGpu12g: '4'
       MaxGpu24g: '4'
       MaxGpu48g: '4'
       MaxGpu96g: '2'
@@ -592,6 +609,8 @@ Mappings:
       MaxBatch32c256g: '16'
       MaxBatch64c512g: '8'
       MaxGpu3g: '16'
+      MaxGpu6g: '12'
+      MaxGpu12g: '8'
       MaxGpu24g: '8'
       MaxGpu48g: '8'
       MaxGpu96g: '4'
@@ -604,6 +623,7 @@ Conditions:
   CreateNewVpc: !Equals [!Ref VpcId, '']
   AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
   HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
+  GpuEnabled: !Equals [!Ref EnableGpu, 'true']
   HasLibrary1: !Not [!Equals [!Ref DataLibrary1Bucket, '']]
   HasLibrary1Irsa: !And
     - !Not [!Equals [!Ref DataLibrary1Bucket, '']]
@@ -1910,17 +1930,23 @@ Resources:
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
-  # 4b. GPU node groups — 4 VRAM tiers, always enabled, scale from 0
+  # 4b. GPU node groups — 6 VRAM tiers, scale from 0
   # ---------------------------------------------------------------------------
-  # gpu-3g:  g6f.xlarge   (partial L4,  3 GB VRAM,  4 vCPU,  16 GiB RAM, $0.24/hr)
-  # gpu-24g: g6.2xlarge   (1× L4,      24 GB VRAM,  8 vCPU,  32 GiB RAM, $0.98/hr)
-  # gpu-48g: g6e.2xlarge  (1× L40S,    48 GB VRAM,  8 vCPU,  32 GiB RAM, $2.36/hr)
-  # gpu-96g: g6e.12xlarge (4× L40S,   192 GB VRAM, 48 vCPU, 192 GiB RAM, $10.59/hr)
+  # All GPU resources (launch template + node groups) are gated by EnableGpu.
+  # Set EnableGpu=false to deploy in regions without GPU instance availability.
+  #
+  # gpu-3g:   g6f.xlarge   (partial L4,   3 GB VRAM,  4 vCPU,  16 GiB RAM, $0.24/hr)
+  # gpu-6g:   g6f.2xlarge  (partial L4,   6 GB VRAM,  8 vCPU,  32 GiB RAM, $0.49/hr)
+  # gpu-12g:  g6f.4xlarge  (partial L4,  12 GB VRAM, 16 vCPU,  64 GiB RAM, $0.98/hr)
+  # gpu-24g:  g6.2xlarge   (1× L4,       24 GB VRAM,  8 vCPU,  32 GiB RAM, $0.98/hr)
+  # gpu-48g:  g6e.2xlarge  (1× L40S,     48 GB VRAM,  8 vCPU,  32 GiB RAM, $2.36/hr)
+  # gpu-96g:  g6e.12xlarge (4× L40S,    192 GB VRAM, 48 vCPU, 192 GiB RAM, $10.59/hr)
   #
   # Available in: us-east-1, us-east-2, us-west-2, eu-central-1, eu-north-1, ap-northeast-1
 
   GpuNodeLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
+    Condition: GpuEnabled
     Properties:
       LaunchTemplateData:
         BlockDeviceMappings:
@@ -1941,6 +1967,7 @@ Resources:
 
   Gpu3gNodeGroup:
     Type: AWS::EKS::Nodegroup
+    Condition: GpuEnabled
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: gpu-3g
@@ -1974,8 +2001,81 @@ Resources:
         k8s.io/cluster-autoscaler/node-template/label/platforma.bio/gpu-memory-gib: "3"
         platforma: !Sub "${ClusterName}"
 
+  Gpu6gNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Condition: GpuEnabled
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: gpu-6g
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      AmiType: AL2023_x86_64_NVIDIA
+      InstanceTypes:
+        - g6f.2xlarge
+      CapacityType: ON_DEMAND
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu6g]
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref GpuNodeLaunchTemplate
+        Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        platforma.bio/gpu-memory-gib: "6"
+      Taints:
+        - Key: nvidia.com/gpu
+          Value: present
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: gpu-6g
+        k8s.io/cluster-autoscaler/node-template/label/platforma.bio/gpu-memory-gib: "6"
+        platforma: !Sub "${ClusterName}"
+
+  Gpu12gNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Condition: GpuEnabled
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: gpu-12g
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      AmiType: AL2023_x86_64_NVIDIA
+      InstanceTypes:
+        - g6f.4xlarge
+      CapacityType: ON_DEMAND
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu12g]
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref GpuNodeLaunchTemplate
+        Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        platforma.bio/gpu-memory-gib: "12"
+      Taints:
+        - Key: nvidia.com/gpu
+          Value: present
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: gpu-12g
+        k8s.io/cluster-autoscaler/node-template/label/platforma.bio/gpu-memory-gib: "12"
+        platforma: !Sub "${ClusterName}"
+
   Gpu24gNodeGroup:
     Type: AWS::EKS::Nodegroup
+    Condition: GpuEnabled
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: gpu-24g
@@ -2011,6 +2111,7 @@ Resources:
 
   Gpu48gNodeGroup:
     Type: AWS::EKS::Nodegroup
+    Condition: GpuEnabled
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: gpu-48g
@@ -2046,6 +2147,7 @@ Resources:
 
   Gpu96gNodeGroup:
     Type: AWS::EKS::Nodegroup
+    Condition: GpuEnabled
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: gpu-96g
@@ -2611,6 +2713,8 @@ Resources:
             Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchCpu]
           - Name: BATCH_QUEUE_MEMORY_GI
             Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchMemoryGi]
+          - Name: GPU_ENABLED
+            Value: !Ref EnableGpu
           - Name: AUTH_METHOD
             Value: !Ref AuthMethod
           - Name: HTPASSWD_CONTENT
@@ -2952,7 +3056,7 @@ Resources:
                             value: batch
                             effect: NoSchedule
                       gpu:
-                        enabled: true
+                        enabled: ${GPU_ENABLED}
                         tolerations:
                           - key: nvidia.com/gpu
                             value: present

@@ -19,7 +19,7 @@ graph TD
         dns --> platforma["Platforma Server"]
         platforma --> ui["UI pool: t3.xlarge, scale-from-zero"]
         platforma --> batch["Batch pools: m7i.4xl–16xl + r7i.8xl–16xl, scale-from-zero"]
-        platforma --> gpu["GPU pools: g6f/g6/g6e, 4 VRAM tiers, scale-from-zero"]
+        platforma --> gpu["GPU pools: g6f/g6/g6e, 6 VRAM tiers, scale-from-zero (optional)"]
         platforma --- ebs[("EBS gp3: database")]
     end
 
@@ -55,23 +55,25 @@ GPU node groups use g6f, g6, and g6e instance families which are not available i
 
 | Region             | Location    | GPU support            |
 |--------------------|-------------|------------------------|
-| **us-east-1**      | N. Virginia | Full (all 4 GPU tiers) |
+| **us-east-1**      | N. Virginia | Full (all 6 GPU tiers) |
 | **us-east-2**      | Ohio        | Full                   |
 | **us-west-2**      | Oregon      | Full                   |
 | **eu-central-1**   | Frankfurt   | Full                   |
 | **eu-north-1**     | Stockholm   | Full                   |
 | **ap-northeast-1** | Tokyo       | Full                   |
 
-Other regions (eu-west-1, eu-west-2, ap-south-1, ca-central-1) have partial or no GPU instance availability. CPU-only workloads work in any region.
+Other regions (eu-west-1, eu-west-2, ap-south-1, ca-central-1) have partial or no GPU instance availability. To deploy in those regions, set the **Enable GPU** parameter to `false` — the stack skips all GPU node groups and the Platforma backend boots with GPU disabled. CPU-only workloads work in any region.
 
-**GPU node groups (4 tiers, all scale from zero):**
+**GPU node groups (6 tiers, all scale from zero):**
 
-| Tier    | Instance     | GPU        | VRAM   | $/hr   | Use case                                    |
-|---------|--------------|------------|--------|--------|---------------------------------------------|
-| gpu-3g  | g6f.xlarge   | partial L4 | 3 GB   | $0.24  | Small inference, embedding lookups          |
-| gpu-24g | g6.2xlarge   | 1× L4      | 24 GB  | $0.98  | UMAP, sequence search, standard ML          |
-| gpu-48g | g6e.2xlarge  | 1× L40S    | 48 GB  | $2.36  | Large language models, structure prediction |
-| gpu-96g | g6e.12xlarge | 4× L40S    | 192 GB | $10.59 | Multi-GPU, large model complexes            |
+| Tier     | Instance     | GPU        | VRAM   | $/hr   | Use case                                    |
+|----------|--------------|------------|--------|--------|---------------------------------------------|
+| gpu-3g   | g6f.xlarge   | partial L4 | 3 GB   | $0.24  | Small inference, embedding lookups          |
+| gpu-6g   | g6f.2xlarge  | partial L4 | 6 GB   | $0.49  | Small/medium inference, light ML            |
+| gpu-12g  | g6f.4xlarge  | partial L4 | 12 GB  | $0.98  | Medium inference, smaller training jobs     |
+| gpu-24g  | g6.2xlarge   | 1× L4      | 24 GB  | $0.98  | UMAP, sequence search, standard ML          |
+| gpu-48g  | g6e.2xlarge  | 1× L40S    | 48 GB  | $2.36  | Large language models, structure prediction |
+| gpu-96g  | g6e.12xlarge | 4× L40S    | 192 GB | $10.59 | Multi-GPU, large model complexes            |
 
 ## 1. Deploy CloudFormation stack
 
@@ -163,9 +165,10 @@ CloudFormation Console for details.
 | `xlarge` | ~2700                  | 62 vCPU / 500 GiB | ~32 large or ~128 small jobs                     | ~4 big to ~16 small jobs                  |
 
 
-| Parameter       | Default | Description                                                                                                              |
-|-----------------|---------|--------------------------------------------------------------------------------------------------------------------------|
-| Deployment size | `small` | Controls node group scaling limits and Kueue quotas. All sizes support the same max single-job size (62 vCPU / 500 GiB). |
+| Parameter       | Default | Description                                                                                                                                                                                                                                                                                                            |
+|-----------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Deployment size | `small` | Controls node group scaling limits and Kueue quotas. All sizes support the same max single-job size (62 vCPU / 500 GiB).                                                                                                                                                                                              |
+| Enable GPU      | `true`  | Provision GPU node groups (all 6 tiers, scale-from-zero). Set to `false` to deploy in regions without GPU instance availability or to skip GPU costs entirely. When disabled, blocks gating on `feats.hasGpu` run their CPU fallback path; `.gpuMemory()` requests fail with a clear error instead of hanging. |
 
 ![CloudFormation parameters — cluster sizing](images/cf-parameters-4.png)
 

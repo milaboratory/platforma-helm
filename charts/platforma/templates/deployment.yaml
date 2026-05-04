@@ -132,6 +132,12 @@ spec:
             {{- end }}
             {{- end }}
             - "--runner-enable-docker"
+            # GPU availability (K8s never auto-probes; explicit on/off based on the GPU pool)
+            {{- if .Values.kueue.pools.gpu.enabled }}
+            - "--runner-gpu-available=enabled"
+            {{- else }}
+            - "--runner-gpu-available=disabled"
+            {{- end }}
             # Queue runners (hardcoded — 4 fixed queues, always K8s backend)
             - "--queue-runner=ui-tasks:k8s"
             - "--queue-runner=light:k8s"

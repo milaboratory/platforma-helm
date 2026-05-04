@@ -525,7 +525,7 @@ Mappings:
     EKS:
       Version: "1.35"
     Platforma:
-      Version: '3.3.9'
+      Version: '3.3.10'
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).

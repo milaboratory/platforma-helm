@@ -66,14 +66,14 @@ Other regions (eu-west-1, eu-west-2, ap-south-1, ca-central-1) have partial or n
 
 **GPU node groups (6 tiers, all scale from zero):**
 
-| Tier     | Instance     | GPU        | VRAM   | $/hr   | Use case                                    |
-|----------|--------------|------------|--------|--------|---------------------------------------------|
-| gpu-3g   | g6f.xlarge   | partial L4 | 3 GB   | $0.24  | Small inference, embedding lookups          |
-| gpu-6g   | g6f.2xlarge  | partial L4 | 6 GB   | $0.49  | Small/medium inference, light ML            |
-| gpu-12g  | g6f.4xlarge  | partial L4 | 12 GB  | $0.98  | Medium inference, smaller training jobs     |
-| gpu-24g  | g6.2xlarge   | 1× L4      | 24 GB  | $0.98  | UMAP, sequence search, standard ML          |
-| gpu-48g  | g6e.2xlarge  | 1× L40S    | 48 GB  | $2.36  | Large language models, structure prediction |
-| gpu-96g  | g6e.12xlarge | 4× L40S    | 192 GB | $10.59 | Multi-GPU, large model complexes            |
+| Tier     | Instance     | GPU        | VRAM   | vCPU | RAM    | $/hr    | Use case                                    |
+|----------|--------------|------------|--------|------|--------|---------|---------------------------------------------|
+| gpu-3g   | g6f.xlarge   | partial L4 | 3 GB   | 4    | 16 GB  | $0.24   | Small inference, embedding lookups          |
+| gpu-6g   | g6f.2xlarge  | partial L4 | 6 GB   | 8    | 32 GB  | $0.49   | Small/medium inference, light ML            |
+| gpu-12g  | g6f.4xlarge  | partial L4 | 12 GB  | 16   | 64 GB  | $0.98   | Medium inference, smaller training jobs     |
+| gpu-24g  | g6.2xlarge   | 1× L4      | 24 GB  | 8    | 32 GB  | $0.98   | UMAP, sequence search, standard ML          |
+| gpu-48g  | g6e.2xlarge  | 1× L40S    | 48 GB  | 8    | 64 GB  | $2.36   | Large language models, structure prediction |
+| gpu-96g  | g6e.12xlarge | 4× L40S    | 192 GB | 48   | 384 GB |  $10.59 | Multi-GPU, large model complexes |
 
 ## 1. Deploy CloudFormation stack
 

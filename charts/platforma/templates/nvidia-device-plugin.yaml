@@ -5,7 +5,53 @@
 # Exposes nvidia.com/gpu resources on GPU nodes so the K8s scheduler can
 # assign GPU workloads. Only runs on nodes with NVIDIA GPUs.
 # Based on: https://github.com/NVIDIA/k8s-device-plugin v0.17.0
+#
+# Startup taint protocol:
+#   GPU nodes boot with nvidia.com/gpu-not-ready=true:NoSchedule (set in
+#   CloudFormation Nodegroup). The taint blocks pods until the device plugin
+#   registers nvidia.com/gpu capacity. The taint-remover sidecar polls the
+#   node's allocatable GPU count and removes the taint once it becomes >= 1.
+#   Cluster Autoscaler is configured with --startup-taints=nvidia.com/gpu-not-ready
+#   so the node is treated as upcoming until the taint clears, preventing
+#   spurious double scale-ups.
 # =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "platforma.fullname" . }}-nvidia-device-plugin
+  namespace: kube-system
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nvidia-device-plugin
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "platforma.fullname" . }}-nvidia-device-plugin
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nvidia-device-plugin
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "platforma.fullname" . }}-nvidia-device-plugin
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nvidia-device-plugin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "platforma.fullname" . }}-nvidia-device-plugin
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "platforma.fullname" . }}-nvidia-device-plugin
+    namespace: kube-system
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -25,8 +71,12 @@ spec:
       labels:
         name: nvidia-device-plugin-ds
     spec:
+      serviceAccountName: {{ include "platforma.fullname" . }}-nvidia-device-plugin
       tolerations:
         - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        - key: nvidia.com/gpu-not-ready
           operator: Exists
           effect: NoSchedule
       priorityClassName: system-node-critical
@@ -43,6 +93,37 @@ spec:
           volumeMounts:
             - name: device-plugin
               mountPath: /var/lib/kubelet/device-plugins
+        - name: gpu-not-ready-taint-remover
+          image: bitnami/kubectl:1.31
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Waiting for nvidia.com/gpu capacity on node $NODE_NAME..."
+              until [ "$(kubectl get node "$NODE_NAME" -o 'jsonpath={.status.allocatable.nvidia\.com/gpu}')" -ge 1 ] 2>/dev/null; do
+                sleep 2
+              done
+              echo "GPU registered, removing nvidia.com/gpu-not-ready taint"
+              kubectl taint node "$NODE_NAME" nvidia.com/gpu-not-ready- || true
+              echo "Done. Sleeping forever (sidecar)."
+              sleep infinity
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       volumes:
         - name: device-plugin
           hostPath:

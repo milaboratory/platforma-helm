@@ -138,6 +138,112 @@ spec:
 kubectl apply -f database-pvc.yaml
 ```
 
+### Step 1.2.1: Recommended — IRSA Service Account for Migration Pods
+
+Inline AWS keys in the pod YAML (`MIGRATION_DB_ACCESS_KEY` / `MIGRATION_STORAGE_ACCESS_KEY`) work for cross-account migrations, but for the **common case** where the dump bucket and the source primary-storage bucket live in the same AWS account as the cluster, attach an IRSA role to a dedicated service account and let the migration pods assume it. No long-lived keys, no Secret juggling.
+
+The chart's runtime SAs (`platforma`, `platforma-jobs`) only have permissions on the *destination* bucket — they cannot read the source bucket, so reusing them does not work. Create a separate SA with read access to the source plus write access to the destination.
+
+**Step A — IAM policy and role.** Run on a workstation with `aws` CLI access to the cluster account:
+
+```bash
+# Inline policy: read on source, read+write on destination
+cat > /tmp/migration-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadSourceDump",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": "arn:aws:s3:::SOURCE_DUMP_BUCKET/*"
+    },
+    {
+      "Sid": "ReadSourceStorage",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}",
+        "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}/*"
+      ]
+    },
+    {
+      "Sid": "WriteDestination",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+        "s3:ListBucket", "s3:ListBucketMultipartUploads",
+        "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${S3_BUCKET}",
+        "arn:aws:s3:::${S3_BUCKET}/*"
+      ]
+    }
+  ]
+}
+EOF
+
+aws iam create-policy \
+  --policy-name ${CLUSTER_NAME}-migration-policy \
+  --policy-document file:///tmp/migration-policy.json
+
+# Trust policy for the OIDC provider
+OIDC_ISSUER=$(aws eks describe-cluster --name $CLUSTER_NAME \
+  --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||')
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+cat > /tmp/migration-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_ISSUER}"},
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "${OIDC_ISSUER}:sub": "system:serviceaccount:${NAMESPACE}:platforma-migration",
+        "${OIDC_ISSUER}:aud": "sts.amazonaws.com"
+      }
+    }
+  }]
+}
+EOF
+
+MIGRATION_ROLE_ARN=$(aws iam create-role \
+  --role-name ${CLUSTER_NAME}-platforma-migration \
+  --assume-role-policy-document file:///tmp/migration-trust.json \
+  --query 'Role.Arn' --output text)
+
+aws iam attach-role-policy \
+  --role-name ${CLUSTER_NAME}-platforma-migration \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CLUSTER_NAME}-migration-policy
+
+echo "Migration role ARN: $MIGRATION_ROLE_ARN"
+```
+
+**Step B — Kubernetes service account.** The `eks.amazonaws.com/role-arn` annotation is what the EKS pod-identity webhook reads to inject `AWS_WEB_IDENTITY_TOKEN_FILE` into pods using this SA.
+
+```yaml
+# migration-sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platforma-migration
+  namespace: platforma
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/CLUSTER_NAME-platforma-migration
+```
+
+```bash
+sed "s|ACCOUNT_ID|${AWS_ACCOUNT_ID}|; s|CLUSTER_NAME|${CLUSTER_NAME}|" migration-sa.yaml \
+  | kubectl apply -f -
+```
+
+**Step C — reference the SA from every migration pod** by adding `spec.serviceAccountName: platforma-migration` (shown inline in the YAMLs below) and dropping the `env:` block with `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
+
+> The same pattern works on GKE — replace the IAM role + annotation with a Workload Identity binding (`iam.gke.io/gcp-service-account`).
+
 ### Step 1.3: Download the Database Dump
 
 ```yaml
@@ -148,6 +254,7 @@ metadata:
   name: mgr-download
   namespace: platforma
 spec:
+  serviceAccountName: platforma-migration   # IRSA SA from Step 1.2.1 — drop this for cross-account
   securityContext:
     fsGroup: 1010
     runAsUser: 1010
@@ -166,15 +273,15 @@ spec:
           if [ -f /data/database/.migration-complete ]; then echo Already completed; exit 0; fi
           aws s3 cp ${MIGRATION_DATABASE_S3_URI} /data/database/backup.gz
           echo Download complete
-      env:
-        # Only needed for cross-account dumps
-        - { name: AWS_ACCESS_KEY_ID,     value: "${MIGRATION_DB_ACCESS_KEY}" }
-        - { name: AWS_SECRET_ACCESS_KEY, value: "${MIGRATION_DB_SECRET_KEY}" }
+      # env section ONLY needed for cross-account dumps — omit when using IRSA
+      # env:
+      #   - { name: AWS_ACCESS_KEY_ID,     value: "${MIGRATION_DB_ACCESS_KEY}" }
+      #   - { name: AWS_SECRET_ACCESS_KEY, value: "${MIGRATION_DB_SECRET_KEY}" }
       volumeMounts:
         - { name: db, mountPath: /data/database }
 ```
 
-If the dump bucket is in the **same** AWS account and the cluster has IRSA wired up, drop the `env:` block and the pod will use IRSA via the default service account. Otherwise inline the access keys (or mount them from a Secret).
+When using the `platforma-migration` SA from Step 1.2.1, the pod assumes the IAM role transparently — no `env:` block needed. For cross-account dumps that the SA's role does not cover, uncomment the `env:` block and inline the access keys (or mount them from a Secret).
 
 ```bash
 envsubst < mgr-download.yaml | kubectl apply -f -
@@ -242,6 +349,7 @@ metadata:
   name: mgr-sync
   namespace: platforma
 spec:
+  serviceAccountName: platforma-migration   # IRSA SA from Step 1.2.1 — drop for cross-account
   securityContext:
     fsGroup: 1010
     runAsUser: 1010
@@ -435,40 +543,57 @@ The source single-server instance is untouched throughout — keep it running un
 
 # Component Options Reference
 
-The migration itself touches three cluster components: Cluster Autoscaler, Kueue, and AppWrapper. The full options surface for each is below.
+The Platforma chart creates the Kueue-side ProvisioningRequest plumbing automatically when `kueue.provisioningRequest.enabled: true` (default in the latest chart). What it creates:
 
-## Cluster Autoscaler
+- A `ProvisioningRequestConfig` named `<release>-provreq-config` (class `best-effort-atomic-scale-up.autoscaling.x-k8s.io`, retry 3×, backoff 60→600 s).
+- An `AdmissionCheck` named `<release>-provreq-admission-check` wired to that config (controller `kueue.x-k8s.io/provisioning-request`).
+- An `admissionChecksStrategy` entry on the **batch** ClusterQueue referencing that admission check.
 
-Installed in [`advanced-installation.md`](infrastructure/aws/advanced-installation.md) Step 3. Helm chart: `autoscaler/cluster-autoscaler` v9.56.0, image tag `v1.35.0` (must match EKS minor — chart `9.X.Y` → image `v1.X.0` where X = EKS minor).
+For these admission checks to actually fire and succeed, the operator must wire up the **cluster-side** prerequisites: the autoscaler must speak ProvisioningRequest, Kueue must have the feature gate enabled, and the CRD must exist. This section lists exactly what to add.
 
-**All `extraArgs` used by the production install:**
+## What to Add to Cluster Autoscaler
 
-| Flag | Production | Dev/Test | Why |
-|---|---|---|---|
-| `scale-down-delay-after-add` | `10m` | `2m` | Grace period after scale-up before scale-down is considered. Higher values reduce flapping but waste capacity. |
-| `scale-down-unneeded-time` | `10m` | `2m` | Time a node must be underutilized before removal. |
-| `scale-down-utilization-threshold` | `0.5` | `0.5` | Fraction of allocatable CPU+memory below which a node is considered for removal. |
-| `expander` | `least-waste` | `least-waste` | Strategy for picking which node group to scale up. `least-waste` minimises CPU/memory left over after fitting pending pods — best for heterogeneous batch fleets. Other choices: `random`, `most-pods`, `priority`. |
-| `max-node-provision-time` | `5m` | `5m` | Max wait for a new node to become Ready. EKS provisions in 60–90 s; default 15 m masks failures. |
-| `initial-node-group-backoff-duration` | `1m` | `1m` | Backoff after a failed scale-up attempt. Default is 5m. |
-| `max-node-group-backoff-duration` | `5m` | `5m` | Backoff cap after repeated failures. Default is 30m. |
-| `enable-provisioning-requests` | `true` | `true` | Enables the [`ProvisioningRequest`](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/provisioningrequest/README.md) API, which lets Kueue ask the autoscaler "could you fit this whole AppWrapper if I admitted it?" before admission. Prevents partial-admission deadlocks where Kueue admits a job, scales up a few nodes, but never enough to actually run it. |
-| `kube-api-content-type` | `application/json` | `application/json` | Workaround for [autoscaler #8855](https://github.com/kubernetes/autoscaler/issues/8855): the default `application/vnd.kubernetes.protobuf` causes `ProvisioningRequest` status updates to fail silently. |
+Helm chart: `autoscaler/cluster-autoscaler` v9.56.0, image tag `v1.35.0` (chart `9.X.Y` → image `v1.X.0` where X must match the EKS minor — mismatch hangs the autoscaler at `Initializing resource informers`).
 
-**Auto-discovery tag:** `eks:cluster-name=<CLUSTER_NAME>` — EKS adds this to every managed node group's ASG automatically. The autoscaler matches it via `autoDiscovery.tags[0]`.
-
-**IAM scoping:** the only writable actions (`SetDesiredCapacity`, `TerminateInstanceInAutoScalingGroup`) are conditioned on `autoscaling:ResourceTag/eks:cluster-name=${CLUSTER_NAME}`. Note: the condition key is `autoscaling:ResourceTag`, **not** `aws:ResourceTag` — the latter silently denies and the autoscaler hangs.
-
-**ProvisioningRequest CRD:** install before the autoscaler starts (it watches the CRD on boot):
+**1. Two extra Helm flags on the install:**
 
 ```bash
-kubectl apply --server-side -f \
-  https://raw.githubusercontent.com/kubernetes/autoscaler/cluster-autoscaler-1.35.0/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
+helm install cluster-autoscaler autoscaler/cluster-autoscaler \
+  --version 9.56.0 -n kube-system \
+  --set autoDiscovery.clusterName=$CLUSTER_NAME \
+  --set "autoDiscovery.tags[0]=eks:cluster-name=$CLUSTER_NAME" \
+  --set awsRegion=$AWS_REGION \
+  --set image.tag=v1.35.0 \
+  ...
+  # ↓↓↓ ProvisioningRequest support — these two flags are what enables it
+  --set extraArgs.enable-provisioning-requests=true \
+  --set extraArgs.kube-api-content-type=application/json
 ```
 
-The autoscaler's bundled ClusterRole does **not** grant ProvisioningRequest or PodTemplate access. Add this ClusterRoleBinding (see Step 3 of `advanced-installation.md` for the full YAML):
+| Flag | Purpose |
+|---|---|
+| `enable-provisioning-requests=true` | Turns on the ProvisioningRequest controller inside the autoscaler. Without this the autoscaler ignores ProvisioningRequest objects entirely; the chart's `AdmissionCheck` stays `Pending` forever and no batch jobs are admitted. |
+| `kube-api-content-type=application/json` | Workaround for [autoscaler #8855](https://github.com/kubernetes/autoscaler/issues/8855). The default content type (`application/vnd.kubernetes.protobuf`) causes `ProvisioningRequest` *status* updates to fail silently — the request looks stuck even when capacity is available. JSON sidesteps the bug. |
+
+The chart also relies on these production-tuned `extraArgs` (independent of ProvisioningRequest, but needed for sane scaling): `scale-down-delay-after-add=10m`, `scale-down-unneeded-time=10m`, `scale-down-utilization-threshold=0.5`, `expander=least-waste`, `max-node-provision-time=5m`, `initial-node-group-backoff-duration=1m`, `max-node-group-backoff-duration=5m`. See [`advanced-installation.md`](infrastructure/aws/advanced-installation.md) Step 3 for the full install command.
+
+**2. Install the ProvisioningRequest CRD before the autoscaler starts** — it watches the CRD on boot, and a missing CRD makes the controller crash-loop:
+
+```bash
+CA_VERSION="1.35.0"   # must match Cluster Autoscaler image.tag
+
+kubectl apply --server-side -f \
+  https://raw.githubusercontent.com/kubernetes/autoscaler/cluster-autoscaler-${CA_VERSION}/cluster-autoscaler/apis/config/crd/autoscaling.x-k8s.io_provisioningrequests.yaml
+```
+
+**3. Grant ProvisioningRequest + PodTemplate RBAC.** The autoscaler's bundled ClusterRole does *not* include these permissions; without them the autoscaler logs `forbidden: User "system:serviceaccount:kube-system:cluster-autoscaler" cannot list resource "provisioningrequests"` and never reconciles:
 
 ```yaml
+# autoscaler-provreq-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-autoscaler-provisioning-requests
 rules:
   - apiGroups: ["autoscaling.x-k8s.io"]
     resources: ["provisioningrequests", "provisioningrequests/status"]
@@ -476,77 +601,103 @@ rules:
   - apiGroups: [""]
     resources: ["podtemplates"]
     verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-autoscaler-provisioning-requests
+subjects:
+  - kind: ServiceAccount
+    name: cluster-autoscaler
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: cluster-autoscaler-provisioning-requests
+  apiGroup: rbac.authorization.k8s.io
 ```
 
-**Operational gotcha:** after a failed scale-up, the autoscaler enters per-node-group backoff. To clear it without waiting:
+```bash
+kubectl apply -f autoscaler-provreq-rbac.yaml
+```
+
+**4. IAM scoping (AWS only)** — the autoscaler's IAM policy must allow `autoscaling:SetDesiredCapacity` and `autoscaling:TerminateInstanceInAutoScalingGroup`. Scope them with `Condition.StringEquals."autoscaling:ResourceTag/eks:cluster-name": "${CLUSTER_NAME}"`. EKS auto-tags every managed node group's ASG with `eks:cluster-name`. **The condition key is `autoscaling:ResourceTag`, not `aws:ResourceTag`** — the latter silently denies and the autoscaler hangs without an obvious error.
+
+**Operational gotcha:** after a failed scale-up, the autoscaler enters per-node-group backoff for up to `max-node-group-backoff-duration`. Restart the pod to clear it without waiting:
 
 ```bash
 kubectl delete pod -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler
 ```
 
-## Kueue
+## What to Add to Kueue
 
-Installed in `advanced-installation.md` Step 8. OCI chart: `oci://registry.k8s.io/kueue/charts/kueue` v0.16.1 (no leading `v` in the version, with `/charts/` in the path).
+Helm chart: `oci://registry.k8s.io/kueue/charts/kueue` v0.16.1+ (no leading `v` in the version, `/charts/` is part of the OCI path — easy to typo).
 
-**Helm values used in production** (full file: [`infrastructure/aws/kueue-values.yaml`](infrastructure/aws/kueue-values.yaml)):
+The only Kueue-side requirement is the **`ProvisioningACC` feature gate**. It is default-on in Kueue ≥ 0.10, but list it explicitly so it's visible in code review:
 
 ```yaml
-controllerManager:
-  manager:
-    resources:
-      requests: { cpu: 100m, memory: 512Mi }
-      limits:   { cpu: 500m, memory: 1Gi }
-
+# kueue-values.yaml — relevant excerpt
 featureGates:
-  AppWrapper: true        # enables the AppWrapper integration (separate controller — see below)
-  ProvisioningACC: true   # enables ProvisioningRequest-based admission checks (default-on in 0.10+;
-                          # listed explicitly so it's obvious in code review)
-
-integrations:
-  frameworks:
-    - "batch/job"
-    - "jobset.x-k8s.io/jobset"
-    - "workload.codeflare.dev/appwrapper"
-  podOptions:
-    namespaceSelector:
-      matchExpressions:
-        - key: kubernetes.io/metadata.name
-          operator: NotIn
-          values: [kube-system, kueue-system]    # never gate system pods through Kueue
-
-metrics:
-  enableClusterQueueResources: true              # /metrics exposes per-ClusterQueue usage
+  AppWrapper: true        # required for AppWrapper job wrapping (see below)
+  ProvisioningACC: true   # required for ProvisioningRequest-based admission checks
 ```
 
-**Chart-level Kueue knobs** (in `charts/platforma/values.yaml`, applied automatically when `kueue.mode=dedicated`):
+The full Kueue values file the chart expects is [`infrastructure/aws/kueue-values.yaml`](infrastructure/aws/kueue-values.yaml) — feature gates, integrations, controller resources, namespace selector, metrics.
+
+**What the Platforma chart renders** when `kueue.provisioningRequest.enabled: true` (template `kueue-admission-checks.yaml` in the upstream chart). You don't apply this manually — it's here so you can audit what `helm template` produces:
+
+```yaml
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ProvisioningRequestConfig
+metadata:
+  name: <release>-provreq-config
+spec:
+  provisioningClassName: "best-effort-atomic-scale-up.autoscaling.x-k8s.io"
+  retryStrategy:
+    backoffLimitCount: 3
+    backoffBaseSeconds: 60
+    backoffMaxSeconds: 600
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: AdmissionCheck
+metadata:
+  name: <release>-provreq-admission-check
+spec:
+  controllerName: kueue.x-k8s.io/provisioning-request
+  parameters:
+    apiGroup: kueue.x-k8s.io
+    kind: ProvisioningRequestConfig
+    name: <release>-provreq-config
+```
+
+The batch `ClusterQueue` then references this admission check:
+
+```yaml
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: <release>-batch
+spec:
+  admissionChecksStrategy:
+    admissionChecks:
+      - name: <release>-provreq-admission-check
+  # ... resourceGroups, preemption, etc.
+```
+
+The `best-effort-atomic-scale-up` provisioning class tells the autoscaler "give me **all** these nodes or none, atomically" — that is what prevents the partial-scale-up deadlock where Kueue admits a job, the autoscaler brings up some of the requested capacity, then can't bring up the rest, and the job sits forever holding admission slots.
+
+**Chart-level knobs** (relevant for sizing the queues that use these admission checks):
 
 | Path | Default | Description |
 |---|---|---|
-| `kueue.mode` | `dedicated` | `dedicated`: chart creates ClusterQueues, ResourceFlavors, LocalQueues, WorkloadPriorityClasses. `shared`: chart creates only LocalQueues that point at admin-managed ClusterQueues. Use `shared` for multi-tenant clusters. |
-| `kueue.maxJobResources.cpu` | `64` | Largest CPU request a single job can declare. Jobs above this are rejected at admission. |
-| `kueue.maxJobResources.memory` | `256Gi` | Largest memory request per job. |
-| `kueue.pools.ui.nodeSelector` | `{}` | Where UI/interactive jobs run. AWS: `{ node.kubernetes.io/pool: ui }`. GKE: `{ pool: ui }` (the `node.kubernetes.io/` prefix is reserved on GKE). |
-| `kueue.pools.ui.tolerations` | `[]` | Tolerations matching the UI node group's taint. |
-| `kueue.pools.batch.nodeSelector` | `{}` | Where batch jobs run. |
-| `kueue.pools.batch.tolerations` | `[]` | Match the batch taint. |
-| `kueue.dedicated.createClusterResources` | `true` | Set to `false` for secondary Platforma installs that share Kueue infra with a primary install in the same cluster. |
-| `kueue.dedicated.clusterResourceName` | `""` (= release fullname) | Shared name prefix when multiple releases share a single set of ClusterQueues — all releases must use the same value. |
-| `kueue.dedicated.resources.ui.cpu` | `64` | UI ClusterQueue CPU quota — guaranteed (never lent to batch). |
-| `kueue.dedicated.resources.ui.memory` | `256Gi` | UI ClusterQueue memory quota. |
-| `kueue.dedicated.resources.batch.cpu` | `256` | Batch ClusterQueue CPU quota. Can borrow idle UI capacity at runtime. |
-| `kueue.dedicated.resources.batch.memory` | `1024Gi` | Batch ClusterQueue memory quota. |
-| `kueue.shared.clusterQueues.ui` | `""` | (shared mode) name of the existing UI ClusterQueue. |
-| `kueue.shared.clusterQueues.batch` | `""` | (shared mode) name of the existing batch ClusterQueue. |
-| `kueue.shared.workloadPriorityClasses.uiTasks` | `""` | (shared mode) priority class for UI tasks. |
-| `kueue.shared.workloadPriorityClasses.high` | `""` | (shared mode) priority class for high-priority batch. |
-| `kueue.shared.workloadPriorityClasses.normal` | `""` | (shared mode) normal-priority batch. |
-| `kueue.shared.workloadPriorityClasses.low` | `""` | (shared mode) low-priority batch. |
+| `kueue.provisioningRequest.enabled` | `true` | Toggle the chart-managed `ProvisioningRequestConfig` + `AdmissionCheck`. Set `false` only if the cluster has no Cluster Autoscaler — admission checks would never resolve. |
+| `kueue.dedicated.resources.batch.cpu` | `256` | Batch ClusterQueue CPU quota. Should not exceed what the autoscaler can actually provision (sum of batch ASG max sizes × instance vCPU). Over-promising just causes admission checks to deny. |
+| `kueue.dedicated.resources.batch.memory` | `1024Gi` | Same logic for memory. |
+| `kueue.maxJobResources.cpu` / `.memory` | `64` / `256Gi` | Hard upper bound on a single job's request. Jobs above this are rejected at admission with no scale-up attempt. |
+| `kueue.pools.batch.nodeSelector` / `.tolerations` | `{}` / `[]` | Must match the batch node group's labels and taints, or the autoscaler will conclude no group satisfies the request and the ProvisioningRequest will fail. AWS: `{ node.kubernetes.io/pool: batch }`. GKE: `{ pool: batch }` (the `node.kubernetes.io/` prefix is reserved on GKE). |
 
-The `dedicated.resources.*` quotas should align with what Cluster Autoscaler can actually provide (sum of the max sizes of all batch ASGs × instance vCPU / RAM). Setting them higher just causes ProvisioningRequest checks to deny admissions.
+## What to Add to AppWrapper
 
-## AppWrapper
-
-Installed in `advanced-installation.md` Step 8. AppWrapper ships its own controller and CRD — it is **not** bundled with Kueue.
+AppWrapper ships separately from Kueue with its own controller and CRD:
 
 ```bash
 kubectl apply --server-side -f \
@@ -565,16 +716,29 @@ kubectl delete mutatingwebhookconfiguration   appwrapper-mutating-webhook-config
 
 The mutating webhook injects the IAM role ARN as a label value. The ARN contains `:` (e.g. `arn:aws:iam::934685779402:role/...`), which is illegal in a Kubernetes label value, so every AppWrapper admission fails with `metadata.labels: Invalid value`. Deleting the webhooks removes the injection; the controller still runs and reconciles AppWrappers normally.
 
-**Verify the install:**
+AppWrapper does not need any ProvisioningRequest-specific configuration of its own — it just wraps the job pod. The pod's resource requests propagate through Kueue → ProvisioningRequest → autoscaler.
+
+## End-to-End Verification
+
+Once all three components are wired up, submit a job and watch the chain:
 
 ```bash
-kubectl get crd appwrappers.workload.codeflare.dev
-kubectl get pods -n appwrapper-system
-kubectl get clusterqueues
-kubectl get localqueues -n ${NAMESPACE}
+# 1. AppWrapper exists for the job
+kubectl get appwrappers -n ${NAMESPACE}
+
+# 2. Kueue admitted it and created a ProvisioningRequest
+kubectl get workloads -n ${NAMESPACE}
+kubectl get provisioningrequests -n ${NAMESPACE}
+
+# 3. ProvisioningRequest reaches Provisioned status
+kubectl describe provisioningrequest -n ${NAMESPACE} <name>
+
+# 4. AdmissionCheck on the batch queue is Active
+kubectl get clusterqueues -o wide
+kubectl describe admissionchecks
 ```
 
-The Helm chart wraps every job pod into an AppWrapper automatically when `kueue.featureGates.AppWrapper=true` and `workload.codeflare.dev/appwrapper` is in `integrations.frameworks`.
+A healthy ProvisioningRequest moves through `Pending → Accepted → Provisioned`. Stuck at `Pending` usually means the autoscaler can't see the CRD or lacks RBAC; stuck at `Accepted` for more than a few minutes usually means quota or instance-type mismatch.
 
 ---
 
@@ -583,4 +747,5 @@ The Helm chart wraps every job pod into an AppWrapper automatically when `kueue.
 - [Reference migration script](infrastructure/aws/migration.sh) — the ground-truth implementation; the YAML in this document is what it generates.
 - [`advanced-installation.md`](infrastructure/aws/advanced-installation.md) — full manual cluster setup; mirror it in Terraform.
 - [`cloudformation-eks-1-35.yaml`](infrastructure/aws/cloudformation-eks-1-35.yaml) — single-template AWS deployment that runs this same migration via CodeBuild.
+- Upstream `kueue-admission-checks.yaml` template — `core/pl/helm/charts/platforma/templates/kueue-admission-checks.yaml` (source of truth for what the chart renders).
 - [Kueue docs](https://kueue.sigs.k8s.io/docs/) and [AppWrapper docs](https://project-codeflare.github.io/appwrapper/).

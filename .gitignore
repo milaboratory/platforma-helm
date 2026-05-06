@@ -6,4 +6,4 @@ values-*-dev.yaml
 .idea
 .DS_Store
 # personal values files
-values-*
+values-dev-*

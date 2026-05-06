@@ -1,0 +1,78 @@
+# =============================================================================
+# CI E2E Values Override — Local Runner + Local FS
+# =============================================================================
+# Used by e2e-tests.yaml to deploy Platforma-Local with:
+#   - Local runner (no Kueue, no S3)
+#   - htpasswd auth (per-run secret created by reusable workflow)
+#   - Small CI-appropriate resource limits and volumes
+#
+# Overrides applied at deploy time:
+#   --set image.tag=<version>
+#   --set auth.htpasswd.secretName=<release>-htpasswd
+# =============================================================================
+
+imagePullSecrets:
+  - name: regcred
+
+license:
+  secretName: platforma-license
+  secretKey: MI_LICENSE
+
+# htpasswd secret created per-run by the reusable workflow before helm deploy.
+# Secret name is injected via --set auth.htpasswd.secretName=<release>-htpasswd
+auth:
+  htpasswd:
+    secretName: ""
+
+resources:
+  requests:
+    cpu: "8"
+    memory: 8Gi
+  limits:
+    cpu: "8"
+    memory: 8Gi
+
+# emptyDir volumes — no PVC dependencies, CI-appropriate sizes
+volumes:
+  storage:
+    sizeLimit: 4Gi
+  workspace:
+    sizeLimit: 10Gi
+  database:
+    sizeLimit: 2Gi
+  main:
+    sizeLimit: 2Gi
+
+# =============================================================================
+# DATA SOURCES (data libraries for tests)
+# =============================================================================
+
+dataSources:
+  - name: "test-assets"
+    type: s3
+    s3:
+      bucket: "milab-euce1-prod-data-s3-platforma-ci"
+      region: "eu-central-1"
+      prefix: "test-assets/"
+      secretRef:
+        name: "platforma-e2e-aws-credentials"
+        accessKeyField: "access-key"
+        secretKeyField: "secret-key"
+
+app:
+  # Runner RAM < container limit to leave headroom for the server process (avoids OOMKill).
+  runnerLocalRam: "1Gi"
+  maxJobResources:
+    cpu: "1"
+    memory: "256Mb"
+  extraArgs:
+    - "--log-dst=dir:///tmp/platforma-logs"
+  debug:
+    enabled: true
+
+# No ingress — tests connect via cluster-internal service DNS
+ingress:
+  enabled: false
+
+additionalIngress:
+  enabled: false

@@ -1,0 +1,179 @@
+# =============================================================================
+# CI E2E Values Override — K8s Runner + Garage S3 (Shared Kueue)
+# =============================================================================
+# Used by e2e-tests.yaml to deploy Platforma with:
+#   - K8s runner via Kueue (shared mode — references existing ClusterQueues)
+#   - Garage S3 for primary storage (running in common-services namespace)
+#   - htpasswd auth (per-run secret created by reusable workflow)
+#   - Small CI-appropriate resource limits
+#
+# Overrides applied at deploy time:
+#   --set image.tag=<version>
+#   --set auth.htpasswd.secretName=<release>-htpasswd
+# =============================================================================
+
+# -- Image pull policy: use pre-pulled images on CI nodes
+image:
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: regcred
+
+# =============================================================================
+# LICENSE
+# =============================================================================
+
+license:
+  secretName: "platforma-license"
+  secretKey: "MI_LICENSE"
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+# htpasswd secret created per-run by the reusable workflow before helm deploy.
+# Secret name is injected via --set auth.htpasswd.secretName=<release>-htpasswd
+
+auth:
+  htpasswd:
+    credentials: []
+    secretName: ""
+  ldap:
+    server: ""
+
+# =============================================================================
+# STORAGE
+# =============================================================================
+
+storage:
+  # -- Database (RWO): small size for CI
+  database:
+    size: 5Gi
+
+  # -- Workspace: auto-created RWX PVC via chart's built-in PVC template
+  workspace:
+    pvc:
+      enabled: true
+      accessMode: ReadWriteOnce
+      size: 10Gi
+      chownOnCreate: false
+      storageClass: "local-path"
+
+  # -- Main storage: Garage S3 in common-services namespace
+  main:
+    type: s3
+    s3:
+      bucket: "platforma-storage"
+      region: "garage"
+      prefix: ""
+      endpoint: "http://garage.common-services.svc:3900"
+      externalEndpoint: "http://garage.common-services.svc:3900"
+      noDataIntegrity: false
+      secretRef:
+        name: "platforma-e2e-s3-credentials"
+        accessKeyField: "access-key"
+        secretKeyField: "secret-key"
+
+# =============================================================================
+# JOB EXECUTION (Kueue — Shared Mode)
+# =============================================================================
+# References CI-dedicated ClusterQueues and WorkloadPriorityClasses
+# defined in helm/ci/kueue-dev-ci.yaml (applied once by cluster admin).
+# These are isolated from the staging Platforma instance (platforma-e2e).
+
+kueue:
+  mode: shared
+
+  maxJobResources:
+    cpu: 4
+    memory: 8Gi
+
+  pools:
+    ui:
+      nodeSelector: {}
+      tolerations: []
+    batch:
+      nodeSelector: {}
+      tolerations: []
+
+  shared:
+    clusterQueues:
+      ui: "platforma-ci-ui"
+      batch: "platforma-ci-batch"
+    workloadPriorityClasses:
+      uiTasks: "platforma-ci-ui"
+      high: "platforma-ci-high"
+      normal: "platforma-ci-normal"
+      low: "platforma-ci-low"
+
+# =============================================================================
+# DATA SOURCES (data libraries for tests)
+# =============================================================================
+
+dataSources:
+  - name: "test-assets"
+    type: s3
+    s3:
+      bucket: "milab-euce1-prod-data-s3-platforma-ci"
+      region: "eu-central-1"
+      prefix: "test-assets/"
+      secretRef:
+        name: "platforma-e2e-aws-credentials"
+        accessKeyField: "access-key"
+        secretKeyField: "secret-key"
+
+# =============================================================================
+# NETWORKING
+# =============================================================================
+# No ingress needed — tests connect via cluster-internal service DNS.
+
+ingress:
+  enabled: false
+
+# =============================================================================
+# APPLICATION
+# =============================================================================
+
+app:
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+  debug:
+    enabled: true
+
+  extraArgs:
+    - "--log-dst=dir:///tmp/platforma-logs"
+    - "--keep-faulty-workdirs=72h"
+    - "--k8s-max-cpu-request=200m"
+    - "--k8s-max-ram-request=256Mb"
+
+  logging:
+    persistence:
+      enabled: false
+
+  # Auth: htpasswd secret injected at deploy time via --set auth.htpasswd.secretName
+
+# =============================================================================
+# SERVICE ACCOUNTS
+# =============================================================================
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+jobServiceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# =============================================================================
+# JOB CONFIGURATION
+# =============================================================================
+
+jobs:
+  secretName: "platforma-license"

@@ -743,6 +743,12 @@
         "serviceAnnotations": {
           "type": "object"
         },
+        "serviceAppProtocols": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
         "env": {
           "type": "object",
           "properties": {
@@ -870,9 +876,6 @@
             }
           },
           "additionalProperties": false
-        },
-        "serviceAnnotations": {
-          "type": "object"
         }
       },
       "additionalProperties": false

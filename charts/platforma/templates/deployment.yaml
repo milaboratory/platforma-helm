@@ -75,6 +75,59 @@ spec:
       securityContext:
         fsGroup: 1010
         runAsNonRoot: true
+      {{- if or .Values.storage.workspace.fsxLustre.enabled
+                .Values.storage.workspace.filestore.enabled
+                .Values.storage.workspace.nfs.enabled
+                (and .Values.storage.workspace.pvc.enabled
+                     .Values.storage.workspace.pvc.chownOnCreate) }}
+      # Workspace-volume ownership fix.
+      # NFS-style mounts (Filestore, FSx Lustre, plain NFS) and freshly-provisioned
+      # generic PVCs come with the share root owned by uid:gid 0:0. Platforma runs
+      # as 1010, so it can't write into the mount until ownership is corrected.
+      # Replaces the previous pre-install Job (helm/charts/platforma/templates/
+      # hook-chown-workspace.yaml) which deadlocked on a clean install — the Job
+      # mounted platforma-workspace, but that PVC is rendered as a regular
+      # manifest, so the hook fired BEFORE the PVC existed and stayed Pending.
+      # Same execution as the deleted hook (busybox + chown), now ordered
+      # naturally by initContainer semantics.
+      initContainers:
+        - name: chown-workspace
+          image: busybox:1.36
+          # Fast-path: skip the recursive walk if /data/workspace is already
+          # owned 1010:1010. chown -R on a multi-TB Filestore / FSx Lustre with
+          # millions of inodes can add seconds-to-minutes to startup. The
+          # recursion is only needed on first install (or after a backup
+          # restore where files might be root-owned). Steady-state restarts —
+          # OOM kills, evictions, liveness-probe restarts, rolling updates —
+          # hit the fast path and finish in <100ms.
+          command:
+            - sh
+            - -c
+            - |
+              if [ "$(stat -c %u:%g /data/workspace)" = "1010:1010" ]; then
+                echo "Workspace already owned by 1010:1010 — skipping chown -R."
+              else
+                echo "Workspace not owned by 1010:1010 — running chown -R (may be slow on large volumes)."
+                chown -R 1010:1010 /data/workspace
+              fi
+              chmod 755 /data/workspace
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+          volumeMounts:
+            - name: workspace
+              mountPath: /data/workspace
+      {{- end }}
       containers:
         - name: platforma
           image: {{ include "platforma.image" . }}

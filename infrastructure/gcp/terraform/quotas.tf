@@ -43,7 +43,7 @@ locals {
       quota_id      = "N2D-CPUS-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.n2d_cpus_quota
-      justification = "N2D CPU per region. Platforma uses 5 batch pool shapes (n2d-standard-16/32/64, n2d-highmem-32/64) plus n2d-standard-4 system+UI nodes. Peak total: ${local.total_batch_cpu} vCPU batch + system/UI overhead, deployment size ${var.deployment_size}."
+      justification = "N2D CPU per region. Platforma uses 5 batch pool shapes (n2d-standard-16/32/64, n2d-highmem-32/64) plus n2d-standard-8 system nodes and n2d-standard-4 UI nodes. Peak total: ${local.total_batch_cpu} vCPU batch + system/UI overhead, deployment size ${var.deployment_size}."
     }
     pd_ssd_region = {
       service       = "compute.googleapis.com"

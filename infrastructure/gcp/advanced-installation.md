@@ -70,8 +70,9 @@ Versioning matters — protects against accidental state corruption.
 
 ```bash
 git clone https://github.com/milaboratory/platforma-helm.git
-# Or pin to a stable release:
-# git clone -b gcp-im-v1.0.0 https://github.com/milaboratory/platforma-helm.git
+# Or pin to a chart release tag (e.g. v3.3.10 — same scheme as
+# charts/platforma/Chart.yaml: version, pushed by the backend release pipeline):
+# git clone -b v3.3.10 https://github.com/milaboratory/platforma-helm.git
 
 cd platforma-helm/infrastructure/gcp/terraform
 ```

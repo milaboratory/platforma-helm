@@ -129,10 +129,10 @@ Rough idle cost (no jobs running, Tier-1 small):
 | Component | $/hour idle |
 |---|---|
 | GKE Standard control plane | $0.10 |
-| System pool (2× n2d-standard-4) | $0.40 |
+| System pool (2× n2d-standard-8) | $0.80 |
 | Filestore Zonal 1 TiB | $0.40 |
 | Static IP + Cloud DNS records + Cert Manager | ~$0 |
-| **Idle total** | **~$0.50/hour (~$360/month)** |
+| **Idle total** | **~$1.30/hour (~$940/month)** |
 
 Batch + UI pools scale from zero, so they don't burn when idle. Active-job
 cost varies with the pool the autoscaler picks for each job:
@@ -197,7 +197,6 @@ to users.
 - [`domain-guide.md`](domain-guide.md) — Cloud DNS zone creation + delegation from external registrars (Route53, Cloudflare, GoDaddy, Namecheap).
 - [`permissions.md`](permissions.md) — fine-grained IAM role set replacing `roles/owner` on the deployer SA.
 - [`advanced-installation.md`](advanced-installation.md) — Tier-3 local-Terraform path with manual gcloud auth, custom backends, full customization.
-- [`architecture-decisions.md`](architecture-decisions.md) — ADR log: non-obvious choices made during the build (multi-pool batch, Filestore tier, Workload Identity, custom HCL vs standard modules, etc.). Read this before making structural changes.
 
 ## Updates
 
@@ -266,8 +265,30 @@ bash infrastructure/gcp/cloudshell/install.sh
 ```
 
 Without env vars set the script will prompt for each one — fine for the first
-install, tedious for repeated updates. Pick a stable release tag (e.g.
-`gcp-im-v1.0.0`) for production; pull the new tag when a release is announced.
+install, tedious for repeated updates. Pin to a chart release tag (e.g.
+`v3.3.10` — same scheme as `charts/platforma/Chart.yaml: version`, pushed
+automatically by the backend release pipeline) for production; pull the new
+tag when a release is announced.
+
+#### Optional advanced env vars
+
+These don't change the deployed cluster shape but tune ops behavior — set in
+addition to (not instead of) the block above when you need them.
+
+```bash
+# Skip QuotaPreference creation entirely. Required on long-lived projects
+# whose effective quotas already exceed the deployment_size preset by >10x —
+# Cloud Quotas API rejects any preference that lowers an effective limit by
+# more than 10% (FAILED_PRECONDITION / QUOTA_DECREASE_TOO_LARGE).
+export ENABLE_QUOTA_AUTO_REQUEST=false
+
+# Allow 'gcloud infra-manager deployments delete' to drop the primary GCS
+# bucket even when it still contains workspace results. Default is to keep
+# the bucket (data-loss protection — mirrors the AWS S3 retention pattern in
+# the CloudFormation runbook). Set to true on dev/test deployments where
+# bucket contents are disposable so teardown completes in one shot.
+export GCS_FORCE_DESTROY=true
+```
 
 ### Path 2 — edit inputs in the IM Console (no script)
 
@@ -383,21 +404,4 @@ gcloud compute backend-services list --global --project=YOUR_PROJECT \
 
 Should include a backend with `protocol: H2C`. If only `HTTP` shows up, the
 gRPC backend protocol isn't being declared — usually transient on first
-provision; wait a few min. If persistent, check the
-[forthcoming chart fix tracking issue](#) for `app.serviceAppProtocols.grpc`.
-
-## Open chart-side fixes (tracking)
-
-Two chart fixes are pending in the upstream `pl` repo — they'll flow into
-this chart via the sync workflow on the next pl release. Until then, the GCP
-installer ships its own workarounds:
-
-- [pl#1789](https://github.com/milaboratory/pl/pull/1789) — chown-workspace
-  initContainer (replaces deadlocked pre-install hook). Already mirrored
-  into the bundled chart copy in this repo.
-- [pl#1790](https://github.com/milaboratory/pl/pull/1790) — Service
-  `appProtocols` (now flattened to `app.serviceAppProtocols`). Landed; the
-  installer renders the chart with `app.serviceAppProtocols.grpc =
-  kubernetes.io/h2c` so the GKE Gateway forwards gRPC over HTTP/2 cleartext
-  to the chart's main Service. Earlier revisions provisioned a parallel
-  `platforma-grpc` Service in `dns_tls.tf`; that workaround was removed.
+provision; wait a few min.

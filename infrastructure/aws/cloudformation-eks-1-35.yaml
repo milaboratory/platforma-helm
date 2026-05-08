@@ -535,7 +535,7 @@ Mappings:
     EKS:
       Version: "1.35"
     Platforma:
-      Version: "3.3.7"
+      Version: "3.3.10"
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
@@ -2493,7 +2493,24 @@ Resources:
                   # controller if the CRD wasn't present when it first started.
                   kubectl rollout restart deployment kueue-controller-manager -n kueue-system
                   kubectl wait --for=condition=Available deployment/kueue-controller-manager -n kueue-system --timeout=120s
-                  kubectl apply --server-side -f https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml
+                  # Verify AppWrapper install.yaml integrity before applying.
+                  # A compromised release tag, MITM in transit, or a silent
+                  # upstream re-tag would change the SHA-256 and fail this
+                  # check before kubectl apply touches the cluster. Update
+                  # APPWRAPPER_INSTALL_YAML_SHA256 alongside APPWRAPPER_VERSION;
+                  # compute with: curl -fsSL <url> | sha256sum.
+                  APPWRAPPER_INSTALL_YAML_SHA256="aabb84a8719248c1dfaa6516f194dce559043237657cc697823f61ebeeaf9024"
+                  APPWRAPPER_INSTALL_YAML_TMP="$(mktemp)"
+                  curl -fsSL "https://github.com/project-codeflare/appwrapper/releases/download/$APPWRAPPER_VERSION/install.yaml" -o "$APPWRAPPER_INSTALL_YAML_TMP"
+                  ACTUAL_SHA="$(sha256sum "$APPWRAPPER_INSTALL_YAML_TMP" | awk '{print $1}')"
+                  if [ "$ACTUAL_SHA" != "$APPWRAPPER_INSTALL_YAML_SHA256" ]; then
+                    echo "ERROR: AppWrapper install.yaml SHA-256 mismatch — got $ACTUAL_SHA, expected $APPWRAPPER_INSTALL_YAML_SHA256." >&2
+                    echo "       Either upstream re-published $APPWRAPPER_VERSION (verify and update APPWRAPPER_INSTALL_YAML_SHA256) or the download was tampered with." >&2
+                    rm -f "$APPWRAPPER_INSTALL_YAML_TMP"
+                    exit 1
+                  fi
+                  kubectl apply --server-side -f "$APPWRAPPER_INSTALL_YAML_TMP"
+                  rm -f "$APPWRAPPER_INSTALL_YAML_TMP"
                   kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
                   kubectl delete validatingwebhookconfiguration appwrapper-validating-webhook-configuration --ignore-not-found
                   kubectl delete mutatingwebhookconfiguration appwrapper-mutating-webhook-configuration --ignore-not-found

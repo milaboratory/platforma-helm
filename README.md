@@ -282,7 +282,9 @@ Alternatively, set `serviceAccount.create: false` and `serviceAccount.name: "my-
 
 Platforma exposes a gRPC API on port 6345. The Desktop App connects here for all operations. When using S3 or GCS main storage, the Desktop App downloads results directly from the cloud — no additional ingress is needed.
 
-The chart supports `ingress` and `additionalIngress` blocks with `host`, `tls`, and `annotations`.
+The chart supports `ingress` and `additionalIngress` blocks with `host`, `tls`, and `annotations`. These render Kubernetes `Ingress` resources, which work with any ingress controller listed below.
+
+> **Note for GKE Gateway users.** The Kubernetes Gateway API (`Gateway` + `HTTPRoute`) is **not** rendered by this chart. The supplied GCP infrastructure module (`infrastructure/gcp/`) provisions Gateway/HTTPRoute outside the chart so it can wire in a static IP, Cloud DNS record, and a Certificate Manager certmap — values the chart can't construct on its own. If you run the chart standalone on GKE and want Gateway-based access, leave `ingress.enabled: false` and create the Gateway/HTTPRoute yourself, pointing at the in-cluster `platforma` Service. Cluster setups vary too much for the chart to take this on directly.
 
 #### AWS ALB Ingress Controller
 
@@ -350,13 +352,29 @@ app:
 kubectl port-forward svc/platforma -n platforma 6345:6345
 ```
 
+#### The `appProtocol` field
+
+The chart's `app.service.appProtocols` map sets the standard `appProtocol` field on the gRPC and HTTP Service ports. Setting `grpc: "kubernetes.io/h2c"` is safe across all environments — it's metadata that controllers either understand or ignore.
+
+| Component | Reads `appProtocol`? | What you actually use |
+|---|---|---|
+| AWS Load Balancer Controller (Ingress) | No | `alb.ingress.kubernetes.io/backend-protocol-version: GRPC` annotation |
+| GKE Ingress (classic) | No | `cloud.google.com/app-protocols` annotation |
+| NGINX Ingress | No | `nginx.ingress.kubernetes.io/backend-protocol: GRPC` annotation |
+| Traefik 2.9+ Ingress | Yes | `appProtocol` alone is enough; older versions need `traefik.ingress.kubernetes.io/service.serversscheme: h2c` |
+| GKE Gateway (Gateway API) | Yes | `appProtocol` is the only switch |
+| In-cluster meshes (Istio, Linkerd) | Yes | Used for protocol detection |
+
+Set it when a controller in the table reads it; otherwise it's harmless and forward-compatible.
+
 #### Choosing an approach
 
 | Environment | Recommended | Notes |
 |---|---|---|
 | AWS with ALB Controller | ALB + `group.name` | Native AWS, ACM certs, WAF support |
 | AWS with nginx/traefik | Use existing controller | One NLB already handles all services |
-| GKE | GKE Ingress or nginx | GKE LB pricing differs from AWS |
+| GKE — chart only | nginx or traefik | Set `appProtocol: kubernetes.io/h2c` for gRPC |
+| GKE — with this repo's GCP infra module | GKE Gateway (provisioned by terraform) | TLS via Certificate Manager, gRPC via `appProtocol` — chart's `ingress.enabled` stays false |
 | k3s / bare metal | traefik (ships with k3s) | Default, no extra install |
 | Development | Port-forward | No ingress needed |
 

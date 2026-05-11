@@ -1708,11 +1708,11 @@ Resources:
               - Key: platforma
                 Value: !Ref ClusterName
 
-  SystemNodeGroupV3:
+  SystemNodeGroupV4:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: system-v3
+      NodegroupName: system-v4
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
@@ -2227,7 +2227,7 @@ Resources:
 
   CoreDnsAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV3
+    DependsOn: SystemNodeGroupV4
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: coredns
@@ -2236,10 +2236,10 @@ Resources:
         - Key: platforma
           Value: !Ref ClusterName
 
-  # CSI drivers (DependsOn: SystemNodeGroupV3 for running pods)
+  # CSI drivers (DependsOn: SystemNodeGroupV4 for running pods)
   EbsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV3
+    DependsOn: SystemNodeGroupV4
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-ebs-csi-driver
@@ -2251,7 +2251,7 @@ Resources:
 
   EfsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV3
+    DependsOn: SystemNodeGroupV4
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-efs-csi-driver

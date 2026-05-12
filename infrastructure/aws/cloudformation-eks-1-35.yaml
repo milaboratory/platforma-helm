@@ -535,7 +535,7 @@ Mappings:
     EKS:
       Version: "1.35"
     Platforma:
-      Version: "3.3.10"
+      Version: "3.4.1"
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
@@ -1708,11 +1708,11 @@ Resources:
               - Key: platforma
                 Value: !Ref ClusterName
 
-  SystemNodeGroupV4:
+  SystemNodeGroupV3:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: system-v4
+      NodegroupName: system-v3
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
@@ -2227,7 +2227,7 @@ Resources:
 
   CoreDnsAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV4
+    DependsOn: SystemNodeGroupV3
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: coredns
@@ -2236,10 +2236,10 @@ Resources:
         - Key: platforma
           Value: !Ref ClusterName
 
-  # CSI drivers (DependsOn: SystemNodeGroupV4 for running pods)
+  # CSI drivers (DependsOn: SystemNodeGroupV3 for running pods)
   EbsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV4
+    DependsOn: SystemNodeGroupV3
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-ebs-csi-driver
@@ -2251,7 +2251,7 @@ Resources:
 
   EfsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV4
+    DependsOn: SystemNodeGroupV3
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-efs-csi-driver

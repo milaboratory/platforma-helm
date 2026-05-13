@@ -14,6 +14,7 @@ to completion. ~25 minutes end to end.
 |---|---|
 | [`tutorial.md`](tutorial.md) | Cloud Shell walkthrough rendered in the side panel |
 | [`install.sh`](install.sh) | Driver script — collects inputs, sets up SA, submits IM deployment, polls to completion |
+| [`teardown.sh`](teardown.sh) | Clean teardown — deletes the chart's retained PVCs first, then submits `gcloud infra-manager deployments delete`. Avoids the stuck-PV / 30-min-helm-timeout failure mode you get when running the raw `gcloud` command on a deployment that has the platforma chart installed. |
 
 ## Running outside Cloud Shell
 

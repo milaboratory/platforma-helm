@@ -80,14 +80,14 @@ resource "terraform_data" "appwrapper_manifest_integrity" {
 
 data "kubectl_file_documents" "appwrapper" {
   content = data.http.appwrapper_manifest.response_body
-
-  # Block YAML parsing until the integrity check passes; without this
-  # terraform may try to apply manifests from a tampered file before the
-  # postcondition fires.
-  depends_on = [terraform_data.appwrapper_manifest_integrity]
 }
 
 resource "kubectl_manifest" "appwrapper" {
+  # Data source resolves at plan time so for_each keys are known.
+  # The integrity check (terraform_data.appwrapper_manifest_integrity)
+  # is depended-on at the resource level instead of on the data source,
+  # so terraform gates the kubectl apply on the SHA-256 verification
+  # passing without making the data source's outputs unknown at plan time.
   for_each = data.kubectl_file_documents.appwrapper.manifests
 
   yaml_body         = each.value
@@ -96,5 +96,6 @@ resource "kubectl_manifest" "appwrapper" {
 
   depends_on = [
     helm_release.kueue,
+    terraform_data.appwrapper_manifest_integrity,
   ]
 }

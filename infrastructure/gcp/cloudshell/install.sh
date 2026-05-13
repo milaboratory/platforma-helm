@@ -138,6 +138,12 @@ preflight() {
   bold "Pre-flight checks"
 
   require_command gcloud
+  # jq is used by detect_quota_decrease_collisions to parse the Cloud Quotas
+  # API JSON output and filter by region. Cloud Shell always has it; local
+  # runs on slim distros may not. Catching it here so the operator gets a
+  # clear error early, not a silent no-op deep into the pre-flight quota
+  # check.
+  require_command jq
 
   PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || true)}"
   if [[ -z "${PROJECT_ID}" || "${PROJECT_ID}" == "(unset)" ]]; then
@@ -825,6 +831,212 @@ detect_existing_quota_prefs() {
 }
 
 # -----------------------------------------------------------------------------
+# Normalize boolean inputs
+# -----------------------------------------------------------------------------
+# A handful of inputs are wired into the JSON tfvars via jq's --argjson,
+# which requires syntactically-valid JSON. Booleans there are 'true' or
+# 'false' (lowercase, no quotes). Operators commonly type 'True' / 'False'
+# / 'yes' / '1' which would crash build_tfvars_json mid-run with a confusing
+# jq parse error. Catch and reject those up-front; normalize accepted
+# spellings to lowercase 'true' / 'false' so all downstream readers see the
+# same canonical form.
+#
+# Variables covered (unset values pass through — downstream handles
+# defaults explicitly):
+#   ENABLE_QUOTA_AUTO_REQUEST   pre-flight check + tfvar
+#   GCS_FORCE_DESTROY           tfvar
+#   ENABLE_DEMO                 tfvar (set via prompt_var with default 'true')
+#   LDAP_START_TLS              tfvar (set via prompt_var when AUTH_METHOD=ldap)
+# -----------------------------------------------------------------------------
+
+normalize_boolean_inputs() {
+  local var val
+  for var in ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS; do
+    val="${!var:-}"
+    [[ -z "${val}" ]] && continue
+    case "${val,,}" in
+      true|yes|1)
+        printf -v "${var}" '%s' 'true'
+        ;;
+      false|no|0)
+        printf -v "${var}" '%s' 'false'
+        ;;
+      *)
+        red "Invalid boolean for ${var}='${val}'."
+        red "  Accepted: true / false (case-insensitive); 'yes' / 'no' / '1' / '0' also map to the right side."
+        exit 1
+        ;;
+    esac
+  done
+}
+
+# -----------------------------------------------------------------------------
+# Pre-flight: warn when effective quotas would be decreased by >10%
+# -----------------------------------------------------------------------------
+# Cloud Quotas API rejects any QuotaPreference whose preferred_value would
+# lower the current effective limit by more than 10% (FAILED_PRECONDITION /
+# QUOTA_DECREASE_TOO_LARGE). The auto-request in quotas.tf is silent until
+# 'terraform apply' fails mid-run, leaving the cluster partially-provisioned.
+#
+# Pre-checks each preset-mapped quota against its current effective limit
+# and warns up-front when our preset's preferred_value would breach the
+# 10% rule. Recommends ENABLE_QUOTA_AUTO_REQUEST=false in those cases.
+#
+# Skipped entirely when the user already opted out of auto-request.
+# -----------------------------------------------------------------------------
+
+# Map preset_key -> (service, quota_id, requires_region_dimension).
+# Each preset_key listed here MUST have a matching case in
+# required_for_preset_key() — otherwise the loop in
+# detect_quota_decrease_collisions() will silently skip it (empty
+# required => `continue`). The set below intentionally mirrors the keys
+# defined in required_for_preset_key (PRESET_CPUS_GLOBAL etc.) — 5 quotas,
+# excluding in_use_addresses_region (no preset table in install.sh yet;
+# quotas.tf still requests it, but a collision on this one is rare and
+# the postcondition error message points the operator straight at the
+# right fix anyway).
+declare -A QUOTA_PRESET_TO_SERVICE=(
+  [cpus_global]="compute.googleapis.com"
+  [n2d_cpus_region]="compute.googleapis.com"
+  [pd_ssd_region]="compute.googleapis.com"
+  [instances_region]="compute.googleapis.com"
+  [filestore_zonal_region]="file.googleapis.com"
+)
+declare -A QUOTA_PRESET_TO_QUOTAID=(
+  [cpus_global]="CPUS-ALL-REGIONS-per-project"
+  [n2d_cpus_region]="N2D-CPUS-per-project-region"
+  [pd_ssd_region]="SSD-TOTAL-GB-per-project-region"
+  [instances_region]="INSTANCES-per-project-region"
+  [filestore_zonal_region]="EnterpriseStorageGibPerRegion"
+)
+# Whether the quota's dimensions block needs region=${REGION}. Empty = global.
+declare -A QUOTA_PRESET_TO_DIMREGION=(
+  [cpus_global]=""
+  [n2d_cpus_region]="1"
+  [pd_ssd_region]="1"
+  [instances_region]="1"
+  [filestore_zonal_region]="1"
+)
+
+# Fetch the current effective limit for a preset_key in the deployment's
+# REGION. Echoes the numeric value, or empty when the API returns no info
+# (typically a quota the project has never bumped — Cloud Quotas API
+# returns the platform default in that case, so empty here usually means
+# the API call itself failed or the project hasn't enabled the relevant
+# service yet).
+#
+# Regional quotas return one dimensionsInfo per region the project has a
+# preference in, ordered non-deterministically. We jq-filter to the
+# matching REGION so we don't compare against an unrelated region's limit
+# (which would produce both false positives and false negatives).
+fetch_effective_quota_for_preset_key() {
+  local preset_key="$1"
+  local service quota_id needs_region
+  service="${QUOTA_PRESET_TO_SERVICE[${preset_key}]:-}"
+  quota_id="${QUOTA_PRESET_TO_QUOTAID[${preset_key}]:-}"
+  needs_region="${QUOTA_PRESET_TO_DIMREGION[${preset_key}]:-}"
+  [[ -z "${service}" || -z "${quota_id}" ]] && return 0
+
+  local json
+  json="$(gcloud quotas info describe \
+    "services/${service}/quotaInfos/${quota_id}" \
+    --project="${PROJECT_ID}" --format=json 2>/dev/null)" || return 0
+  [[ -z "${json}" ]] && return 0
+
+  if [[ -n "${needs_region}" ]]; then
+    # Pick the dimensionsInfo whose dimensions.region matches REGION.
+    echo "${json}" | jq -r --arg r "${REGION}" \
+      '.dimensionsInfos[]? | select(.dimensions.region == $r) | .details.value' \
+      2>/dev/null | head -1
+  else
+    # Global quota — pick the dimensionsInfo with no region (or no
+    # dimensions block at all). Fallback to [0] only if that filter
+    # returns nothing.
+    local v
+    v="$(echo "${json}" | jq -r \
+      '.dimensionsInfos[]? | select(.dimensions == null or (.dimensions | has("region") | not)) | .details.value' \
+      2>/dev/null | head -1)"
+    [[ -z "${v}" ]] && v="$(echo "${json}" | jq -r '.dimensionsInfos[0]?.details.value' 2>/dev/null)"
+    echo "${v}"
+  fi
+}
+
+detect_quota_decrease_collisions() {
+  if [[ "${ENABLE_QUOTA_AUTO_REQUEST:-true}" != "true" ]]; then
+    # User already opted out globally — nothing to validate.
+    return 0
+  fi
+
+  bold "Checking for >10% quota-decrease collisions"
+
+  # Build the set of preset_keys that terraform will skip via
+  # var.skip_quota_requests. Two sources:
+  #   - SKIP_QUOTA_REQUESTS_AUTO[] populated by detect_existing_quota_prefs
+  #     when a user-managed QuotaPreference already exists for a quota.
+  #   - SKIP_QUOTA_REQUESTS env var (comma-separated, set by power users).
+  # For any preset_key in this set, terraform's google_cloud_quotas_quota_
+  # preference resource is skipped → no >10%-decrease collision possible
+  # for that quota. Warning about it would be a confusing false positive.
+  local -A skip_set=()
+  local k
+  for k in "${SKIP_QUOTA_REQUESTS_AUTO[@]:-}"; do
+    [[ -n "${k}" ]] && skip_set["${k}"]=1
+  done
+  if [[ -n "${SKIP_QUOTA_REQUESTS:-}" ]]; then
+    local IFS=','
+    for k in ${SKIP_QUOTA_REQUESTS}; do
+      [[ -n "${k}" ]] && skip_set["${k}"]=1
+    done
+  fi
+
+  local has_collision=0
+  local preset_key required current
+
+  for preset_key in "${!QUOTA_PRESET_TO_QUOTAID[@]}"; do
+    if [[ -n "${skip_set[${preset_key}]:-}" ]]; then
+      info "Skip ${QUOTA_PRESET_TO_QUOTAID[${preset_key}]}: already in skip_quota_requests (terraform won't request it)."
+      continue
+    fi
+
+    required="$(required_for_preset_key "${preset_key}")"
+    [[ -z "${required}" || "${required}" == "0" ]] && continue
+
+    current="$(fetch_effective_quota_for_preset_key "${preset_key}" || echo "")"
+    if [[ -z "${current}" || "${current}" == "0" ]]; then
+      # No effective limit visible — either Cloud Quotas API not yet enabled
+      # (preflight does that earlier; if still missing it's likely permission
+      # related), or the quota genuinely has no preference yet. Either way,
+      # no collision risk so skip silently.
+      continue
+    fi
+
+    # Cloud Quotas rejects when the new effective would be <90% of current.
+    # Equivalently: collision when current > required / 0.9, i.e.
+    # current > required * 10/9. Exact integer form: current * 9 > required * 10.
+    if (( current * 9 > required * 10 )); then
+      warn "Quota '${QUOTA_PRESET_TO_QUOTAID[${preset_key}]}'${QUOTA_PRESET_TO_DIMREGION[${preset_key}]:+ (region=${REGION})}: effective=${current} already exceeds preset=${required} by >10%."
+      warn "  → Cloud Quotas API will reject the auto-request (QUOTA_DECREASE_TOO_LARGE)."
+      has_collision=1
+    fi
+  done
+
+  if (( has_collision > 0 )); then
+    echo
+    warn "One or more effective quotas already exceed what the '${DEPLOYMENT_SIZE}' preset would request."
+    warn "Cloud Quotas API rejects preferences that would lower an effective limit by more than 10%."
+    warn "Recommended: set ENABLE_QUOTA_AUTO_REQUEST=false in your env and re-run install.sh."
+    echo
+    if ! prompt_yn "Continue with auto-request anyway (terraform apply WILL fail mid-run on these quotas)?"; then
+      red "Aborted."; exit 1
+    fi
+    echo
+  else
+    info "No >10% decrease collisions — auto-request is safe to proceed."
+    echo
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # Service account for Infrastructure Manager
 # -----------------------------------------------------------------------------
 
@@ -1169,9 +1381,11 @@ main() {
 
   preflight
   collect_inputs
+  normalize_boolean_inputs
   verify_dns_delegation
   verify_ldap_config
   detect_existing_quota_prefs
+  detect_quota_decrease_collisions
   ensure_im_service_account
 
   bold "Review"

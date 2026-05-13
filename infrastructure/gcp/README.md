@@ -194,6 +194,7 @@ to users.
 - [`cloudshell/`](cloudshell/) — Tier-1 quickstart.
   - [`tutorial.md`](cloudshell/tutorial.md) — Cloud Shell walkthrough.
   - [`install.sh`](cloudshell/install.sh) — driver script (also runs standalone outside Cloud Shell).
+  - [`teardown.sh`](cloudshell/teardown.sh) — clean-teardown driver. Use instead of raw `gcloud infra-manager deployments delete` to avoid stuck PV finalizers on the chart's retained PVCs.
 - [`domain-guide.md`](domain-guide.md) — Cloud DNS zone creation + delegation from external registrars (Route53, Cloudflare, GoDaddy, Namecheap).
 - [`permissions.md`](permissions.md) — fine-grained IAM role set replacing `roles/owner` on the deployer SA.
 - [`advanced-installation.md`](advanced-installation.md) — Tier-3 local-Terraform path with manual gcloud auth, custom backends, full customization.
@@ -330,12 +331,17 @@ to the previous shape.
 
 ## Tearing down
 
-Tier-1 / Tier-2:
+Tier-1 / Tier-2 — use the bundled `teardown.sh`:
 
 ```bash
-gcloud infra-manager deployments delete platforma \
-  --location=europe-west1 --project=YOUR_PROJECT --quiet
+bash infrastructure/gcp/cloudshell/teardown.sh
 ```
+
+It accepts the same `PROJECT_ID` / `DEPLOYMENT_NAME` / `IM_LOCATION` env vars as
+`install.sh`. The script deletes the chart's three PVCs first, then submits
+`gcloud infra-manager deployments delete` — that ordering avoids the helm
+provider's destroy hanging on stuck PV finalizers (see the next subsection for
+the background).
 
 Tier-3: `tofu destroy`.
 
@@ -348,6 +354,29 @@ gcloud storage rm -r gs://platforma-platforma-cluster-XXXXXXXX
 
 The Cloud DNS zone you set up in [`domain-guide.md`](domain-guide.md) is **not
 managed by this module** — leave it in place if you'll re-deploy.
+
+### Why `teardown.sh` exists (and what happens without it)
+
+The Platforma chart annotates its PVCs (`platforma-database`, `platforma-logs`,
+`platforma-workspace`) with `helm.sh/resource-policy: keep` so `helm uninstall`
+preserves the data on production teardowns — useful when re-installing into
+the same cluster without losing workspace artifacts.
+
+For a **full destroy**, that annotation is in the way:
+
+1. `gcloud infra-manager deployments delete` runs `terraform destroy`.
+2. Terraform's `helm_release.platforma` destroy uninstalls the chart, but the
+   `keep`-annotated PVCs stay behind.
+3. Terraform then tries to destroy the PVs (which it owns indirectly via the
+   chart). The `kubernetes.io/pv-protection` finalizer prevents PV deletion
+   while a PVC is still `Bound`, so PV deletion hangs.
+4. After the 30 min `helm_release.timeout`, terraform aborts with
+   `Error uninstalling release: context deadline exceeded`, leaving the GKE
+   cluster, Filestore, network and other resources behind.
+5. Operator has to delete the PVCs manually, then re-run the destroy.
+
+`teardown.sh` deletes the three PVCs **before** calling the IM delete, so the
+PVs release cleanly and the destroy run finishes in one shot (~10 min).
 
 ## Troubleshooting
 

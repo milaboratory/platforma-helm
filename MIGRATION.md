@@ -7,7 +7,12 @@ The migration moves two pieces of state:
 1. **Database** — RocksDB on the source server, dumped to a gzipped file and restored into the chart's `platforma-database` PVC.
 2. **Primary storage** — bucket-to-bucket S3 sync (or equivalent on GCP) into the new cloud bucket the cluster will use.
 
-The procedure is split into three phases that run before, during, and after the `helm install`. Phase 3 writes a `/data/database/.migration-complete` marker on the database PVC after cache invalidation succeeds; every PVC-bound in-cluster step (DB download, restore, invalidate, dump cleanup) gates on this marker, so re-running them once the migration has completed end-to-end is a no-op. Phase 0 steps (DB dump on the source, S3 Batch Replication kickoff) and Step 1.3 (`s5cmd` sync) are idempotent by virtue of the underlying operation — re-running a finished DB dump just overwrites the local file, re-creating a Batch Replication job is rejected by the `ClientRequestToken`, and `s5cmd sync` skips already-copied objects via ETag comparison.
+The procedure is split into three phases that run before, during, and after the `helm install`. Re-run safety works differently for the in-cluster pipeline vs. the AWS-side work:
+
+- **PVC-bound in-cluster steps** (Step 1.4 DB download, 1.5 restore, 1.6 cleanup, and Phase 3 invalidate) gate on a `/data/database/.migration-complete` marker written by Phase 3 after cache invalidation succeeds. Re-running any of them after a successful end-to-end migration is a no-op.
+- **`s5cmd` sync** (Step 1.3) is idempotent on its own — it compares ETags and skips already-copied objects, so re-running is cheap.
+- **DB dump** (Step 0.3) just overwrites `backup.gz` on the source host.
+- **S3 Batch Replication** (Step 0.6.5) is **not idempotent** as written — `ClientRequestToken` uses `$(date +%s)`, so each `aws s3control create-job` call creates a new job. Don't blindly re-run the create-job command; instead, check the existing job's status (Step 0.6.6) and only re-create if the original truly failed.
 
 ## Audience and Scope
 
@@ -282,10 +287,7 @@ cat > /tmp/batch-policy.json <<EOF
     },
     {
       "Effect": "Allow",
-      "Action": [
-        "s3:GetReplicationConfiguration",
-        "s3:PutInventoryConfiguration"
-      ],
+      "Action": ["s3:GetReplicationConfiguration"],
       "Resource": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}"
     },
     {
@@ -611,7 +613,6 @@ spec:
           # sync uses server-side COPY when both sides are S3 — no bytes through this pod.
           # Trailing /* on the source is required by s5cmd to expand the prefix.
           # s5cmd sync is idempotent (ETag-compared), so re-running on completed buckets is cheap.
-          AWS_REGION=${REGION} \
           s5cmd --numworkers 256 \
                 --source-region ${MIGRATION_SOURCE_REGION} \
                 --destination-region ${REGION} \
@@ -624,12 +625,12 @@ spec:
       #   - { name: AWS_SECRET_ACCESS_KEY, value: "${MIGRATION_STORAGE_SECRET_KEY}" }
 ```
 
-This pod intentionally does **not** mount the `platforma-database` PVC. The DB-handling pods (`mgr-download`, `mgr-restore`, `mgr-invalidate`) all mount that PVC with `ReadWriteOnce` access — k8s would refuse to schedule `mgr-sync` to a different node while one of them is running. Skipping the mount lets `mgr-sync` run truly in parallel with the DB pipeline.
+This pod intentionally does **not** mount the `platforma-database` PVC. The DB-handling pods (`mgr-download`, `mgr-restore`, `mgr-invalidate`) all mount that PVC with `ReadWriteOnce` access — Kubernetes would refuse to schedule `mgr-sync` to a different node while one of them is running. Skipping the mount lets `mgr-sync` run truly in parallel with the DB pipeline.
 
 ```bash
 envsubst < mgr-sync.yaml | kubectl apply -f -
 kubectl wait pod/mgr-sync -n ${NAMESPACE} \
-  --for=jsonpath='{.status.phase}'=Succeeded --timeout=86400s
+  --for=jsonpath='{.status.phase}'=Succeeded --timeout=21600s
 kubectl logs -f mgr-sync -n ${NAMESPACE}
 kubectl delete pod/mgr-sync -n ${NAMESPACE}
 ```
@@ -829,7 +830,7 @@ kubectl logs mgr-invalidate -n ${NAMESPACE}
 kubectl delete pod/mgr-invalidate -n ${NAMESPACE}
 ```
 
-The marker file `/data/database/.migration-complete` makes this and every previous step a no-op on re-run.
+The marker file `/data/database/.migration-complete` makes this step and every other PVC-mounting step (1.4 download, 1.5 restore, 1.6 cleanup) a no-op on re-run. Step 1.3 (`s5cmd`) and the Phase 0 AWS-side steps are not marker-gated — see the [intro](#migration-single-server-platforma--kubernetes) for how they handle re-runs.
 
 ### Step 3.3: Scale Platforma Back Up
 

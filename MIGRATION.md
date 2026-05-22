@@ -7,7 +7,7 @@ The migration moves two pieces of state:
 1. **Database** — RocksDB on the source server, dumped to a gzipped file and restored into the chart's `platforma-database` PVC.
 2. **Primary storage** — bucket-to-bucket S3 sync (or equivalent on GCP) into the new cloud bucket the cluster will use.
 
-The procedure is split into two phases that run before and after the `helm install`. Both phases are idempotent: each step writes a `/data/database/.migration-complete` marker so reruns are no-ops.
+The procedure is split into three phases that run before, during, and after the `helm install`. Phase 3 writes a `/data/database/.migration-complete` marker on the database PVC after cache invalidation succeeds; every earlier step gates on this marker, so re-running the full Phase 1 → 3 sequence is a no-op once the migration has completed end-to-end. Re-running an intermediate step before the marker exists overwrites previous output (e.g. re-downloads the dump) — which is what you want when a step failed partway through.
 
 ## Audience and Scope
 
@@ -24,7 +24,7 @@ If you are setting up the cluster from scratch on AWS using CloudFormation, the 
 | Requirement | Notes |
 |---|---|
 | Source Platforma version | Same major.minor as the target chart's image. Cross-version restore is not supported. |
-| Source database dump | Created with `curl http://localhost:9091/db/state_raw \| gzip > backup.gz`, then uploaded to S3. The endpoint is part of the debug API (port 9091 on the source server). |
+| Source database dump | Created with `curl -s http://localhost:9091/db/state_raw \| gzip > backup.gz`, then uploaded to S3. The endpoint is part of the debug API — it requires `--debug-enabled` (or `PL_DEBUG_ENABLED=true`) on the source server, and binds to `127.0.0.1:9091` by default. See [Phase 0](#phase-0-source-side-preparation). |
 | Target cluster ready | Cluster Autoscaler, Kueue + AppWrapper, EFS CSI, EBS CSI, S3 IRSA all working. See [advanced-installation.md](infrastructure/aws/advanced-installation.md) Steps 1–8. |
 | Target S3 bucket created | Empty. The migration will sync data into it. |
 | `MI_LICENSE` available | The migration uses the Platforma image to run `--restore-db` and `--invalidate-caches`, both of which need a valid license. |
@@ -39,8 +39,17 @@ Set these once before running any step. Each pre-helm command references them.
 # Target cluster
 export NAMESPACE="platforma"
 export REGION="eu-central-1"
+export CLUSTER_NAME="my-platforma-cluster"             # EKS cluster name — used for IAM role/policy names
+export AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 export S3_BUCKET="platforma-<your-cluster>-<suffix>"   # destination bucket (already created)
+
+# Platforma image tag used by the migration pods (must match the source server's major.minor)
 export PLATFORMA_VERSION="3.0.1"
+# Helm chart version installed in Phase 2 — usually tracks PLATFORMA_VERSION but can differ
+export CHART_VERSION="${PLATFORMA_VERSION}"
+
+# License — required by the Platforma-image pods (restore + invalidate)
+export MI_LICENSE="..."                                # paste the license token, or load from a file
 
 # Source dump (required)
 export MIGRATION_DATABASE_S3_URI="s3://my-backups/platforma-backup.gz"
@@ -68,6 +77,53 @@ All migration work runs as one-shot pods inside the target namespace. They use:
 - The `platforma-license` Secret for the Platforma-image pods.
 
 The reference implementation is the script at [`infrastructure/aws/migration.sh`](infrastructure/aws/migration.sh). The YAML below is what that script generates and applies — provided here so you can run the migration manually or wire it into your own Terraform `null_resource` / `helm_release` `provisioner`.
+
+---
+
+## Phase 0: Source-Side Preparation
+
+Run these steps on the **source** single-server host (the machine running the standalone binary or Docker image). They produce the two artefacts Phase 1 consumes:
+
+1. A gzipped database dump uploaded to S3 (referenced by `MIGRATION_DATABASE_S3_URI`).
+2. A frozen primary-storage S3 bucket whose name you record as `MIGRATION_SOURCE_BUCKET`.
+
+### Step 0.1: Freeze the Source Instance
+
+Stop all writes — pause Desktop App users and any automated submitters. The database dump and the storage bucket must represent the same point in time; new objects written after the dump is taken will be invisible to the restored DB and orphaned in storage.
+
+### Step 0.2: Enable the Debug API on the Source
+
+The `/db/state_raw` endpoint is gated behind the debug API. If it is not already enabled, restart the source server with `--debug-enabled` (or set `PL_DEBUG_ENABLED=true`). The endpoint binds to `127.0.0.1:9091` by default — run the dump command **on the source host itself**, or temporarily change `--debug-ip` to bind to a routable interface.
+
+Verify:
+
+```bash
+curl -sf http://localhost:9091/db/stats >/dev/null && echo "debug API reachable"
+```
+
+### Step 0.3: Dump the Database
+
+```bash
+curl -s http://localhost:9091/db/state_raw | gzip > backup.gz
+```
+
+The endpoint streams a tab-separated key/value dump of RocksDB; piping into `gzip` writes a single compressed file. Dump time scales with DB size — a 10 GB live DB typically compresses to 1–3 GB.
+
+> The same dump can also be produced offline with the `pl-db-cli` binary that ships in the Platforma image (`/app/pl-db-cli dump --db-dir=...`) if the source server cannot expose the debug API.
+
+### Step 0.4: Upload the Dump to S3
+
+Use whatever S3 bucket the new cluster can read from. For same-account migrations, any bucket the migration IRSA role (Step 1.2.1) can `s3:GetObject` from works.
+
+```bash
+aws s3 cp backup.gz s3://my-backups/platforma-backup.gz
+```
+
+Record the URI as `MIGRATION_DATABASE_S3_URI` in the variables block above.
+
+### Step 0.5: Identify the Source Primary-Storage Bucket
+
+If the source instance used S3 (not local disk) for primary storage, note its bucket name and region — they become `MIGRATION_SOURCE_BUCKET` and `MIGRATION_SOURCE_REGION`. The bucket is copied into the destination during Phase 1 — Step 1.5 (`s5cmd`, for buckets up to ~1 TB) or Step 1.5b (S3 Batch Replication, for multi-TB buckets). Confirm the bucket is no longer being written to (Step 0.1) before starting Phase 1.
 
 ---
 
@@ -156,7 +212,7 @@ cat > /tmp/migration-policy.json <<EOF
       "Sid": "ReadSourceDump",
       "Effect": "Allow",
       "Action": ["s3:GetObject"],
-      "Resource": "arn:aws:s3:::SOURCE_DUMP_BUCKET/*"
+      "Resource": "arn:aws:s3:::$(echo ${MIGRATION_DATABASE_S3_URI} | awk -F/ '{print $3}')/*"
     },
     {
       "Sid": "ReadSourceStorage",
@@ -341,6 +397,17 @@ kubectl delete pod/mgr-restore -n ${NAMESPACE}
 
 Skip this step if your source instance kept its primary storage on a local filesystem and you want the new cluster to start with an empty bucket.
 
+Pick the path that matches the source bucket size:
+
+| Bucket size | Recommended tool | Why |
+|---|---|---|
+| **< ~1 TB / < 10 M objects** | `s5cmd` in a pod (this step) | Simple, idempotent, runs alongside the other migration pods. |
+| **≥ 1 TB or ≥ 10 M objects** | **S3 Batch Replication** ([Step 1.5b](#step-15b-s3-batch-replication-for-multi-tb-buckets)) | Managed by AWS, parallel server-side copy across the S3 fleet, no pod throughput ceiling, progress visible in the S3 console. |
+
+If you choose Batch Replication, **skip this Step 1.5 entirely** and jump to Step 1.5b — they are alternatives, not sequential steps.
+
+The pod below uses [`s5cmd`](https://github.com/peak/s5cmd) instead of `aws s3 sync`. Both tools rely on S3 server-side COPY (no data leaves AWS, no egress charges) when source and destination are S3 buckets, but `s5cmd` parallelizes listing and copy operations aggressively — in practice **10–30× faster** than `aws s3 sync` for buckets with many small objects, which is the common shape of Platforma's primary storage.
+
 ```yaml
 # mgr-sync.yaml
 apiVersion: v1
@@ -359,21 +426,25 @@ spec:
     - { name: db, persistentVolumeClaim: { claimName: platforma-database } }
   containers:
     - name: mgr-sync
-      image: amazon/aws-cli:2.27.22
+      image: peakcom/s5cmd:v2.3.0
       command: ["/bin/sh", "-ec"]
       args:
         - |
           if [ -f /data/database/.migration-complete ]; then echo Already completed; exit 0; fi
-          aws s3 sync s3://${MIGRATION_SOURCE_BUCKET}/${MIGRATION_SOURCE_PREFIX} \
-                       s3://${S3_BUCKET}/ \
-                       --source-region ${MIGRATION_SOURCE_REGION} \
-                       --region ${REGION} \
-                       --no-progress --copy-props none
+          # --numworkers: parallel S3 operations (default 256 is fine; raise for very wide buckets).
+          # sync uses server-side COPY when both sides are S3 — no bytes through this pod.
+          # Trailing /* on the source is required by s5cmd to expand the prefix.
+          AWS_REGION=${REGION} \
+          s5cmd --numworkers 256 \
+                --source-region ${MIGRATION_SOURCE_REGION} \
+                --destination-region ${REGION} \
+                sync "s3://${MIGRATION_SOURCE_BUCKET}/${MIGRATION_SOURCE_PREFIX}*" \
+                     "s3://${S3_BUCKET}/"
           echo Storage sync complete
-      env:
-        # Only needed for cross-account source bucket
-        - { name: AWS_ACCESS_KEY_ID,     value: "${MIGRATION_STORAGE_ACCESS_KEY}" }
-        - { name: AWS_SECRET_ACCESS_KEY, value: "${MIGRATION_STORAGE_SECRET_KEY}" }
+      # env section ONLY needed for cross-account source bucket — omit when using IRSA
+      # env:
+      #   - { name: AWS_ACCESS_KEY_ID,     value: "${MIGRATION_STORAGE_ACCESS_KEY}" }
+      #   - { name: AWS_SECRET_ACCESS_KEY, value: "${MIGRATION_STORAGE_SECRET_KEY}" }
       volumeMounts:
         - { name: db, mountPath: /data/database }
 ```
@@ -386,14 +457,281 @@ kubectl logs -f mgr-sync -n ${NAMESPACE}
 kubectl delete pod/mgr-sync -n ${NAMESPACE}
 ```
 
-`--copy-props none` skips ACL and tag copies that frequently fail across accounts; the destination uses bucket-default encryption.
+Tuning notes:
+
+- `--numworkers` controls the size of the worker pool. 256 saturates a single small pod on a same-region intra-AWS copy; raise to 1024 for very large buckets and bump pod CPU requests accordingly.
+- `s5cmd sync` is idempotent — it compares object size/ETag and skips unchanged keys, so reruns after a failure resume cheaply.
+- If your bucket has **hundreds of millions of objects**, prefer **S3 Batch Replication** instead: create a replication configuration scoped to existing objects, AWS performs the copy server-side at fleet scale, and you can monitor progress via the S3 console. `s5cmd` is the simpler choice up to roughly 50 M objects.
+- `s5cmd` does not attempt to copy ACLs or object tags, so the `aws s3 sync ... --copy-props none` workaround used previously for cross-account migrations is unnecessary here.
+- `MIGRATION_SOURCE_PREFIX` should end with `/` if set (e.g. `data/`). Without a trailing slash, the `${MIGRATION_SOURCE_PREFIX}*` glob would match sibling prefixes too — e.g. prefix `data` matches both `data/` and `data2/`.
+
+### Step 1.5b: S3 Batch Replication for Multi-TB Buckets
+
+Use this path **instead of Step 1.5** when the source bucket holds multiple TB or tens of millions of objects. S3 Batch Replication is an AWS-managed bulk copy that runs on the S3 service fleet rather than from a pod — throughput scales with the manifest size, not with your VPC bandwidth or pod CPU, and it can copy a multi-TB bucket in hours that would take days with a single `s5cmd` pod.
+
+All steps run from a workstation with AWS CLI access to the cluster account. Run them **before** `helm install` so the destination bucket is fully populated when Platforma starts.
+
+#### Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| **Versioning enabled on both buckets** | Replication operates on object versions. AWS rejects the replication config otherwise. |
+| **Both buckets in the same AWS partition** | `aws` (commercial), `aws-us-gov`, etc. Cross-partition replication is not supported. |
+| **Same-account or pre-configured cross-account trust** | For cross-account, the destination bucket policy must grant the source-account replication role `s3:ReplicateObject`, `s3:ReplicateDelete`, `s3:ReplicateTags`, `s3:GetObjectVersionTagging`, and `s3:ObjectOwnerOverrideToBucketOwner`. |
+| **Manifest report bucket (optional but recommended)** | Batch Replication can generate the manifest on the fly; the completion report needs an S3 location to write to. Reuse the destination bucket with a `reports/` prefix. |
+
+#### Step 1.5b.1: Enable Versioning on Both Buckets
+
+```bash
+aws s3api put-bucket-versioning \
+  --bucket ${MIGRATION_SOURCE_BUCKET} \
+  --region ${MIGRATION_SOURCE_REGION} \
+  --versioning-configuration Status=Enabled
+
+aws s3api put-bucket-versioning \
+  --bucket ${S3_BUCKET} \
+  --region ${REGION} \
+  --versioning-configuration Status=Enabled
+```
+
+Versioning cannot be fully removed once enabled, only suspended. Suspending after the migration is fine — Platforma does not depend on versioning at runtime.
+
+#### Step 1.5b.2: Create the Replication IAM Role
+
+This role is assumed by S3 itself when it copies each object. It needs read on the source and write on the destination.
+
+```bash
+# Trust policy — only s3.amazonaws.com can assume it
+cat > /tmp/replication-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "s3.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+
+# Permissions policy
+cat > /tmp/replication-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObjectVersionForReplication",
+        "s3:GetObjectVersionAcl",
+        "s3:GetObjectVersionTagging",
+        "s3:GetReplicationConfiguration",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}",
+        "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ReplicateObject",
+        "s3:ReplicateDelete",
+        "s3:ReplicateTags",
+        "s3:ObjectOwnerOverrideToBucketOwner"
+      ],
+      "Resource": "arn:aws:s3:::${S3_BUCKET}/*"
+    }
+  ]
+}
+EOF
+
+REPL_ROLE_ARN=$(aws iam create-role \
+  --role-name ${CLUSTER_NAME}-s3-replication \
+  --assume-role-policy-document file:///tmp/replication-trust.json \
+  --query 'Role.Arn' --output text)
+
+aws iam put-role-policy \
+  --role-name ${CLUSTER_NAME}-s3-replication \
+  --policy-name s3-replication \
+  --policy-document file:///tmp/replication-policy.json
+
+echo "Replication role: $REPL_ROLE_ARN"
+```
+
+#### Step 1.5b.3: Put a Replication Configuration on the Source Bucket
+
+Batch Replication uses the same rule engine as live replication — it just acts on existing objects. The rule below replicates everything in the source bucket to the destination, owned by the destination account.
+
+```bash
+cat > /tmp/replication-config.json <<EOF
+{
+  "Role": "${REPL_ROLE_ARN}",
+  "Rules": [{
+    "ID": "platforma-migration",
+    "Status": "Enabled",
+    "Priority": 1,
+    "Filter": {"Prefix": "${MIGRATION_SOURCE_PREFIX}"},
+    "DeleteMarkerReplication": {"Status": "Disabled"},
+    "Destination": {
+      "Bucket": "arn:aws:s3:::${S3_BUCKET}",
+      "AccessControlTranslation": {"Owner": "Destination"},
+      "Account": "${AWS_ACCOUNT_ID}"
+    }
+  }]
+}
+EOF
+
+aws s3api put-bucket-replication \
+  --bucket ${MIGRATION_SOURCE_BUCKET} \
+  --region ${MIGRATION_SOURCE_REGION} \
+  --replication-configuration file:///tmp/replication-config.json
+```
+
+Putting this config does **not** copy existing objects — only objects written *after* it is applied are replicated live. Since the source is frozen (Step 0.1), there are no new writes; you only care about existing-object backfill, which Batch Replication performs in the next step.
+
+> The Batch job in Step 1.5b.5 generates its own manifest, so a bucket-level replication configuration is **not strictly required** for backfill. The reason to put one on anyway: it acts as a safety net — if anything accidentally writes to the supposedly-frozen source bucket during the migration window, those writes propagate to the destination live, instead of being orphaned. Skip this step only if you are certain no writes can occur.
+
+#### Step 1.5b.4: Create the Batch Operations IAM Role
+
+This role is assumed by S3 Batch Operations to drive the job — it needs to initiate replication and write the completion report.
+
+```bash
+cat > /tmp/batch-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "batchoperations.s3.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+
+cat > /tmp/batch-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:InitiateReplication"],
+      "Resource": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetReplicationConfiguration",
+        "s3:PutInventoryConfiguration"
+      ],
+      "Resource": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject"],
+      "Resource": "arn:aws:s3:::${S3_BUCKET}/reports/*"
+    }
+  ]
+}
+EOF
+
+BATCH_ROLE_ARN=$(aws iam create-role \
+  --role-name ${CLUSTER_NAME}-s3-batch-replication \
+  --assume-role-policy-document file:///tmp/batch-trust.json \
+  --query 'Role.Arn' --output text)
+
+aws iam put-role-policy \
+  --role-name ${CLUSTER_NAME}-s3-batch-replication \
+  --policy-name s3-batch-replication \
+  --policy-document file:///tmp/batch-policy.json
+
+echo "Batch role: $BATCH_ROLE_ARN"
+```
+
+#### Step 1.5b.5: Create the Batch Replication Job
+
+Use auto-generated manifests — S3 inspects the source bucket and produces the manifest for you. No inventory report or pre-staged CSV needed.
+
+```bash
+cat > /tmp/batch-job.json <<EOF
+{
+  "ConfirmationRequired": false,
+  "Operation": {
+    "S3ReplicateObject": {}
+  },
+  "Report": {
+    "Bucket": "arn:aws:s3:::${S3_BUCKET}",
+    "Prefix": "reports/batch-replication",
+    "Format": "Report_CSV_20180820",
+    "Enabled": true,
+    "ReportScope": "AllTasks"
+  },
+  "ManifestGenerator": {
+    "S3JobManifestGenerator": {
+      "SourceBucket": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}",
+      "EnableManifestOutput": false,
+      "Filter": {
+        "EligibleForReplication": true,
+        "ObjectReplicationStatuses": ["NONE", "FAILED"]
+      }
+    }
+  },
+  "Priority": 10,
+  "RoleArn": "${BATCH_ROLE_ARN}",
+  "ClientRequestToken": "platforma-migration-$(date +%s)",
+  "Description": "Platforma primary-storage migration"
+}
+EOF
+
+JOB_ID=$(aws s3control create-job \
+  --account-id ${AWS_ACCOUNT_ID} \
+  --region ${MIGRATION_SOURCE_REGION} \
+  --cli-input-json file:///tmp/batch-job.json \
+  --query 'JobId' --output text)
+
+echo "Batch job: $JOB_ID"
+```
+
+The `ObjectReplicationStatuses: ["NONE", "FAILED"]` filter ensures only un-replicated objects are processed — safe to re-run the job to retry failures.
+
+#### Step 1.5b.6: Monitor the Job
+
+```bash
+# Poll status
+aws s3control describe-job \
+  --account-id ${AWS_ACCOUNT_ID} \
+  --region ${MIGRATION_SOURCE_REGION} \
+  --job-id ${JOB_ID} \
+  --query 'Job.{Status:Status,Progress:ProgressSummary}'
+```
+
+Or watch in the S3 console under **S3 → Batch Operations** — select the job to see objects-attempted / -succeeded / -failed in near real time. Typical throughput is hundreds of millions of objects per day; a 10-TB bucket of medium-sized objects usually completes in 6–12 hours.
+
+Wait for `Status: Complete` and check the completion report at `s3://${S3_BUCKET}/reports/batch-replication/job-${JOB_ID}/` — any per-object failures are listed there. The destination bucket key count should match the source.
+
+#### Step 1.5b.7: Clean Up Replication Plumbing
+
+After the destination bucket is populated, remove the rule so the now-decommissioned source bucket isn't replicating anything new:
+
+```bash
+aws s3api delete-bucket-replication \
+  --bucket ${MIGRATION_SOURCE_BUCKET} \
+  --region ${MIGRATION_SOURCE_REGION}
+
+# Optional: suspend versioning on the destination if Platforma will not use it
+aws s3api put-bucket-versioning \
+  --bucket ${S3_BUCKET} \
+  --region ${REGION} \
+  --versioning-configuration Status=Suspended
+```
+
+The IAM roles (`*-s3-replication`, `*-s3-batch-replication`) can be deleted or kept for future migrations.
 
 ### Step 1.6: Delete the Dump File
 
 ```bash
 kubectl run mgr-cleanup -n ${NAMESPACE} --restart=Never \
   --image=amazon/aws-cli:2.27.22 \
-  --overrides='{"spec":{"securityContext":{"fsGroup":1010,"runAsUser":1010,"runAsGroup":1010},"containers":[{"name":"mgr-cleanup","image":"amazon/aws-cli:2.27.22","command":["sh","-ec","rm -f /data/database/backup.gz"],"volumeMounts":[{"name":"db","mountPath":"/data/database"}]}],"volumes":[{"name":"db","persistentVolumeClaim":{"claimName":"platforma-database"}}]}}'
+  --overrides='{"spec":{"securityContext":{"fsGroup":1010,"runAsUser":1010,"runAsGroup":1010},"containers":[{"name":"mgr-cleanup","image":"amazon/aws-cli:2.27.22","command":["sh","-ec","if [ -f /data/database/.migration-complete ]; then echo Already completed; exit 0; fi; rm -f /data/database/backup.gz"],"volumeMounts":[{"name":"db","mountPath":"/data/database"}]}],"volumes":[{"name":"db","persistentVolumeClaim":{"claimName":"platforma-database"}}]}}'
 kubectl wait pod/mgr-cleanup -n ${NAMESPACE} \
   --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
 kubectl delete pod/mgr-cleanup -n ${NAMESPACE}
@@ -407,7 +745,7 @@ Standard install — see [`README.md`](README.md) and [`advanced-installation.md
 
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
-  --version ${PLATFORMA_VERSION} \
+  --version ${CHART_VERSION} \
   -n ${NAMESPACE} \
   -f infrastructure/aws/values-aws-s3.yaml \
   --set storage.main.s3.bucket=${S3_BUCKET} \
@@ -739,13 +1077,3 @@ kubectl describe admissionchecks
 ```
 
 A healthy ProvisioningRequest moves through `Pending → Accepted → Provisioned`. Stuck at `Pending` usually means the autoscaler can't see the CRD or lacks RBAC; stuck at `Accepted` for more than a few minutes usually means quota or instance-type mismatch.
-
----
-
-## See Also
-
-- [Reference migration script](infrastructure/aws/migration.sh) — the ground-truth implementation; the YAML in this document is what it generates.
-- [`advanced-installation.md`](infrastructure/aws/advanced-installation.md) — full manual cluster setup; mirror it in Terraform.
-- [`cloudformation-eks-1-35.yaml`](infrastructure/aws/cloudformation-eks-1-35.yaml) — single-template AWS deployment that runs this same migration via CodeBuild.
-- Upstream `kueue-admission-checks.yaml` template — `core/pl/helm/charts/platforma/templates/kueue-admission-checks.yaml` (source of truth for what the chart renders).
-- [Kueue docs](https://kueue.sigs.k8s.io/docs/) and [AppWrapper docs](https://project-codeflare.github.io/appwrapper/).

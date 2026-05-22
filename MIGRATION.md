@@ -82,10 +82,13 @@ The reference implementation is the script at [`infrastructure/aws/migration.sh`
 
 ## Phase 0: Source-Side Preparation
 
-Run these steps on the **source** single-server host (the machine running the standalone binary or Docker image). They produce the two artefacts Phase 1 consumes:
+Steps 0.1–0.5 run on the **source** single-server host (the machine running the standalone binary or Docker image). Step 0.6 runs from a workstation with AWS CLI access — it is entirely AWS-side and has no dependency on the target Kubernetes cluster, so kicking it off here lets it run asynchronously in the background while you complete the rest of Phase 0 and all of Phase 1.
+
+Phase 0 produces:
 
 1. A gzipped database dump uploaded to S3 (referenced by `MIGRATION_DATABASE_S3_URI`).
 2. A frozen primary-storage S3 bucket whose name you record as `MIGRATION_SOURCE_BUCKET`.
+3. For multi-TB buckets: a running S3 Batch Replication job that will populate the destination bucket before Phase 2.
 
 ### Step 0.1: Freeze the Source Instance
 
@@ -123,7 +126,268 @@ Record the URI as `MIGRATION_DATABASE_S3_URI` in the variables block above.
 
 ### Step 0.5: Identify the Source Primary-Storage Bucket
 
-If the source instance used S3 (not local disk) for primary storage, note its bucket name and region — they become `MIGRATION_SOURCE_BUCKET` and `MIGRATION_SOURCE_REGION`. The bucket is copied into the destination during Phase 1 — Step 1.3 (`s5cmd`, for buckets up to ~1 TB) or Step 1.3b (S3 Batch Replication, for multi-TB buckets). Confirm the bucket is no longer being written to (Step 0.1) before starting Phase 1.
+If the source instance used S3 (not local disk) for primary storage, note its bucket name and region — they become `MIGRATION_SOURCE_BUCKET` and `MIGRATION_SOURCE_REGION`. The bucket is copied into the destination either by [Step 0.6](#step-06-s3-batch-replication-for-multi-tb-buckets) (S3 Batch Replication, recommended for multi-TB buckets — start it now, finishes in the background) or by [Step 1.3](#step-13-sync-primary-storage-s5cmd--1-tb) (in-cluster `s5cmd`, for buckets up to ~1 TB). Confirm the bucket is no longer being written to (Step 0.1) before starting either.
+
+### Step 0.6: S3 Batch Replication for Multi-TB Buckets
+
+Use this path **instead of the in-cluster `s5cmd` sync (Step 1.3)** when the source bucket holds multiple TB or tens of millions of objects. S3 Batch Replication is an AWS-managed bulk copy that runs on the S3 service fleet rather than from a pod — throughput scales with the manifest size, not with your VPC bandwidth or pod CPU, and it can copy a multi-TB bucket in hours that would take days with a single `s5cmd` pod.
+
+All steps run from a workstation with AWS CLI access to the cluster account. Kick the job off in Phase 0 — Batch Replication has no dependency on the Kubernetes cluster and AWS runs it asynchronously, so it copies in the background while you complete the rest of Phase 0 (DB dump) and Phase 1 (cluster setup, DB restore). The destination bucket must be fully populated **before `helm install`** in Phase 2; verify completion (Step 0.6.6) before moving on.
+
+#### Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| **Versioning enabled on both buckets** | Replication operates on object versions. AWS rejects the replication config otherwise. |
+| **Both buckets in the same AWS partition** | `aws` (commercial), `aws-us-gov`, etc. Cross-partition replication is not supported. |
+| **Same-account or pre-configured cross-account trust** | For cross-account, the destination bucket policy must grant the source-account replication role `s3:ReplicateObject`, `s3:ReplicateDelete`, `s3:ReplicateTags`, `s3:GetObjectVersionTagging`, and `s3:ObjectOwnerOverrideToBucketOwner`. |
+| **Manifest report bucket (optional but recommended)** | Batch Replication can generate the manifest on the fly; the completion report needs an S3 location to write to. Reuse the destination bucket with a `reports/` prefix. |
+
+#### Step 0.6.1: Enable Versioning on Both Buckets
+
+```bash
+aws s3api put-bucket-versioning \
+  --bucket ${MIGRATION_SOURCE_BUCKET} \
+  --region ${MIGRATION_SOURCE_REGION} \
+  --versioning-configuration Status=Enabled
+
+aws s3api put-bucket-versioning \
+  --bucket ${S3_BUCKET} \
+  --region ${REGION} \
+  --versioning-configuration Status=Enabled
+```
+
+Versioning cannot be fully removed once enabled, only suspended. Suspending after the migration is fine — Platforma does not depend on versioning at runtime.
+
+#### Step 0.6.2: Create the Replication IAM Role
+
+This role is assumed by S3 itself when it copies each object. It needs read on the source and write on the destination.
+
+```bash
+# Trust policy — only s3.amazonaws.com can assume it
+cat > /tmp/replication-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "s3.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+
+# Permissions policy
+cat > /tmp/replication-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObjectVersionForReplication",
+        "s3:GetObjectVersionAcl",
+        "s3:GetObjectVersionTagging",
+        "s3:GetReplicationConfiguration",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}",
+        "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ReplicateObject",
+        "s3:ReplicateDelete",
+        "s3:ReplicateTags",
+        "s3:ObjectOwnerOverrideToBucketOwner"
+      ],
+      "Resource": "arn:aws:s3:::${S3_BUCKET}/*"
+    }
+  ]
+}
+EOF
+
+REPL_ROLE_ARN=$(aws iam create-role \
+  --role-name ${CLUSTER_NAME}-s3-replication \
+  --assume-role-policy-document file:///tmp/replication-trust.json \
+  --query 'Role.Arn' --output text)
+
+aws iam put-role-policy \
+  --role-name ${CLUSTER_NAME}-s3-replication \
+  --policy-name s3-replication \
+  --policy-document file:///tmp/replication-policy.json
+
+echo "Replication role: $REPL_ROLE_ARN"
+```
+
+#### Step 0.6.3: Put a Replication Configuration on the Source Bucket
+
+Batch Replication uses the same rule engine as live replication — it just acts on existing objects. The rule below replicates everything in the source bucket to the destination, owned by the destination account.
+
+```bash
+cat > /tmp/replication-config.json <<EOF
+{
+  "Role": "${REPL_ROLE_ARN}",
+  "Rules": [{
+    "ID": "platforma-migration",
+    "Status": "Enabled",
+    "Priority": 1,
+    "Filter": {"Prefix": "${MIGRATION_SOURCE_PREFIX}"},
+    "DeleteMarkerReplication": {"Status": "Disabled"},
+    "Destination": {
+      "Bucket": "arn:aws:s3:::${S3_BUCKET}",
+      "AccessControlTranslation": {"Owner": "Destination"},
+      "Account": "${AWS_ACCOUNT_ID}"
+    }
+  }]
+}
+EOF
+
+aws s3api put-bucket-replication \
+  --bucket ${MIGRATION_SOURCE_BUCKET} \
+  --region ${MIGRATION_SOURCE_REGION} \
+  --replication-configuration file:///tmp/replication-config.json
+```
+
+Putting this config does **not** copy existing objects — only objects written *after* it is applied are replicated live. Since the source is frozen (Step 0.1), there are no new writes; you only care about existing-object backfill, which Batch Replication performs in the next step.
+
+> The Batch job in Step 0.6.5 generates its own manifest, so a bucket-level replication configuration is **not strictly required** for backfill. The reason to put one on anyway: it acts as a safety net — if anything accidentally writes to the supposedly-frozen source bucket during the migration window, those writes propagate to the destination live, instead of being orphaned. Skip this step only if you are certain no writes can occur.
+
+#### Step 0.6.4: Create the Batch Operations IAM Role
+
+This role is assumed by S3 Batch Operations to drive the job — it needs to initiate replication and write the completion report.
+
+```bash
+cat > /tmp/batch-trust.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "batchoperations.s3.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+
+cat > /tmp/batch-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:InitiateReplication"],
+      "Resource": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetReplicationConfiguration",
+        "s3:PutInventoryConfiguration"
+      ],
+      "Resource": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject"],
+      "Resource": "arn:aws:s3:::${S3_BUCKET}/reports/*"
+    }
+  ]
+}
+EOF
+
+BATCH_ROLE_ARN=$(aws iam create-role \
+  --role-name ${CLUSTER_NAME}-s3-batch-replication \
+  --assume-role-policy-document file:///tmp/batch-trust.json \
+  --query 'Role.Arn' --output text)
+
+aws iam put-role-policy \
+  --role-name ${CLUSTER_NAME}-s3-batch-replication \
+  --policy-name s3-batch-replication \
+  --policy-document file:///tmp/batch-policy.json
+
+echo "Batch role: $BATCH_ROLE_ARN"
+```
+
+#### Step 0.6.5: Create the Batch Replication Job
+
+Use auto-generated manifests — S3 inspects the source bucket and produces the manifest for you. No inventory report or pre-staged CSV needed.
+
+```bash
+cat > /tmp/batch-job.json <<EOF
+{
+  "ConfirmationRequired": false,
+  "Operation": {
+    "S3ReplicateObject": {}
+  },
+  "Report": {
+    "Bucket": "arn:aws:s3:::${S3_BUCKET}",
+    "Prefix": "reports/batch-replication",
+    "Format": "Report_CSV_20180820",
+    "Enabled": true,
+    "ReportScope": "AllTasks"
+  },
+  "ManifestGenerator": {
+    "S3JobManifestGenerator": {
+      "SourceBucket": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}",
+      "EnableManifestOutput": false,
+      "Filter": {
+        "EligibleForReplication": true,
+        "ObjectReplicationStatuses": ["NONE", "FAILED"]
+      }
+    }
+  },
+  "Priority": 10,
+  "RoleArn": "${BATCH_ROLE_ARN}",
+  "ClientRequestToken": "platforma-migration-$(date +%s)",
+  "Description": "Platforma primary-storage migration"
+}
+EOF
+
+JOB_ID=$(aws s3control create-job \
+  --account-id ${AWS_ACCOUNT_ID} \
+  --region ${MIGRATION_SOURCE_REGION} \
+  --cli-input-json file:///tmp/batch-job.json \
+  --query 'JobId' --output text)
+
+echo "Batch job: $JOB_ID"
+```
+
+The `ObjectReplicationStatuses: ["NONE", "FAILED"]` filter ensures only un-replicated objects are processed — safe to re-run the job to retry failures.
+
+#### Step 0.6.6: Monitor the Job
+
+```bash
+# Poll status
+aws s3control describe-job \
+  --account-id ${AWS_ACCOUNT_ID} \
+  --region ${MIGRATION_SOURCE_REGION} \
+  --job-id ${JOB_ID} \
+  --query 'Job.{Status:Status,Progress:ProgressSummary}'
+```
+
+Or watch in the S3 console under **S3 → Batch Operations** — select the job to see objects-attempted / -succeeded / -failed in near real time. Typical throughput is hundreds of millions of objects per day; a 10-TB bucket of medium-sized objects usually completes in 6–12 hours.
+
+Wait for `Status: Complete` and check the completion report at `s3://${S3_BUCKET}/reports/batch-replication/job-${JOB_ID}/` — any per-object failures are listed there. The destination bucket key count should match the source.
+
+#### Step 0.6.7: Clean Up Replication Plumbing
+
+After the destination bucket is populated, remove the rule so the now-decommissioned source bucket isn't replicating anything new:
+
+```bash
+aws s3api delete-bucket-replication \
+  --bucket ${MIGRATION_SOURCE_BUCKET} \
+  --region ${MIGRATION_SOURCE_REGION}
+
+# Optional: suspend versioning on the destination if Platforma will not use it
+aws s3api put-bucket-versioning \
+  --bucket ${S3_BUCKET} \
+  --region ${REGION} \
+  --versioning-configuration Status=Suspended
+```
+
+The IAM roles (`*-s3-replication`, `*-s3-batch-replication`) can be deleted or kept for future migrations.
 
 ---
 
@@ -131,7 +395,12 @@ If the source instance used S3 (not local disk) for primary storage, note its bu
 
 Goal: have a populated `platforma-database` PVC and a fully-synced primary-storage bucket **before** `helm install` runs, so that the chart's first-run reconciliation sees both a healthy database and the storage objects it references.
 
-Step order matters: the primary-storage sync (Step 1.3) is the long-pole operation and should be kicked off first so it runs in parallel with the much faster DB download and restore (Steps 1.4–1.5). Step 1.6 (cleanup) runs last.
+The primary-storage sync is the long-pole operation:
+
+- **Multi-TB buckets** are handled by S3 Batch Replication in [Step 0.6](#step-06-s3-batch-replication-for-multi-tb-buckets), kicked off back in Phase 0 and running in the background while Phase 1 proceeds. You can do all of Phase 1 in parallel with it — only verify completion before Phase 2.
+- **Smaller buckets (< 1 TB)** are synced in-cluster by [Step 1.3](#step-13-sync-primary-storage-s5cmd--1-tb). Start that step first so it runs in parallel with the much faster DB download and restore (Steps 1.4–1.5).
+
+Step 1.6 (cleanup) runs last.
 
 ### Step 1.1: Create Namespace, StorageClass, License Secret
 
@@ -302,20 +571,18 @@ sed "s|ACCOUNT_ID|${AWS_ACCOUNT_ID}|; s|CLUSTER_NAME|${CLUSTER_NAME}|" migration
 
 > The same pattern works on GKE — replace the IAM role + annotation with a Workload Identity binding (`iam.gke.io/gcp-service-account`).
 
-### Step 1.3: Sync Primary Storage
+### Step 1.3: Sync Primary Storage (`s5cmd`, < 1 TB)
 
-Platforma cannot serve any project that references objects in primary storage until those objects exist in the destination bucket — restoring the database alone is not enough. The sync is also the long-pole step in this migration: a TB-scale bucket via Batch Replication takes hours, and via `s5cmd` even longer. **Start it before the database restore** so it runs in parallel with (or completes ahead of) the much faster DB work in Steps 1.4–1.5.
+**Skip this step if you already started S3 Batch Replication in [Step 0.6](#step-06-s3-batch-replication-for-multi-tb-buckets)** — that path handles multi-TB buckets entirely on the AWS side. This step is the in-cluster alternative for buckets up to ~1 TB / 10 M objects, where running a pod is simpler than configuring Batch Replication.
 
-Skip this step entirely only if your source instance kept its primary storage on a local filesystem and you want the new cluster to start with an empty bucket.
+Also skip if your source instance kept its primary storage on a local filesystem and you want the new cluster to start with an empty bucket.
 
-Pick the path that matches the source bucket size:
+| Bucket size | Use |
+|---|---|
+| **< ~1 TB / < 10 M objects** | This step (`s5cmd` in a pod) — simple, idempotent, runs alongside the other migration pods. |
+| **≥ 1 TB or ≥ 10 M objects** | [Step 0.6](#step-06-s3-batch-replication-for-multi-tb-buckets) (S3 Batch Replication) — kicked off in Phase 0, AWS-managed, runs in parallel with everything else. |
 
-| Bucket size | Recommended tool | Why |
-|---|---|---|
-| **< ~1 TB / < 10 M objects** | `s5cmd` in a pod (this step) | Simple, idempotent, runs alongside the other migration pods. |
-| **≥ 1 TB or ≥ 10 M objects** | **S3 Batch Replication** ([Step 1.3b](#step-13b-s3-batch-replication-for-multi-tb-buckets)) | Managed by AWS, parallel server-side copy across the S3 fleet, no pod throughput ceiling, progress visible in the S3 console. |
-
-If you choose Batch Replication, **skip this Step 1.3 entirely** and jump to Step 1.3b — they are alternatives, not sequential steps.
+Platforma cannot serve any project that references objects in primary storage until those objects exist in the destination bucket — restoring the database alone is not enough. The sync is also the long-pole step in this migration. **Start it before the database restore** so it runs in parallel with (or completes ahead of) the much faster DB work in Steps 1.4–1.5.
 
 The pod below uses [`s5cmd`](https://github.com/peak/s5cmd) instead of `aws s3 sync`. Both tools rely on S3 server-side COPY (no data leaves AWS, no egress charges) when source and destination are S3 buckets, but `s5cmd` parallelizes listing and copy operations aggressively — in practice **10–30× faster** than `aws s3 sync` for buckets with many small objects, which is the common shape of Platforma's primary storage.
 
@@ -375,267 +642,6 @@ Tuning notes:
 - If your bucket has **hundreds of millions of objects**, prefer **S3 Batch Replication** instead: create a replication configuration scoped to existing objects, AWS performs the copy server-side at fleet scale, and you can monitor progress via the S3 console. `s5cmd` is the simpler choice up to roughly 50 M objects.
 - `s5cmd` does not attempt to copy ACLs or object tags, so the `aws s3 sync ... --copy-props none` workaround used previously for cross-account migrations is unnecessary here.
 - `MIGRATION_SOURCE_PREFIX` should end with `/` if set (e.g. `data/`). Without a trailing slash, the `${MIGRATION_SOURCE_PREFIX}*` glob would match sibling prefixes too — e.g. prefix `data` matches both `data/` and `data2/`.
-
-### Step 1.3b: S3 Batch Replication for Multi-TB Buckets
-
-Use this path **instead of Step 1.3** when the source bucket holds multiple TB or tens of millions of objects. S3 Batch Replication is an AWS-managed bulk copy that runs on the S3 service fleet rather than from a pod — throughput scales with the manifest size, not with your VPC bandwidth or pod CPU, and it can copy a multi-TB bucket in hours that would take days with a single `s5cmd` pod.
-
-All steps run from a workstation with AWS CLI access to the cluster account. Kick the job off here, then proceed to Step 1.4 (DB download) and Step 1.5 (DB restore) while the Batch job runs in the background — both DB steps are usually much faster than the storage sync. The destination bucket must be fully populated **before `helm install`** in Phase 2.
-
-#### Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| **Versioning enabled on both buckets** | Replication operates on object versions. AWS rejects the replication config otherwise. |
-| **Both buckets in the same AWS partition** | `aws` (commercial), `aws-us-gov`, etc. Cross-partition replication is not supported. |
-| **Same-account or pre-configured cross-account trust** | For cross-account, the destination bucket policy must grant the source-account replication role `s3:ReplicateObject`, `s3:ReplicateDelete`, `s3:ReplicateTags`, `s3:GetObjectVersionTagging`, and `s3:ObjectOwnerOverrideToBucketOwner`. |
-| **Manifest report bucket (optional but recommended)** | Batch Replication can generate the manifest on the fly; the completion report needs an S3 location to write to. Reuse the destination bucket with a `reports/` prefix. |
-
-#### Step 1.3b.1: Enable Versioning on Both Buckets
-
-```bash
-aws s3api put-bucket-versioning \
-  --bucket ${MIGRATION_SOURCE_BUCKET} \
-  --region ${MIGRATION_SOURCE_REGION} \
-  --versioning-configuration Status=Enabled
-
-aws s3api put-bucket-versioning \
-  --bucket ${S3_BUCKET} \
-  --region ${REGION} \
-  --versioning-configuration Status=Enabled
-```
-
-Versioning cannot be fully removed once enabled, only suspended. Suspending after the migration is fine — Platforma does not depend on versioning at runtime.
-
-#### Step 1.3b.2: Create the Replication IAM Role
-
-This role is assumed by S3 itself when it copies each object. It needs read on the source and write on the destination.
-
-```bash
-# Trust policy — only s3.amazonaws.com can assume it
-cat > /tmp/replication-trust.json <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {"Service": "s3.amazonaws.com"},
-    "Action": "sts:AssumeRole"
-  }]
-}
-EOF
-
-# Permissions policy
-cat > /tmp/replication-policy.json <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetObjectVersionForReplication",
-        "s3:GetObjectVersionAcl",
-        "s3:GetObjectVersionTagging",
-        "s3:GetReplicationConfiguration",
-        "s3:ListBucket"
-      ],
-      "Resource": [
-        "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}",
-        "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}/*"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:ReplicateObject",
-        "s3:ReplicateDelete",
-        "s3:ReplicateTags",
-        "s3:ObjectOwnerOverrideToBucketOwner"
-      ],
-      "Resource": "arn:aws:s3:::${S3_BUCKET}/*"
-    }
-  ]
-}
-EOF
-
-REPL_ROLE_ARN=$(aws iam create-role \
-  --role-name ${CLUSTER_NAME}-s3-replication \
-  --assume-role-policy-document file:///tmp/replication-trust.json \
-  --query 'Role.Arn' --output text)
-
-aws iam put-role-policy \
-  --role-name ${CLUSTER_NAME}-s3-replication \
-  --policy-name s3-replication \
-  --policy-document file:///tmp/replication-policy.json
-
-echo "Replication role: $REPL_ROLE_ARN"
-```
-
-#### Step 1.3b.3: Put a Replication Configuration on the Source Bucket
-
-Batch Replication uses the same rule engine as live replication — it just acts on existing objects. The rule below replicates everything in the source bucket to the destination, owned by the destination account.
-
-```bash
-cat > /tmp/replication-config.json <<EOF
-{
-  "Role": "${REPL_ROLE_ARN}",
-  "Rules": [{
-    "ID": "platforma-migration",
-    "Status": "Enabled",
-    "Priority": 1,
-    "Filter": {"Prefix": "${MIGRATION_SOURCE_PREFIX}"},
-    "DeleteMarkerReplication": {"Status": "Disabled"},
-    "Destination": {
-      "Bucket": "arn:aws:s3:::${S3_BUCKET}",
-      "AccessControlTranslation": {"Owner": "Destination"},
-      "Account": "${AWS_ACCOUNT_ID}"
-    }
-  }]
-}
-EOF
-
-aws s3api put-bucket-replication \
-  --bucket ${MIGRATION_SOURCE_BUCKET} \
-  --region ${MIGRATION_SOURCE_REGION} \
-  --replication-configuration file:///tmp/replication-config.json
-```
-
-Putting this config does **not** copy existing objects — only objects written *after* it is applied are replicated live. Since the source is frozen (Step 0.1), there are no new writes; you only care about existing-object backfill, which Batch Replication performs in the next step.
-
-> The Batch job in Step 1.3b.5 generates its own manifest, so a bucket-level replication configuration is **not strictly required** for backfill. The reason to put one on anyway: it acts as a safety net — if anything accidentally writes to the supposedly-frozen source bucket during the migration window, those writes propagate to the destination live, instead of being orphaned. Skip this step only if you are certain no writes can occur.
-
-#### Step 1.3b.4: Create the Batch Operations IAM Role
-
-This role is assumed by S3 Batch Operations to drive the job — it needs to initiate replication and write the completion report.
-
-```bash
-cat > /tmp/batch-trust.json <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {"Service": "batchoperations.s3.amazonaws.com"},
-    "Action": "sts:AssumeRole"
-  }]
-}
-EOF
-
-cat > /tmp/batch-policy.json <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["s3:InitiateReplication"],
-      "Resource": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}/*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetReplicationConfiguration",
-        "s3:PutInventoryConfiguration"
-      ],
-      "Resource": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}"
-    },
-    {
-      "Effect": "Allow",
-      "Action": ["s3:PutObject"],
-      "Resource": "arn:aws:s3:::${S3_BUCKET}/reports/*"
-    }
-  ]
-}
-EOF
-
-BATCH_ROLE_ARN=$(aws iam create-role \
-  --role-name ${CLUSTER_NAME}-s3-batch-replication \
-  --assume-role-policy-document file:///tmp/batch-trust.json \
-  --query 'Role.Arn' --output text)
-
-aws iam put-role-policy \
-  --role-name ${CLUSTER_NAME}-s3-batch-replication \
-  --policy-name s3-batch-replication \
-  --policy-document file:///tmp/batch-policy.json
-
-echo "Batch role: $BATCH_ROLE_ARN"
-```
-
-#### Step 1.3b.5: Create the Batch Replication Job
-
-Use auto-generated manifests — S3 inspects the source bucket and produces the manifest for you. No inventory report or pre-staged CSV needed.
-
-```bash
-cat > /tmp/batch-job.json <<EOF
-{
-  "ConfirmationRequired": false,
-  "Operation": {
-    "S3ReplicateObject": {}
-  },
-  "Report": {
-    "Bucket": "arn:aws:s3:::${S3_BUCKET}",
-    "Prefix": "reports/batch-replication",
-    "Format": "Report_CSV_20180820",
-    "Enabled": true,
-    "ReportScope": "AllTasks"
-  },
-  "ManifestGenerator": {
-    "S3JobManifestGenerator": {
-      "SourceBucket": "arn:aws:s3:::${MIGRATION_SOURCE_BUCKET}",
-      "EnableManifestOutput": false,
-      "Filter": {
-        "EligibleForReplication": true,
-        "ObjectReplicationStatuses": ["NONE", "FAILED"]
-      }
-    }
-  },
-  "Priority": 10,
-  "RoleArn": "${BATCH_ROLE_ARN}",
-  "ClientRequestToken": "platforma-migration-$(date +%s)",
-  "Description": "Platforma primary-storage migration"
-}
-EOF
-
-JOB_ID=$(aws s3control create-job \
-  --account-id ${AWS_ACCOUNT_ID} \
-  --region ${MIGRATION_SOURCE_REGION} \
-  --cli-input-json file:///tmp/batch-job.json \
-  --query 'JobId' --output text)
-
-echo "Batch job: $JOB_ID"
-```
-
-The `ObjectReplicationStatuses: ["NONE", "FAILED"]` filter ensures only un-replicated objects are processed — safe to re-run the job to retry failures.
-
-#### Step 1.3b.6: Monitor the Job
-
-```bash
-# Poll status
-aws s3control describe-job \
-  --account-id ${AWS_ACCOUNT_ID} \
-  --region ${MIGRATION_SOURCE_REGION} \
-  --job-id ${JOB_ID} \
-  --query 'Job.{Status:Status,Progress:ProgressSummary}'
-```
-
-Or watch in the S3 console under **S3 → Batch Operations** — select the job to see objects-attempted / -succeeded / -failed in near real time. Typical throughput is hundreds of millions of objects per day; a 10-TB bucket of medium-sized objects usually completes in 6–12 hours.
-
-Wait for `Status: Complete` and check the completion report at `s3://${S3_BUCKET}/reports/batch-replication/job-${JOB_ID}/` — any per-object failures are listed there. The destination bucket key count should match the source.
-
-#### Step 1.3b.7: Clean Up Replication Plumbing
-
-After the destination bucket is populated, remove the rule so the now-decommissioned source bucket isn't replicating anything new:
-
-```bash
-aws s3api delete-bucket-replication \
-  --bucket ${MIGRATION_SOURCE_BUCKET} \
-  --region ${MIGRATION_SOURCE_REGION}
-
-# Optional: suspend versioning on the destination if Platforma will not use it
-aws s3api put-bucket-versioning \
-  --bucket ${S3_BUCKET} \
-  --region ${REGION} \
-  --versioning-configuration Status=Suspended
-```
-
-The IAM roles (`*-s3-replication`, `*-s3-batch-replication`) can be deleted or kept for future migrations.
 
 ### Step 1.4: Download the Database Dump
 

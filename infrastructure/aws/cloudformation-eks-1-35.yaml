@@ -557,7 +557,7 @@ Parameters:
     AllowedValues: [small, medium, large, xlarge]
     Description: >
       Cluster sizing profile. Controls node group scaling limits and Kueue quotas.
-      All deployment sizes support the same maximum single-job size (62 vCPU / 500Gi).
+      All deployment sizes support the same maximum single-job size (62 vCPU / 486Gi).
       Larger sizes allow more jobs to run simultaneously.
       small:  ~4 large jobs, or 16 small — for small teams or testing (~400 vCPU quota).
       medium: ~8 large jobs, or 32 small — for mid-sized research groups (~700 vCPU quota).
@@ -651,13 +651,13 @@ Mappings:
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
-  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r7i.16xl count) x 500Gi.
+  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r7i.16xl count) x 486Gi.
   # UI quota is fixed at 64 vCPU / 256 GiB regardless of size.
   DeploymentSize:
     small:
-      # Kueue quotas (derived: 2x63=126 CPU, 1x500=500Gi)
+      # Kueue quotas (derived: 2x63=126 CPU, 1x486=486Gi)
       BatchCpu: '126'
-      BatchMemoryGi: '500'
+      BatchMemoryGi: '486'
       UiCpu: '64'
       UiMemoryGi: '256'
       # Node group MaxSize per pool
@@ -668,9 +668,9 @@ Mappings:
       MaxBatch64c512g: '1'
       MaxUi: '4'
     medium:
-      # Kueue quotas (derived: 4x63=252 CPU, 2x500=1000Gi)
+      # Kueue quotas (derived: 4x63=252 CPU, 2x486=972Gi)
       BatchCpu: '252'
-      BatchMemoryGi: '1000'
+      BatchMemoryGi: '972'
       UiCpu: '64'
       UiMemoryGi: '256'
       MaxBatch16c64g: '8'
@@ -680,9 +680,9 @@ Mappings:
       MaxBatch64c512g: '2'
       MaxUi: '8'
     large:
-      # Kueue quotas (derived: 8x63=504 CPU, 4x500=2000Gi)
+      # Kueue quotas (derived: 8x63=504 CPU, 4x486=1944Gi)
       BatchCpu: '504'
-      BatchMemoryGi: '2000'
+      BatchMemoryGi: '1944'
       UiCpu: '64'
       UiMemoryGi: '256'
       MaxBatch16c64g: '16'
@@ -692,9 +692,9 @@ Mappings:
       MaxBatch64c512g: '4'
       MaxUi: '16'
     xlarge:
-      # Kueue quotas (derived: 16x63=1008 CPU, 8x500=4000Gi)
+      # Kueue quotas (derived: 16x63=1008 CPU, 8x486=3888Gi)
       BatchCpu: '1008'
-      BatchMemoryGi: '4000'
+      BatchMemoryGi: '3888'
       UiCpu: '64'
       UiMemoryGi: '256'
       MaxBatch16c64g: '32'
@@ -2853,7 +2853,7 @@ Resources:
                   kueue:
                     maxJobResources:
                       cpu: 62
-                      memory: 500Gi
+                      memory: 486Gi
                     mode: dedicated
                     pools:
                       ui:
@@ -2887,7 +2887,7 @@ Resources:
                         memory: 16Gi
                       limits:
                         cpu: 8
-                        memory: 16Gi
+                        memory: 32Gi
                     nodeSelector:
                       node.kubernetes.io/pool: system
                     extraArgs: ${APP_EXTRA_ARGS:-[]}

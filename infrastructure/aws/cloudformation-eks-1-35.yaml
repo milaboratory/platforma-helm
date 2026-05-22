@@ -3091,7 +3091,7 @@ Resources:
       ExternalDnsVersion: '1.20.0'
       AlbControllerVersion: '3.0.0'
       # Bump for non-version buildspec changes (new flags, RBAC, install order)
-      BuildSpecRevision: '2'
+      BuildSpecRevision: '3'
 
   TriggerPlatformaDeploy:
     Type: AWS::CloudFormation::CustomResource

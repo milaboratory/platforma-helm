@@ -7,7 +7,7 @@ The migration moves two pieces of state:
 1. **Database** — RocksDB on the source server, dumped to a gzipped file and restored into the chart's `platforma-database` PVC.
 2. **Primary storage** — bucket-to-bucket S3 sync (or equivalent on GCP) into the new cloud bucket the cluster will use.
 
-The procedure is split into three phases that run before, during, and after the `helm install`. Phase 3 writes a `/data/database/.migration-complete` marker on the database PVC after cache invalidation succeeds; every earlier step gates on this marker, so re-running the full Phase 1 → 3 sequence is a no-op once the migration has completed end-to-end. Re-running an intermediate step before the marker exists overwrites previous output (e.g. re-downloads the dump) — which is what you want when a step failed partway through.
+The procedure is split into three phases that run before, during, and after the `helm install`. Phase 3 writes a `/data/database/.migration-complete` marker on the database PVC after cache invalidation succeeds; every PVC-bound in-cluster step (DB download, restore, invalidate, dump cleanup) gates on this marker, so re-running them once the migration has completed end-to-end is a no-op. Phase 0 steps (DB dump on the source, S3 Batch Replication kickoff) and Step 1.3 (`s5cmd` sync) are idempotent by virtue of the underlying operation — re-running a finished DB dump just overwrites the local file, re-creating a Batch Replication job is rejected by the `ClientRequestToken`, and `s5cmd sync` skips already-copied objects via ETag comparison.
 
 ## Audience and Scope
 
@@ -82,7 +82,7 @@ The reference implementation is the script at [`infrastructure/aws/migration.sh`
 
 ## Phase 0: Source-Side Preparation
 
-Steps 0.1–0.5 run on the **source** single-server host (the machine running the standalone binary or Docker image). Step 0.6 runs from a workstation with AWS CLI access — it is entirely AWS-side and has no dependency on the target Kubernetes cluster, so kicking it off here lets it run asynchronously in the background while you complete the rest of Phase 0 and all of Phase 1.
+Steps 0.1–0.5 run on the **source** single-server host (the machine running the standalone binary or Docker image). Step 0.6 runs from a workstation with AWS CLI access — it is entirely AWS-side and has no dependency on the target Kubernetes cluster, so kicking it off here lets AWS copy data in the background while you complete the rest of Phase 0 and all of Phase 1.
 
 Phase 0 produces:
 
@@ -116,7 +116,7 @@ The endpoint streams a tab-separated key/value dump of RocksDB; piping into `gzi
 
 ### Step 0.4: Upload the Dump to S3
 
-Use whatever S3 bucket the new cluster can read from. For same-account migrations, any bucket the migration IRSA role (Step 1.2.1) can `s3:GetObject` from works.
+Use whatever S3 bucket the new cluster can read from. For same-account migrations, any bucket the migration IRSA role can `s3:GetObject` from works — that role is defined later in [Step 1.2.1](#step-121-recommended--irsa-service-account-for-migration-pods), so make sure the bucket you choose here will be covered by the policy you attach there.
 
 ```bash
 aws s3 cp backup.gz s3://my-backups/platforma-backup.gz
@@ -132,7 +132,7 @@ If the source instance used S3 (not local disk) for primary storage, note its bu
 
 Use this path **instead of the in-cluster `s5cmd` sync (Step 1.3)** when the source bucket holds multiple TB or tens of millions of objects. S3 Batch Replication is an AWS-managed bulk copy that runs on the S3 service fleet rather than from a pod — throughput scales with the manifest size, not with your VPC bandwidth or pod CPU, and it can copy a multi-TB bucket in hours that would take days with a single `s5cmd` pod.
 
-All steps run from a workstation with AWS CLI access to the cluster account. Kick the job off in Phase 0 — Batch Replication has no dependency on the Kubernetes cluster and AWS runs it asynchronously, so it copies in the background while you complete the rest of Phase 0 (DB dump) and Phase 1 (cluster setup, DB restore). The destination bucket must be fully populated **before `helm install`** in Phase 2; verify completion (Step 0.6.6) before moving on.
+All steps run from a workstation with AWS CLI access to the cluster account. Kick the job off here — Batch Replication has no dependency on the Kubernetes cluster, so it copies in the background while you complete the rest of Phase 0 (DB dump) and Phase 1 (cluster setup, DB restore). The destination bucket must be fully populated **before `helm install`** in Phase 2; verify completion (Step 0.6.6) before moving on.
 
 #### Prerequisites
 
@@ -222,9 +222,11 @@ aws iam put-role-policy \
 echo "Replication role: $REPL_ROLE_ARN"
 ```
 
-#### Step 0.6.3: Put a Replication Configuration on the Source Bucket
+#### Step 0.6.3 (Optional, Recommended): Put a Replication Configuration on the Source Bucket
 
-Batch Replication uses the same rule engine as live replication — it just acts on existing objects. The rule below replicates everything in the source bucket to the destination, owned by the destination account.
+The Batch job in Step 0.6.5 generates its own manifest and can copy existing objects without a bucket-level replication configuration. The reason to put one on anyway is to act as a safety net: if anything accidentally writes to the supposedly-frozen source bucket during the migration window, those writes propagate live to the destination instead of being orphaned. Skip this step only if you are certain no writes can occur on the source.
+
+The rule below replicates everything in the source bucket to the destination, owned by the destination account.
 
 ```bash
 cat > /tmp/replication-config.json <<EOF
@@ -251,9 +253,7 @@ aws s3api put-bucket-replication \
   --replication-configuration file:///tmp/replication-config.json
 ```
 
-Putting this config does **not** copy existing objects — only objects written *after* it is applied are replicated live. Since the source is frozen (Step 0.1), there are no new writes; you only care about existing-object backfill, which Batch Replication performs in the next step.
-
-> The Batch job in Step 0.6.5 generates its own manifest, so a bucket-level replication configuration is **not strictly required** for backfill. The reason to put one on anyway: it acts as a safety net — if anything accidentally writes to the supposedly-frozen source bucket during the migration window, those writes propagate to the destination live, instead of being orphaned. Skip this step only if you are certain no writes can occur.
+Note that this configuration alone does **not** copy existing objects — only objects written *after* it is applied are replicated live. The existing-object backfill is what Step 0.6.5 (the Batch Replication job) handles.
 
 #### Step 0.6.4: Create the Batch Operations IAM Role
 
@@ -376,6 +376,7 @@ Wait for `Status: Complete` and check the completion report at `s3://${S3_BUCKET
 After the destination bucket is populated, remove the rule so the now-decommissioned source bucket isn't replicating anything new:
 
 ```bash
+# Removes the entire replication configuration applied in Step 0.6.3
 aws s3api delete-bucket-replication \
   --bucket ${MIGRATION_SOURCE_BUCKET} \
   --region ${MIGRATION_SOURCE_REGION}
@@ -582,7 +583,7 @@ Also skip if your source instance kept its primary storage on a local filesystem
 | **< ~1 TB / < 10 M objects** | This step (`s5cmd` in a pod) — simple, idempotent, runs alongside the other migration pods. |
 | **≥ 1 TB or ≥ 10 M objects** | [Step 0.6](#step-06-s3-batch-replication-for-multi-tb-buckets) (S3 Batch Replication) — kicked off in Phase 0, AWS-managed, runs in parallel with everything else. |
 
-Platforma cannot serve any project that references objects in primary storage until those objects exist in the destination bucket — restoring the database alone is not enough. The sync is also the long-pole step in this migration. **Start it before the database restore** so it runs in parallel with (or completes ahead of) the much faster DB work in Steps 1.4–1.5.
+Platforma cannot serve any project that references objects in primary storage until those objects exist in the destination bucket — restoring the database alone is not enough. **Start this step before the database restore** so it runs in parallel with the much faster DB work in Steps 1.4–1.5.
 
 The pod below uses [`s5cmd`](https://github.com/peak/s5cmd) instead of `aws s3 sync`. Both tools rely on S3 server-side COPY (no data leaves AWS, no egress charges) when source and destination are S3 buckets, but `s5cmd` parallelizes listing and copy operations aggressively — in practice **10–30× faster** than `aws s3 sync` for buckets with many small objects, which is the common shape of Platforma's primary storage.
 
@@ -600,18 +601,16 @@ spec:
     runAsUser: 1010
     runAsGroup: 1010
   restartPolicy: Never
-  volumes:
-    - { name: db, persistentVolumeClaim: { claimName: platforma-database } }
   containers:
     - name: mgr-sync
       image: peakcom/s5cmd:v2.3.0
       command: ["/bin/sh", "-ec"]
       args:
         - |
-          if [ -f /data/database/.migration-complete ]; then echo Already completed; exit 0; fi
           # --numworkers: parallel S3 operations (default 256 is fine; raise for very wide buckets).
           # sync uses server-side COPY when both sides are S3 — no bytes through this pod.
           # Trailing /* on the source is required by s5cmd to expand the prefix.
+          # s5cmd sync is idempotent (ETag-compared), so re-running on completed buckets is cheap.
           AWS_REGION=${REGION} \
           s5cmd --numworkers 256 \
                 --source-region ${MIGRATION_SOURCE_REGION} \
@@ -623,9 +622,9 @@ spec:
       # env:
       #   - { name: AWS_ACCESS_KEY_ID,     value: "${MIGRATION_STORAGE_ACCESS_KEY}" }
       #   - { name: AWS_SECRET_ACCESS_KEY, value: "${MIGRATION_STORAGE_SECRET_KEY}" }
-      volumeMounts:
-        - { name: db, mountPath: /data/database }
 ```
+
+This pod intentionally does **not** mount the `platforma-database` PVC. The DB-handling pods (`mgr-download`, `mgr-restore`, `mgr-invalidate`) all mount that PVC with `ReadWriteOnce` access — k8s would refuse to schedule `mgr-sync` to a different node while one of them is running. Skipping the mount lets `mgr-sync` run truly in parallel with the DB pipeline.
 
 ```bash
 envsubst < mgr-sync.yaml | kubectl apply -f -
@@ -639,7 +638,6 @@ Tuning notes:
 
 - `--numworkers` controls the size of the worker pool. 256 saturates a single small pod on a same-region intra-AWS copy; raise to 1024 for very large buckets and bump pod CPU requests accordingly.
 - `s5cmd sync` is idempotent — it compares object size/ETag and skips unchanged keys, so reruns after a failure resume cheaply.
-- If your bucket has **hundreds of millions of objects**, prefer **S3 Batch Replication** instead: create a replication configuration scoped to existing objects, AWS performs the copy server-side at fleet scale, and you can monitor progress via the S3 console. `s5cmd` is the simpler choice up to roughly 50 M objects.
 - `s5cmd` does not attempt to copy ACLs or object tags, so the `aws s3 sync ... --copy-props none` workaround used previously for cross-account migrations is unnecessary here.
 - `MIGRATION_SOURCE_PREFIX` should end with `/` if set (e.g. `data/`). Without a trailing slash, the `${MIGRATION_SOURCE_PREFIX}*` glob would match sibling prefixes too — e.g. prefix `data` matches both `data/` and `data2/`.
 
@@ -885,7 +883,7 @@ If the migration fails after `helm install`:
 2. `kubectl delete pvc platforma-database -n ${NAMESPACE}` — wipe the bad DB.
 3. Repeat Phase 1 with the same dump.
 
-The source single-server instance is untouched throughout — keep it running until you have validated the new cluster.
+Apart from the debug-API restart in [Step 0.2](#step-02-enable-the-debug-api-on-the-source), the source single-server instance is untouched throughout — keep it running until you have validated the new cluster.
 
 ---
 

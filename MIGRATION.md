@@ -123,13 +123,15 @@ Record the URI as `MIGRATION_DATABASE_S3_URI` in the variables block above.
 
 ### Step 0.5: Identify the Source Primary-Storage Bucket
 
-If the source instance used S3 (not local disk) for primary storage, note its bucket name and region — they become `MIGRATION_SOURCE_BUCKET` and `MIGRATION_SOURCE_REGION`. The bucket is copied into the destination during Phase 1 — Step 1.5 (`s5cmd`, for buckets up to ~1 TB) or Step 1.5b (S3 Batch Replication, for multi-TB buckets). Confirm the bucket is no longer being written to (Step 0.1) before starting Phase 1.
+If the source instance used S3 (not local disk) for primary storage, note its bucket name and region — they become `MIGRATION_SOURCE_BUCKET` and `MIGRATION_SOURCE_REGION`. The bucket is copied into the destination during Phase 1 — Step 1.3 (`s5cmd`, for buckets up to ~1 TB) or Step 1.3b (S3 Batch Replication, for multi-TB buckets). Confirm the bucket is no longer being written to (Step 0.1) before starting Phase 1.
 
 ---
 
 ## Phase 1: Pre-Helm
 
-Goal: have a populated `platforma-database` PVC and a fully-synced primary-storage bucket **before** `helm install` runs, so that the chart's first-run reconciliation sees a healthy database.
+Goal: have a populated `platforma-database` PVC and a fully-synced primary-storage bucket **before** `helm install` runs, so that the chart's first-run reconciliation sees both a healthy database and the storage objects it references.
+
+Step order matters: the primary-storage sync (Step 1.3) is the long-pole operation and should be kicked off first so it runs in parallel with the much faster DB download and restore (Steps 1.4–1.5). Step 1.6 (cleanup) runs last.
 
 ### Step 1.1: Create Namespace, StorageClass, License Secret
 
@@ -300,111 +302,20 @@ sed "s|ACCOUNT_ID|${AWS_ACCOUNT_ID}|; s|CLUSTER_NAME|${CLUSTER_NAME}|" migration
 
 > The same pattern works on GKE — replace the IAM role + annotation with a Workload Identity binding (`iam.gke.io/gcp-service-account`).
 
-### Step 1.3: Download the Database Dump
+### Step 1.3: Sync Primary Storage
 
-```yaml
-# mgr-download.yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: mgr-download
-  namespace: platforma
-spec:
-  serviceAccountName: platforma-migration   # IRSA SA from Step 1.2.1 — drop this for cross-account
-  securityContext:
-    fsGroup: 1010
-    runAsUser: 1010
-    runAsGroup: 1010
-  restartPolicy: Never
-  volumes:
-    - name: db
-      persistentVolumeClaim:
-        claimName: platforma-database
-  containers:
-    - name: mgr-download
-      image: amazon/aws-cli:2.27.22
-      command: ["/bin/sh", "-ec"]
-      args:
-        - |
-          if [ -f /data/database/.migration-complete ]; then echo Already completed; exit 0; fi
-          aws s3 cp ${MIGRATION_DATABASE_S3_URI} /data/database/backup.gz
-          echo Download complete
-      # env section ONLY needed for cross-account dumps — omit when using IRSA
-      # env:
-      #   - { name: AWS_ACCESS_KEY_ID,     value: "${MIGRATION_DB_ACCESS_KEY}" }
-      #   - { name: AWS_SECRET_ACCESS_KEY, value: "${MIGRATION_DB_SECRET_KEY}" }
-      volumeMounts:
-        - { name: db, mountPath: /data/database }
-```
+Platforma cannot serve any project that references objects in primary storage until those objects exist in the destination bucket — restoring the database alone is not enough. The sync is also the long-pole step in this migration: a TB-scale bucket via Batch Replication takes hours, and via `s5cmd` even longer. **Start it before the database restore** so it runs in parallel with (or completes ahead of) the much faster DB work in Steps 1.4–1.5.
 
-When using the `platforma-migration` SA from Step 1.2.1, the pod assumes the IAM role transparently — no `env:` block needed. For cross-account dumps that the SA's role does not cover, uncomment the `env:` block and inline the access keys (or mount them from a Secret).
-
-```bash
-envsubst < mgr-download.yaml | kubectl apply -f -
-kubectl wait pod/mgr-download -n ${NAMESPACE} \
-  --for=jsonpath='{.status.phase}'=Succeeded --timeout=600s
-kubectl logs mgr-download -n ${NAMESPACE}
-kubectl delete pod/mgr-download -n ${NAMESPACE}
-```
-
-### Step 1.4: Restore the Database
-
-```yaml
-# mgr-restore.yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: mgr-restore
-  namespace: platforma
-spec:
-  securityContext:
-    fsGroup: 1010
-    runAsUser: 1010
-    runAsGroup: 1010
-  restartPolicy: Never
-  volumes:
-    - { name: db,   persistentVolumeClaim: { claimName: platforma-database } }
-    - { name: main, emptyDir: {} }
-  containers:
-    - name: mgr-restore
-      image: quay.io/milaboratories/platforma:${PLATFORMA_VERSION}
-      command: ["/bin/sh", "-ec"]
-      args:
-        - |
-          if [ -f /data/database/.migration-complete ]; then echo Already completed; exit 0; fi
-          /app/platforma --restore-db=/data/database/backup.gz --db-dir=/data/database --force
-          echo Database restored
-      env:
-        - name: PL_LICENSE
-          valueFrom:
-            secretKeyRef: { name: platforma-license, key: MI_LICENSE }
-      volumeMounts:
-        - { name: db,   mountPath: /data/database }
-        - { name: main, mountPath: /data/main }
-```
-
-```bash
-envsubst < mgr-restore.yaml | kubectl apply -f -
-kubectl wait pod/mgr-restore -n ${NAMESPACE} \
-  --for=jsonpath='{.status.phase}'=Succeeded --timeout=1800s
-kubectl logs mgr-restore -n ${NAMESPACE}
-kubectl delete pod/mgr-restore -n ${NAMESPACE}
-```
-
-`--force` overwrites any partial DB from a previous attempt. Restore time scales with dump size — give a generous timeout (default 30 min above; bump to several hours for multi-hundred-GB dumps).
-
-### Step 1.5: Sync Primary Storage
-
-Skip this step if your source instance kept its primary storage on a local filesystem and you want the new cluster to start with an empty bucket.
+Skip this step entirely only if your source instance kept its primary storage on a local filesystem and you want the new cluster to start with an empty bucket.
 
 Pick the path that matches the source bucket size:
 
 | Bucket size | Recommended tool | Why |
 |---|---|---|
 | **< ~1 TB / < 10 M objects** | `s5cmd` in a pod (this step) | Simple, idempotent, runs alongside the other migration pods. |
-| **≥ 1 TB or ≥ 10 M objects** | **S3 Batch Replication** ([Step 1.5b](#step-15b-s3-batch-replication-for-multi-tb-buckets)) | Managed by AWS, parallel server-side copy across the S3 fleet, no pod throughput ceiling, progress visible in the S3 console. |
+| **≥ 1 TB or ≥ 10 M objects** | **S3 Batch Replication** ([Step 1.3b](#step-13b-s3-batch-replication-for-multi-tb-buckets)) | Managed by AWS, parallel server-side copy across the S3 fleet, no pod throughput ceiling, progress visible in the S3 console. |
 
-If you choose Batch Replication, **skip this Step 1.5 entirely** and jump to Step 1.5b — they are alternatives, not sequential steps.
+If you choose Batch Replication, **skip this Step 1.3 entirely** and jump to Step 1.3b — they are alternatives, not sequential steps.
 
 The pod below uses [`s5cmd`](https://github.com/peak/s5cmd) instead of `aws s3 sync`. Both tools rely on S3 server-side COPY (no data leaves AWS, no egress charges) when source and destination are S3 buckets, but `s5cmd` parallelizes listing and copy operations aggressively — in practice **10–30× faster** than `aws s3 sync` for buckets with many small objects, which is the common shape of Platforma's primary storage.
 
@@ -465,11 +376,11 @@ Tuning notes:
 - `s5cmd` does not attempt to copy ACLs or object tags, so the `aws s3 sync ... --copy-props none` workaround used previously for cross-account migrations is unnecessary here.
 - `MIGRATION_SOURCE_PREFIX` should end with `/` if set (e.g. `data/`). Without a trailing slash, the `${MIGRATION_SOURCE_PREFIX}*` glob would match sibling prefixes too — e.g. prefix `data` matches both `data/` and `data2/`.
 
-### Step 1.5b: S3 Batch Replication for Multi-TB Buckets
+### Step 1.3b: S3 Batch Replication for Multi-TB Buckets
 
-Use this path **instead of Step 1.5** when the source bucket holds multiple TB or tens of millions of objects. S3 Batch Replication is an AWS-managed bulk copy that runs on the S3 service fleet rather than from a pod — throughput scales with the manifest size, not with your VPC bandwidth or pod CPU, and it can copy a multi-TB bucket in hours that would take days with a single `s5cmd` pod.
+Use this path **instead of Step 1.3** when the source bucket holds multiple TB or tens of millions of objects. S3 Batch Replication is an AWS-managed bulk copy that runs on the S3 service fleet rather than from a pod — throughput scales with the manifest size, not with your VPC bandwidth or pod CPU, and it can copy a multi-TB bucket in hours that would take days with a single `s5cmd` pod.
 
-All steps run from a workstation with AWS CLI access to the cluster account. Run them **before** `helm install` so the destination bucket is fully populated when Platforma starts.
+All steps run from a workstation with AWS CLI access to the cluster account. Kick the job off here, then proceed to Step 1.4 (DB download) and Step 1.5 (DB restore) while the Batch job runs in the background — both DB steps are usually much faster than the storage sync. The destination bucket must be fully populated **before `helm install`** in Phase 2.
 
 #### Prerequisites
 
@@ -480,7 +391,7 @@ All steps run from a workstation with AWS CLI access to the cluster account. Run
 | **Same-account or pre-configured cross-account trust** | For cross-account, the destination bucket policy must grant the source-account replication role `s3:ReplicateObject`, `s3:ReplicateDelete`, `s3:ReplicateTags`, `s3:GetObjectVersionTagging`, and `s3:ObjectOwnerOverrideToBucketOwner`. |
 | **Manifest report bucket (optional but recommended)** | Batch Replication can generate the manifest on the fly; the completion report needs an S3 location to write to. Reuse the destination bucket with a `reports/` prefix. |
 
-#### Step 1.5b.1: Enable Versioning on Both Buckets
+#### Step 1.3b.1: Enable Versioning on Both Buckets
 
 ```bash
 aws s3api put-bucket-versioning \
@@ -496,7 +407,7 @@ aws s3api put-bucket-versioning \
 
 Versioning cannot be fully removed once enabled, only suspended. Suspending after the migration is fine — Platforma does not depend on versioning at runtime.
 
-#### Step 1.5b.2: Create the Replication IAM Role
+#### Step 1.3b.2: Create the Replication IAM Role
 
 This role is assumed by S3 itself when it copies each object. It needs read on the source and write on the destination.
 
@@ -559,7 +470,7 @@ aws iam put-role-policy \
 echo "Replication role: $REPL_ROLE_ARN"
 ```
 
-#### Step 1.5b.3: Put a Replication Configuration on the Source Bucket
+#### Step 1.3b.3: Put a Replication Configuration on the Source Bucket
 
 Batch Replication uses the same rule engine as live replication — it just acts on existing objects. The rule below replicates everything in the source bucket to the destination, owned by the destination account.
 
@@ -590,9 +501,9 @@ aws s3api put-bucket-replication \
 
 Putting this config does **not** copy existing objects — only objects written *after* it is applied are replicated live. Since the source is frozen (Step 0.1), there are no new writes; you only care about existing-object backfill, which Batch Replication performs in the next step.
 
-> The Batch job in Step 1.5b.5 generates its own manifest, so a bucket-level replication configuration is **not strictly required** for backfill. The reason to put one on anyway: it acts as a safety net — if anything accidentally writes to the supposedly-frozen source bucket during the migration window, those writes propagate to the destination live, instead of being orphaned. Skip this step only if you are certain no writes can occur.
+> The Batch job in Step 1.3b.5 generates its own manifest, so a bucket-level replication configuration is **not strictly required** for backfill. The reason to put one on anyway: it acts as a safety net — if anything accidentally writes to the supposedly-frozen source bucket during the migration window, those writes propagate to the destination live, instead of being orphaned. Skip this step only if you are certain no writes can occur.
 
-#### Step 1.5b.4: Create the Batch Operations IAM Role
+#### Step 1.3b.4: Create the Batch Operations IAM Role
 
 This role is assumed by S3 Batch Operations to drive the job — it needs to initiate replication and write the completion report.
 
@@ -647,7 +558,7 @@ aws iam put-role-policy \
 echo "Batch role: $BATCH_ROLE_ARN"
 ```
 
-#### Step 1.5b.5: Create the Batch Replication Job
+#### Step 1.3b.5: Create the Batch Replication Job
 
 Use auto-generated manifests — S3 inspects the source bucket and produces the manifest for you. No inventory report or pre-staged CSV needed.
 
@@ -693,7 +604,7 @@ echo "Batch job: $JOB_ID"
 
 The `ObjectReplicationStatuses: ["NONE", "FAILED"]` filter ensures only un-replicated objects are processed — safe to re-run the job to retry failures.
 
-#### Step 1.5b.6: Monitor the Job
+#### Step 1.3b.6: Monitor the Job
 
 ```bash
 # Poll status
@@ -708,7 +619,7 @@ Or watch in the S3 console under **S3 → Batch Operations** — select the job 
 
 Wait for `Status: Complete` and check the completion report at `s3://${S3_BUCKET}/reports/batch-replication/job-${JOB_ID}/` — any per-object failures are listed there. The destination bucket key count should match the source.
 
-#### Step 1.5b.7: Clean Up Replication Plumbing
+#### Step 1.3b.7: Clean Up Replication Plumbing
 
 After the destination bucket is populated, remove the rule so the now-decommissioned source bucket isn't replicating anything new:
 
@@ -725,6 +636,99 @@ aws s3api put-bucket-versioning \
 ```
 
 The IAM roles (`*-s3-replication`, `*-s3-batch-replication`) can be deleted or kept for future migrations.
+
+### Step 1.4: Download the Database Dump
+
+```yaml
+# mgr-download.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mgr-download
+  namespace: platforma
+spec:
+  serviceAccountName: platforma-migration   # IRSA SA from Step 1.2.1 — drop this for cross-account
+  securityContext:
+    fsGroup: 1010
+    runAsUser: 1010
+    runAsGroup: 1010
+  restartPolicy: Never
+  volumes:
+    - name: db
+      persistentVolumeClaim:
+        claimName: platforma-database
+  containers:
+    - name: mgr-download
+      image: amazon/aws-cli:2.27.22
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          if [ -f /data/database/.migration-complete ]; then echo Already completed; exit 0; fi
+          aws s3 cp ${MIGRATION_DATABASE_S3_URI} /data/database/backup.gz
+          echo Download complete
+      # env section ONLY needed for cross-account dumps — omit when using IRSA
+      # env:
+      #   - { name: AWS_ACCESS_KEY_ID,     value: "${MIGRATION_DB_ACCESS_KEY}" }
+      #   - { name: AWS_SECRET_ACCESS_KEY, value: "${MIGRATION_DB_SECRET_KEY}" }
+      volumeMounts:
+        - { name: db, mountPath: /data/database }
+```
+
+When using the `platforma-migration` SA from Step 1.2.1, the pod assumes the IAM role transparently — no `env:` block needed. For cross-account dumps that the SA's role does not cover, uncomment the `env:` block and inline the access keys (or mount them from a Secret).
+
+```bash
+envsubst < mgr-download.yaml | kubectl apply -f -
+kubectl wait pod/mgr-download -n ${NAMESPACE} \
+  --for=jsonpath='{.status.phase}'=Succeeded --timeout=600s
+kubectl logs mgr-download -n ${NAMESPACE}
+kubectl delete pod/mgr-download -n ${NAMESPACE}
+```
+
+### Step 1.5: Restore the Database
+
+```yaml
+# mgr-restore.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mgr-restore
+  namespace: platforma
+spec:
+  securityContext:
+    fsGroup: 1010
+    runAsUser: 1010
+    runAsGroup: 1010
+  restartPolicy: Never
+  volumes:
+    - { name: db,   persistentVolumeClaim: { claimName: platforma-database } }
+    - { name: main, emptyDir: {} }
+  containers:
+    - name: mgr-restore
+      image: quay.io/milaboratories/platforma:${PLATFORMA_VERSION}
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          if [ -f /data/database/.migration-complete ]; then echo Already completed; exit 0; fi
+          /app/platforma --restore-db=/data/database/backup.gz --db-dir=/data/database --force
+          echo Database restored
+      env:
+        - name: PL_LICENSE
+          valueFrom:
+            secretKeyRef: { name: platforma-license, key: MI_LICENSE }
+      volumeMounts:
+        - { name: db,   mountPath: /data/database }
+        - { name: main, mountPath: /data/main }
+```
+
+```bash
+envsubst < mgr-restore.yaml | kubectl apply -f -
+kubectl wait pod/mgr-restore -n ${NAMESPACE} \
+  --for=jsonpath='{.status.phase}'=Succeeded --timeout=1800s
+kubectl logs mgr-restore -n ${NAMESPACE}
+kubectl delete pod/mgr-restore -n ${NAMESPACE}
+```
+
+`--force` overwrites any partial DB from a previous attempt. Restore time scales with dump size — give a generous timeout (default 30 min above; bump to several hours for multi-hundred-GB dumps).
 
 ### Step 1.6: Delete the Dump File
 
@@ -863,7 +867,7 @@ If the source S3 bucket lives in a different AWS account, the destination bucket
 }
 ```
 
-Then export the access keys as `MIGRATION_STORAGE_ACCESS_KEY` / `MIGRATION_STORAGE_SECRET_KEY` (Step 1.5). The same pattern applies to the database-dump bucket (`MIGRATION_DB_*`).
+Then export the access keys as `MIGRATION_STORAGE_ACCESS_KEY` / `MIGRATION_STORAGE_SECRET_KEY` (Step 1.3). The same pattern applies to the database-dump bucket (`MIGRATION_DB_*`).
 
 ---
 

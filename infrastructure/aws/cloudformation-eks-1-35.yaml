@@ -2540,7 +2540,7 @@ Resources:
                     --set extraArgs.max-node-group-backoff-duration=5m \
                     --set extraArgs.enable-provisioning-requests=true \
                     --set extraArgs.kube-api-content-type=application/json \
-                    --set extraArgs.startup-taints=nvidia.com/gpu-not-ready \
+                    --set extraArgs.startup-taint=nvidia.com/gpu-not-ready \
                     --atomic --timeout 5m
 
                   # Grant CA access to ProvisioningRequest and PodTemplate resources.
@@ -3327,7 +3327,7 @@ Resources:
       ExternalDnsVersion: '1.20.0'
       AlbControllerVersion: '3.0.0'
       # Bump for non-version buildspec changes (new flags, RBAC, install order)
-      BuildSpecRevision: '2'
+      BuildSpecRevision: '3'
 
   TriggerPlatformaDeploy:
     Type: AWS::CloudFormation::CustomResource

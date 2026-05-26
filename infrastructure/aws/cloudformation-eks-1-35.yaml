@@ -168,8 +168,13 @@ Parameters:
   ClusterName:
     Type: String
     Default: platforma-cluster
-    AllowedPattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$'
-    ConstraintDescription: 'Alphanumeric, hyphens, underscores, 1-100 characters'
+    # Upper bound of 25 characters keeps the derived ECR pull-through cache
+    # prefix (`quay-${ClusterName}`) under AWS's 30-char limit. Lowercase
+    # alphanumeric and hyphens only — the auto-generated S3 bucket name
+    # (`platforma-${ClusterName}-...`) cannot contain underscores or
+    # uppercase, and S3 is the tightest naming constraint downstream.
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{0,24}$'
+    ConstraintDescription: 'Lowercase alphanumeric, hyphens, 1-25 characters'
     Description: EKS cluster name
 
   PlatformaNamespace:

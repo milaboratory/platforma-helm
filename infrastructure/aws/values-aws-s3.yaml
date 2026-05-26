@@ -63,9 +63,11 @@ ingress:
 
 kueue:
   # Max resources for a single job (rejects jobs that exceed this).
+  # 485Gi = r7i.16xlarge EKS allocatable (~486 GiB) minus 1 GiB safety margin
+  # for customer-installed DaemonSets. Reduce further if you run heavier DS.
   maxJobResources:
     cpu: 62
-    memory: 500Gi
+    memory: 485Gi
   mode: dedicated
   # Node pools — controls where jobs run.
   # Must match your EKS node group labels and taints.
@@ -101,7 +103,7 @@ kueue:
         memory: 256Gi
       batch:
         cpu: 126
-        memory: 500Gi
+        memory: 485Gi
       gpu:
         gpu: 8
         cpu: 32
@@ -115,6 +117,6 @@ app:
       memory: 16Gi
     limits:
       cpu: 8
-      memory: 16Gi
+      memory: 32Gi
   nodeSelector:
     node.kubernetes.io/pool: system

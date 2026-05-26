@@ -456,7 +456,7 @@ Parameters:
     AllowedValues: [small, medium, large, xlarge]
     Description: >
       Cluster sizing profile. Controls node group scaling limits and Kueue quotas.
-      All deployment sizes support the same maximum single-job size (62 vCPU / 485Gi).
+      All deployment sizes support the same maximum single-job size (62 vCPU / 484Gi).
       Larger sizes allow more jobs to run simultaneously.
       GPU nodes (g6f/g6/g6e) scale from 0 — no cost when idle. Disable entirely with EnableGpu=false.
       6 GPU tiers: 3GB (g6f.xl, $0.24/hr), 6GB (g6f.2xl, $0.49/hr), 12GB (g6f.4xl, $0.98/hr),
@@ -539,16 +539,18 @@ Mappings:
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
-  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r7i.16xl count) x 485Gi.
-  # 485Gi = r7i.16xlarge EKS allocatable (~486 GiB) minus 1 GiB safety margin
-  # for customer-installed DaemonSets (Datadog, Falco, Wiz, etc.). Customers
-  # with heavier DS footprints should lower kueue.maxJobResources.memory.
+  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r7i.16xl count) x 484Gi.
+  # 484Gi = r7i.16xlarge EKS allocatable (~486 GiB) minus ~1 GiB EKS DaemonSet
+  # overhead (aws-node, kube-proxy, ebs-csi) minus 1 GiB safety margin for
+  # customer-installed DaemonSets (Datadog, Falco, Wiz, etc.). Matches the GCP
+  # per-job ceiling on n2d-highmem-64 so the same deployment_size label means
+  # the same workload capacity on both clouds.
   # UI quota is fixed at 64 vCPU / 256 GiB regardless of size.
   DeploymentSize:
     small:
-      # Kueue quotas (derived: 2x63=126 CPU, 1x485=485Gi)
+      # Kueue quotas (derived: 2x63=126 CPU, 1x484=484Gi)
       BatchCpu: '126'
-      BatchMemoryGi: '485'
+      BatchMemoryGi: '484'
       UiCpu: '64'
       UiMemoryGi: '256'
       # Node group MaxSize per pool
@@ -565,9 +567,9 @@ Mappings:
       MaxGpu96g: '1'
       MaxUi: '4'
     medium:
-      # Kueue quotas (derived: 4x63=252 CPU, 2x485=970Gi)
+      # Kueue quotas (derived: 4x63=252 CPU, 2x484=968Gi)
       BatchCpu: '252'
-      BatchMemoryGi: '970'
+      BatchMemoryGi: '968'
       UiCpu: '64'
       UiMemoryGi: '256'
       MaxBatch16c64g: '8'
@@ -583,9 +585,9 @@ Mappings:
       MaxGpu96g: '1'
       MaxUi: '8'
     large:
-      # Kueue quotas (derived: 8x63=504 CPU, 4x485=1940Gi)
+      # Kueue quotas (derived: 8x63=504 CPU, 4x484=1936Gi)
       BatchCpu: '504'
-      BatchMemoryGi: '1940'
+      BatchMemoryGi: '1936'
       UiCpu: '64'
       UiMemoryGi: '256'
       MaxBatch16c64g: '16'
@@ -601,9 +603,9 @@ Mappings:
       MaxGpu96g: '2'
       MaxUi: '16'
     xlarge:
-      # Kueue quotas (derived: 16x63=1008 CPU, 8x485=3880Gi)
+      # Kueue quotas (derived: 16x63=1008 CPU, 8x484=3872Gi)
       BatchCpu: '1008'
-      BatchMemoryGi: '3880'
+      BatchMemoryGi: '3872'
       UiCpu: '64'
       UiMemoryGi: '256'
       MaxBatch16c64g: '32'
@@ -3077,7 +3079,7 @@ Resources:
                   kueue:
                     maxJobResources:
                       cpu: 62
-                      memory: 485Gi
+                      memory: 484Gi
                     mode: dedicated
                     pools:
                       ui:

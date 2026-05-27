@@ -159,15 +159,15 @@ CloudFormation Console for details.
 
 | Size     | Recommended vCPU quota | Max single-job    | Approximate parallelism<br>(samples in parallel) | GPU nodes                                 |
 |----------|------------------------|-------------------|--------------------------------------------------|-------------------------------------------|
-| `small`  | ~400                   | 62 vCPU / 500 GiB | ~4 large or ~16 small jobs                       | ~1 medium (48GiB) to ~2 small (3GiB) jobs |
-| `medium` | ~700                   | 62 vCPU / 500 GiB | ~8 large or ~32 small jobs                       | ~1 big (192Gib) to ~4 small jobs          |
-| `large`  | ~1400                  | 62 vCPU / 500 GiB | ~16 large or ~64 small jobs                      | ~2 big to ~8 small jobs                   |
-| `xlarge` | ~2700                  | 62 vCPU / 500 GiB | ~32 large or ~128 small jobs                     | ~4 big to ~16 small jobs                  |
+| `small`  | ~400                   | 62 vCPU / 484 GiB | ~4 large or ~16 small jobs                       | ~1 medium (48GiB) to ~2 small (3GiB) jobs |
+| `medium` | ~700                   | 62 vCPU / 484 GiB | ~8 large or ~32 small jobs                       | ~1 big (192Gib) to ~4 small jobs          |
+| `large`  | ~1400                  | 62 vCPU / 484 GiB | ~16 large or ~64 small jobs                      | ~2 big to ~8 small jobs                   |
+| `xlarge` | ~2700                  | 62 vCPU / 484 GiB | ~32 large or ~128 small jobs                     | ~4 big to ~16 small jobs                  |
 
 
 | Parameter       | Default | Description                                                                                                                                                                                                                                                                                                            |
 |-----------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Deployment size | `small` | Controls node group scaling limits and Kueue quotas. All sizes support the same max single-job size (62 vCPU / 500 GiB).                                                                                                                                                                                              |
+| Deployment size | `small` | Controls node group scaling limits and Kueue quotas. All sizes support the same max single-job size (62 vCPU / 484 GiB).                                                                                                                                                                                              |
 | Enable GPU      | `true`  | Provision GPU node groups (all 6 tiers, scale-from-zero). Set to `false` to deploy in regions without GPU instance availability or to skip GPU costs entirely. When disabled, blocks gating on `feats.hasGpu` run their CPU fallback path; `.gpuMemory()` requests fail with a clear error instead of hanging. |
 
 ![CloudFormation parameters — cluster sizing](images/cf-parameters-4.png)

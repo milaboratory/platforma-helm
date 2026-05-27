@@ -3352,7 +3352,22 @@ Resources:
       ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
       CodeBuildProject: !Sub '${ClusterName}-platforma-deployer'
       # Properties below trigger re-deployment when changed during stack update.
+      # CF re-invokes this custom resource (and thus re-runs the platforma
+      # deployer CodeBuild) whenever ANY property value here changes.
       ForceUpdatePlatforma: "1"  # Bump to force Platforma re-deployment
+      # Resolved sizing values mirror the platforma-deployer env vars. Watching
+      # them here means a change to the DeploymentSize Mappings (e.g.
+      # BatchMemoryGi 4000 -> 3872 when we tightened the per-node ceiling)
+      # re-triggers a deploy automatically — the DeploymentSize *label*
+      # ("xlarge") is unchanged, so without these the values silently went
+      # stale on stack updates and required a manual ForceUpdatePlatforma bump.
+      BatchQueueCpu:      !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchCpu]
+      BatchQueueMemoryGi: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchMemoryGi]
+      # Bump when changing platforma values that are hardcoded in the deployer
+      # buildspec (not derived from a Mapping above) — e.g.
+      # kueue.maxJobResources.memory or app.resources.limits.memory. Mirrors
+      # the BuildSpecRevision pattern on TriggerHelmDeploy.
+      PlatformaValuesRevision: "1"
       PlatformaVersion: !If
         - UseDefaultPlatformaVersion
         - !FindInMap [Constants, Platforma, Version]

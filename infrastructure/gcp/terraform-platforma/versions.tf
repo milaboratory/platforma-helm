@@ -18,15 +18,23 @@ terraform {
     }
     helm = {
       source  = "hashicorp/helm"
-      version = "~> 3.0"
+      version = "~> 3.1"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
-      version = "~> 2.35"
+      version = "~> 2.38"
     }
+    # kubectl 2.4.0 introduced eager plan-time provider config validation
+    # that breaks the old monolithic module's "host = ${managed-resource}.endpoint"
+    # pattern. The new platforma module routes through data.google_container_
+    # cluster instead — by the time we plan here, the infra module has
+    # already created the cluster, so the data source returns concrete
+    # values and the eager validation passes. Bumping to ~> 2.4 is therefore
+    # safe in this module shape (and intentionally rejected for the old
+    # monolithic terraform/ module).
     kubectl = {
       source  = "alekc/kubectl"
-      version = "~> 2.1"
+      version = "~> 2.4"
     }
     http = {
       source  = "hashicorp/http"
@@ -39,6 +47,4 @@ terraform {
   }
 
   # No backend block here — Infrastructure Manager manages state externally.
-  # For local development, backend.tf provides a GCS backend (gitignored when
-  # packaging for IM; see infrastructure/gcp/README.md for the local dev flow).
 }

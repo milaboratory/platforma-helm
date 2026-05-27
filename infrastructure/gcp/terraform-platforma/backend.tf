@@ -20,6 +20,6 @@
 terraform {
   backend "gcs" {
     bucket = "platforma-gcp-test-tfstate"
-    prefix = "infrastructure/gcp"
+    prefix = "infrastructure/gcp/platforma"
   }
 }

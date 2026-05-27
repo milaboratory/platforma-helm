@@ -255,25 +255,32 @@ cleanup_pvcs() {
 # Submit IM delete
 # -----------------------------------------------------------------------------
 
+# submit_im_delete <deployment_name>
+# Idempotent: returns silently if the deployment doesn't exist. Called
+# twice from main() — first for the platforma deployment, then for infra,
+# so the GKE Gateway controller releases its GFE-side resources (target
+# proxies, backend services, NEGs) before the certmap they reference is
+# destroyed by the infra deployment.
 submit_im_delete() {
-  bold "Submitting IM destroy"
+  local deployment_name="$1"
+  bold "Submitting IM destroy for ${deployment_name}"
 
   # describe stdout = state; stderr captured separately so we can distinguish
   # 'deployment does not exist' (404) from transient API errors that we
   # shouldn't silently treat as "nothing to delete".
   local state stderr_out
   stderr_out="$(mktemp)"
-  state="$(gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
+  state="$(gcloud infra-manager deployments describe "${deployment_name}" \
     --location="${IM_LOCATION}" --project="${PROJECT_ID}" \
     --format="value(state)" 2>"${stderr_out}")" || state=""
 
   if [[ -z "${state}" ]]; then
     if grep -qE "(NOT_FOUND|was not found|does not exist)" "${stderr_out}"; then
-      info "IM deployment ${DEPLOYMENT_NAME} not found in ${IM_LOCATION}. Nothing to delete."
+      info "IM deployment ${deployment_name} not found in ${IM_LOCATION}. Nothing to delete."
       rm -f "${stderr_out}"
       return 0
     fi
-    red "Failed to describe IM deployment ${DEPLOYMENT_NAME}:"
+    red "Failed to describe IM deployment ${deployment_name}:"
     sed 's/^/  /' "${stderr_out}" >&2
     rm -f "${stderr_out}"
     red "  → Retry once the underlying issue is fixed; the deployment is unchanged."
@@ -281,11 +288,35 @@ submit_im_delete() {
   fi
   rm -f "${stderr_out}"
 
+  # Idempotency: a previous teardown that was Ctrl-C'd leaves the IM
+  # deployment in DELETING. We must NOT just return — main() would then
+  # submit the infra delete immediately, racing the still-running
+  # platforma delete and triggering the certmap-in-use race that
+  # null_resource.wait_gateway_gfe_cleanup is meant to prevent. Block
+  # until the LRO actually finishes.
+  case "${state}" in
+    DELETING)
+      info "Already DELETING — waiting for server-side completion."
+      while :; do
+        local s
+        s="$(gcloud infra-manager deployments describe "${deployment_name}" \
+              --location="${IM_LOCATION}" --project="${PROJECT_ID}" \
+              --format='value(state)' 2>/dev/null || echo GONE)"
+        case "${s}" in
+          DELETED|GONE) info "${deployment_name} deleted."; return 0 ;;
+          FAILED)       red "${deployment_name} delete FAILED."; exit 1 ;;
+        esac
+        sleep 15
+      done
+      ;;
+    DELETED)
+      info "Already DELETED."
+      return 0
+      ;;
+  esac
+
   info "Current state: ${state}. Submitting delete…"
   echo
-  # Print monitoring URLs before the blocking call so an operator whose Cloud
-  # Shell disconnects mid-run can still follow progress from a browser.
-  # Mirrors the print pattern in install.sh::submit_deployment.
   cat <<EOF
   Monitoring URLs (open in browser if this terminal disconnects):
     - Infrastructure Manager:   https://console.cloud.google.com/infra-manager/deployments?project=${PROJECT_ID}
@@ -296,7 +327,7 @@ submit_im_delete() {
   (it's idempotent) or check the URLs above to see the outcome.
 
 EOF
-  gcloud infra-manager deployments delete "${DEPLOYMENT_NAME}" \
+  gcloud infra-manager deployments delete "${deployment_name}" \
     --location="${IM_LOCATION}" \
     --project="${PROJECT_ID}" \
     --delete-policy=delete \
@@ -313,13 +344,23 @@ main() {
 
   resolve_inputs
 
+  # Two-stage deployment names — must match install.sh's main().
+  local infra_deployment="${DEPLOYMENT_NAME}-infra"
+  local platforma_deployment="${DEPLOYMENT_NAME}-platforma"
+
   cat <<EOF
 This will:
   1. Delete all PVCs in the '${PLATFORMA_NAMESPACE}' namespace of cluster
      '${CLUSTER_NAME}' (workspace, database, logs — annotated 'keep' by the
      chart, retained on helm uninstall, but in the way of a full teardown).
-  2. Submit 'gcloud infra-manager deployments delete ${DEPLOYMENT_NAME}'
-     with --delete-policy=delete.
+  2. Submit 'gcloud infra-manager deployments delete ${platforma_deployment}'
+     with --delete-policy=delete (destroys Kueue/AppWrapper/Platforma chart/
+     Gateway). The Gateway controller releases its GFE child resources
+     during this destroy — must complete before the infra deployment's
+     certmap is destroyed.
+  3. Submit 'gcloud infra-manager deployments delete ${infra_deployment}'
+     with --delete-policy=delete (destroys GKE cluster, Filestore, GCS,
+     network, IAM, certmap, DNS).
 
 Everything terraform manages goes away: GKE cluster, Filestore (workspace
 data), GCS primary bucket (only if applied with GCS_FORCE_DESTROY=true,
@@ -331,7 +372,14 @@ EOF
   require_phrase "delete ${DEPLOYMENT_NAME} from ${PROJECT_ID}"
 
   cleanup_pvcs
-  submit_im_delete
+
+  # Platforma first — releases the K8s Gateway and lets the GKE Gateway
+  # controller clean up its GFE-side resources (target-https-proxy,
+  # backend-services, NEGs) before the certmap they reference is destroyed.
+  submit_im_delete "${platforma_deployment}"
+
+  # Then infra — certmap, cluster, network, GCS, etc.
+  submit_im_delete "${infra_deployment}"
 
   bold "Teardown complete"
 }

@@ -129,3 +129,36 @@ resource "google_service_account_iam_member" "jobs_token_creator_self" {
   role               = "roles/iam.serviceAccountTokenCreator"
   member             = "serviceAccount:${google_service_account.jobs.email}"
 }
+
+# Google Batch — opt-in IAM for installs that exercise the Batch runner backend.
+# Mirrors the role set used in infra/gcp/mik8s-platforma/main.tf. Gated on
+# var.enable_google_batch so the default GKE+Kueue path stays least-privilege.
+resource "google_project_iam_member" "server_batch_jobs_editor" {
+  count   = var.enable_google_batch ? 1 : 0
+  project = var.project_id
+  role    = "roles/batch.jobsEditor"
+  member  = "serviceAccount:${google_service_account.server.email}"
+}
+
+resource "google_project_iam_member" "server_batch_agent_reporter" {
+  count   = var.enable_google_batch ? 1 : 0
+  project = var.project_id
+  role    = "roles/batch.agentReporter"
+  member  = "serviceAccount:${google_service_account.server.email}"
+}
+
+resource "google_project_iam_member" "server_batch_service_agent" {
+  count   = var.enable_google_batch ? 1 : 0
+  project = var.project_id
+  role    = "roles/batch.serviceAgent"
+  member  = "serviceAccount:${google_service_account.server.email}"
+}
+
+# Self-impersonation: Batch VMs run-as the platforma-server SA, which requires
+# the SA to have iam.serviceAccountUser on itself.
+resource "google_service_account_iam_member" "server_batch_run_as_self" {
+  count              = var.enable_google_batch ? 1 : 0
+  service_account_id = google_service_account.server.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.server.email}"
+}

@@ -49,7 +49,7 @@ locals {
           # uses the SA only to sign requests; anonymous read still works.
           {
             projectId      = lib.project_id != "" ? lib.project_id : var.project_id
-            serviceAccount = google_service_account.server.email
+            serviceAccount = data.google_service_account.server.email
           },
         )
       } : {},
@@ -130,10 +130,9 @@ resource "kubernetes_namespace" "platforma" {
   metadata {
     name = var.platforma_namespace
   }
-
-  depends_on = [
-    google_container_node_pool.system,
-  ]
+  # No depends_on needed — install.sh applies the infra module (which creates
+  # the system node pool) before this module, so the cluster is fully ready
+  # by the time we plan here.
 }
 
 # Auto-generated admin password, stored in Secret Manager for retrieval.
@@ -150,8 +149,7 @@ resource "google_secret_manager_secret" "admin_password" {
   replication {
     auto {}
   }
-
-  depends_on = [google_project_service.enabled]
+  # secretmanager.googleapis.com is enabled by the infra module.
 }
 
 resource "google_secret_manager_secret_version" "admin_password" {
@@ -265,19 +263,19 @@ resource "helm_release" "platforma" {
           workspace = {
             filestore = {
               enabled      = true
-              instanceName = google_filestore_instance.workspace.name
-              location     = google_filestore_instance.workspace.location
-              shareName    = google_filestore_instance.workspace.file_shares[0].name
-              ip           = google_filestore_instance.workspace.networks[0].ip_addresses[0]
+              instanceName = data.google_filestore_instance.workspace.name
+              location     = data.google_filestore_instance.workspace.location
+              shareName    = data.google_filestore_instance.workspace.file_shares[0].name
+              ip           = data.google_filestore_instance.workspace.networks[0].ip_addresses[0]
               path         = "/"
             }
           }
           main = {
             type = "gcs"
             gcs = {
-              bucket         = google_storage_bucket.primary.name
+              bucket         = data.google_storage_bucket.primary.name
               projectId      = var.project_id
-              serviceAccount = google_service_account.server.email
+              serviceAccount = data.google_service_account.server.email
             }
           }
         }
@@ -292,14 +290,14 @@ resource "helm_release" "platforma" {
         serviceAccount = {
           create = true
           annotations = {
-            "iam.gke.io/gcp-service-account" = google_service_account.server.email
+            "iam.gke.io/gcp-service-account" = data.google_service_account.server.email
           }
         }
 
         jobServiceAccount = {
           create = true
           annotations = {
-            "iam.gke.io/gcp-service-account" = google_service_account.jobs.email
+            "iam.gke.io/gcp-service-account" = data.google_service_account.jobs.email
           }
         }
 
@@ -327,8 +325,15 @@ resource "helm_release" "platforma" {
               }]
             }
             batch = {
+              # Batch pods select the custom ComputeClass (computeclass.tf),
+              # which provisions highmem nodes on demand (n2d-highmem-64,
+              # falling back to n2-highmem-64 on stockout). This nodeSelector
+              # both ATTRACTS batch pods to ComputeClass nodes and triggers
+              # the class's node-pool auto-creation. The taint set on the
+              # class nodes plus this toleration isolates batch work from
+              # system/ui pods.
               nodeSelector = {
-                role = "batch"
+                "cloud.google.com/compute-class" = "platforma-batch"
               }
               tolerations = [{
                 key    = "dedicated"
@@ -361,12 +366,16 @@ resource "helm_release" "platforma" {
 
         app = {
           # Resource sizing mirrors AWS CloudFormation (cloudformation-eks-1-35.yaml
-          # platforma-values.yaml block): 4 CPU / 16 GiB requested, 8 CPU / 16 GiB
-          # limit. Memory request == limit (no overcommit) so the kernel never
-          # OOM-kills platforma under burst. CPU limit > request lets it burst on
-          # bursty workflow scheduling. Requires system_pool_machine_type at
-          # n2d-standard-8 or larger (allocatable >= 5 vCPU / 18 GiB to fit this
-          # plus kueue/appwrapper/kube-system overhead).
+          # platforma-values.yaml block): 4 CPU / 16 GiB requested, 8 CPU / 32 GiB
+          # limit. CPU limit > request lets platforma burst on bursty workflow
+          # scheduling; memory limit > request gives burst headroom before the
+          # kernel OOM-kills under spikes.
+          #
+          # On the default system_pool_machine_type (n2d-standard-8, ~26 GiB
+          # allocatable) the effective memory ceiling is node allocatable, not
+          # the 32 GiB limit — a single pod can't actually grow past the node.
+          # To realize the full 32 GiB burst, bump system_pool_machine_type to
+          # n2d-standard-16 (~58 GiB allocatable).
           resources = {
             requests = {
               cpu    = 4
@@ -374,7 +383,7 @@ resource "helm_release" "platforma" {
             }
             limits = {
               cpu    = 8
-              memory = "16Gi"
+              memory = "32Gi"
             }
           }
           nodeSelector = {
@@ -406,14 +415,11 @@ resource "helm_release" "platforma" {
   # downstream certmap deletion racing the gateway-controller cleanup.
   timeout = 1800
 
+  # Cross-module dependencies (Filestore, Workload Identity bindings, GCS
+  # IAM) are guaranteed by install.sh applying the infra module first.
   depends_on = [
     helm_release.kueue,
     kubectl_manifest.appwrapper,
-    google_filestore_instance.workspace,
-    google_service_account_iam_member.server_wi,
-    google_service_account_iam_member.jobs_wi,
-    google_storage_bucket_iam_member.server_bucket_admin,
-    google_storage_bucket_iam_member.jobs_bucket_admin,
     kubernetes_secret.license,
     kubernetes_secret.htpasswd_provided,
     kubernetes_secret.ldap_search_password,

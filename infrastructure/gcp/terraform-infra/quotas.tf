@@ -36,28 +36,35 @@ locals {
       quota_id      = "CPUS-ALL-REGIONS-per-project"
       dimensions    = {}
       preferred     = local.preset.cpus_global_quota
-      justification = "Total CPU (all regions). Required for Platforma batch nodes scaling up to ${local.total_batch_max_nodes} nodes (${local.total_batch_cpu} vCPU peak) across 5 batch pool shapes for deployment size ${var.deployment_size}."
+      justification = "Total CPU (all regions). Required for Platforma batch capacity up to ${local.total_batch_cpu} vCPU (NAP-provisioned across n2d/n2 families) plus system/UI overhead for deployment size ${var.deployment_size}."
     }
     n2d_cpus_region = {
       service       = "compute.googleapis.com"
       quota_id      = "N2D-CPUS-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.n2d_cpus_quota
-      justification = "N2D CPU per region. Platforma uses 5 batch pool shapes (n2d-standard-16/32/64, n2d-highmem-32/64) plus n2d-standard-8 system nodes and n2d-standard-4 UI nodes. Peak total: ${local.total_batch_cpu} vCPU batch + system/UI overhead, deployment size ${var.deployment_size}."
+      justification = "N2D (AMD) CPU per region. Primary family for Platforma batch nodes — NAP provisions n2d-* shapes by default. Also used by static n2d-standard-8 system pool and n2d-standard-4 UI pool. Peak total: ${local.total_batch_cpu} vCPU batch + system/UI overhead, deployment size ${var.deployment_size}."
+    }
+    n2_cpus_region = {
+      service       = "compute.googleapis.com"
+      quota_id      = "N2-CPUS-per-project-region"
+      dimensions    = { region = var.region }
+      preferred     = local.preset.n2_cpus_quota
+      justification = "N2 (Intel) CPU per region. Used by Node Auto-Provisioning as a STOCKOUT fallback when the N2D (AMD) family is unavailable in this zone. Sized to match N2D so NAP can shift the full batch load to the Intel family if needed. Deployment size: ${var.deployment_size}."
     }
     pd_ssd_region = {
       service       = "compute.googleapis.com"
       quota_id      = "SSD-TOTAL-GB-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.pd_ssd_quota_gb
-      justification = "Persistent Disk SSD per region. Covers pd-balanced boot disks for system+UI+batch nodes (up to ${local.total_batch_max_nodes} batch nodes peak across 5 pools) plus database PVC."
+      justification = "Persistent Disk SSD per region. Covers pd-balanced boot disks for system + UI + NAP-provisioned batch nodes (cluster-wide envelope ${local.total_batch_cpu} vCPU) plus database PVC."
     }
     instances_region = {
       service       = "compute.googleapis.com"
       quota_id      = "INSTANCES-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.instances_quota
-      justification = "Compute instances per region. System (2) + UI (up to ${local.preset.ui_max_nodes}) + batch (up to ${local.total_batch_max_nodes} across 5 pool shapes) nodes for Platforma."
+      justification = "Compute instances per region. System (1-2) + UI (up to ${local.preset.ui_max_nodes}) + NAP-provisioned batch nodes (cluster-wide envelope ${local.total_batch_cpu} vCPU; node count depends on shape mix the autoscaler picks)."
     }
     filestore_zonal_region = {
       service       = "file.googleapis.com"
@@ -95,12 +102,19 @@ resource "google_cloud_quotas_quota_preference" "platforma" {
 
   justification = each.value.justification
 
-  # QUOTA_DECREASE_BELOW_USAGE: needed for graceful destroy when current usage
-  # exceeds new preferred value but everything is being torn down anyway.
-  # The provider only accepts a single value (despite the doc); preset values
-  # have been bumped in presets.tf so they don't trip QUOTA_DECREASE_PERCENTAGE_TOO_HIGH
-  # against typical GCP default quotas.
-  ignore_safety_checks = "QUOTA_DECREASE_BELOW_USAGE"
+  # QUOTA_DECREASE_PERCENTAGE_TOO_HIGH: the Cloud Quotas API rejects any
+  # QuotaPreference create whose preferred_value is <90% of the current
+  # effective limit. This fires routinely on projects where someone (a
+  # previous deploy, support ticket, dev experiment) already pushed limits
+  # above what our preset table requests. Storing a lower preference can't
+  # actually downgrade the effective quota (GCP takes max(default, preference,
+  # override) on read), so suppressing this safety check is harmless.
+  #
+  # The provider's ignore_safety_checks is a single-value string — we can
+  # only suppress one check. QUOTA_DECREASE_BELOW_USAGE (the previous value)
+  # does not fire on destroy in normal flows; dropping it for the percentage
+  # check is the right trade for real-world projects.
+  ignore_safety_checks = "QUOTA_DECREASE_PERCENTAGE_TOO_HIGH"
 
   lifecycle {
     precondition {

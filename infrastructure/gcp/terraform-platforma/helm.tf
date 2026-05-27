@@ -52,9 +52,8 @@ resource "helm_release" "kueue" {
     })
   ]
 
-  depends_on = [
-    google_container_node_pool.system,
-  ]
+  # No depends_on needed — the cluster (with its node pools) is fully
+  # provisioned by the infra module before this module runs.
 }
 
 # AppWrapper — no official Helm chart on a registry; upstream ships install.yaml.

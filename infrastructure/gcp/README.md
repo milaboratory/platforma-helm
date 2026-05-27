@@ -75,44 +75,48 @@ All three share the same Terraform module under [`terraform/`](terraform/).
 
 ## Deployment sizes
 
-`deployment_size` controls per-batch-pool max-node counts, Kueue batch queue
-quotas, Filestore default capacity, and the values the installer requests via
-the Cloud Quotas API. **All sizes share the same per-job cap of 62 vCPU /
-500 GiB RAM** — the preset controls per-pool parallelism.
+`deployment_size` controls the cluster-wide batch capacity envelope, UI pool
+max-node count, Kueue batch queue quotas, Filestore default capacity, and
+the values the installer requests via the Cloud Quotas API. **All sizes
+share the same per-job cap of 62 vCPU / 484 GiB RAM** — the preset
+controls cluster-wide parallelism.
 
-The batch tier is split into **5 pool shapes** (mirrors AWS's 5 batch node
-groups). All pools share the same K8s label (`role=batch`) and taint
-(`dedicated=batch:NoSchedule`); the GKE Cluster Autoscaler picks the
-smallest-fitting pool per pending pod. Small jobs land on small nodes, big
-jobs on big nodes — bin-packing efficiency without manual placement.
+Batch nodes are provisioned dynamically by **GKE Node Auto-Provisioning
+(NAP)** — there are no per-shape static pools. NAP picks the cheapest
+machine type that fits each pending pod from the allowed GCP families
+(`n2d-*` primary, `n2-*` as STOCKOUT fallback when AMD capacity in the
+zone is exhausted). Cross-tenant isolation is via the
+`dedicated=batch:NoSchedule` taint NAP applies automatically based on
+pod tolerations.
 
-Per-pool max-node counts per preset:
+Cluster-wide batch envelope per preset (CPU + memory caps NAP cannot
+exceed). The envelope mirrors what the previous 5-static-pool layout
+summed to, so `deployment_size` retains the same workload capacity:
 
-| Preset | 16c-64g | 32c-128g | 64c-256g | 32c-256g | 64c-512g | Total batch | UI nodes max |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `small`  |  4 | 2 | 1 | 2 | 1 | 10 |  4 |
-| `medium` |  8 | 4 | 2 | 4 | 2 | 20 |  8 |
-| `large`  | 16 | 8 | 4 | 8 | 4 | 40 | 16 |
-| `xlarge` | 32 |16 | 8 |16 | 8 | 80 | 16 |
+| Preset | Batch vCPU | Batch memory (GiB) | UI nodes max |
+|---|---:|---:|---:|
+| `small`  |  320 |  1645 |  4 |
+| `medium` |  640 |  3290 |  8 |
+| `large`  | 1280 |  6580 | 16 |
+| `xlarge` | 2560 | 13160 | 16 |
 
-Pool shape mapping:
+NAP picks from these GCP machine families (more can be added later by
+extending `nap_allowed_families` in `terraform-{infra,platforma}/presets.tf`
+and adding matching quota requests):
 
-| Shape    | GCP machine type   | vCPU / Mem      | AWS counterpart |
+| Family    | Role     | Used when                              | AWS counterpart family |
 |---|---|---|---|
-| 16c-64g  | `n2d-standard-16`  | 16 / 64 GiB     | m7i.4xlarge |
-| 32c-128g | `n2d-standard-32`  | 32 / 128 GiB    | m7i.8xlarge |
-| 64c-256g | `n2d-standard-64`  | 64 / 256 GiB    | m7i.16xlarge |
-| 32c-256g | `n2d-highmem-32`   | 32 / 256 GiB    | r7i.8xlarge |
-| 64c-512g | `n2d-highmem-64`   | 64 / 512 GiB    | r7i.16xlarge |
+| `n2d-*`   | primary  | default — cheapest available           | r7i/m7i (AMD-friendly) |
+| `n2-*`    | fallback | n2d STOCKOUT in the cluster's zone     | m7i (Intel) |
 
 Other preset values:
 
-| Preset | Filestore (GiB) | CPUs (global) | N2D CPUs (region) | PD SSD GB (region) | Filestore Zonal GiB (region) | Instances (region) | In-use IPs (region) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `small`  | 1024 |  512 |  512 |  2048 | 1024 |  32 | 16 |
-| `medium` | 2048 | 1024 | 1024 |  4096 | 2048 |  48 | 16 |
-| `large`  | 4096 | 2048 | 2048 |  8192 | 4096 |  64 | 24 |
-| `xlarge` | 8192 | 4096 | 4096 | 16384 | 8192 | 128 | 32 |
+| Preset | Filestore (GiB) | CPUs (global) | N2D CPUs (region) | N2 CPUs (region) | PD SSD GB (region) | Filestore Zonal GiB (region) | Instances (region) | In-use IPs (region) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `small`  | 1024 |  512 |  512 |  512 |  4096 | 1024 |  32 | 16 |
+| `medium` | 2048 | 1024 | 1024 | 1024 |  8192 | 2048 |  48 | 16 |
+| `large`  | 4096 | 2048 | 2048 | 2048 | 16384 | 4096 |  64 | 24 |
+| `xlarge` | 8192 | 4096 | 4096 | 4096 | 32768 | 8192 | 128 | 32 |
 
 Larger sizes request larger GCP quotas. The installer auto-submits these via
 the Cloud Quotas API on first run; **small/medium** typically auto-approve
@@ -129,10 +133,10 @@ Rough idle cost (no jobs running, Tier-1 small):
 | Component | $/hour idle |
 |---|---|
 | GKE Standard control plane | $0.10 |
-| System pool (2× n2d-standard-8) | $0.80 |
+| System pool (1× n2d-standard-8) | $0.40 |
 | Filestore Zonal 1 TiB | $0.40 |
 | Static IP + Cloud DNS records + Cert Manager | ~$0 |
-| **Idle total** | **~$1.30/hour (~$940/month)** |
+| **Idle total** | **~$0.90/hour (~$650/month)** |
 
 Batch + UI pools scale from zero, so they don't burn when idle. Active-job
 cost varies with the pool the autoscaler picks for each job:

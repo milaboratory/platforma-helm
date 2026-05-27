@@ -40,13 +40,27 @@ resource "google_container_cluster" "primary" {
 
   deletion_protection = false
 
-  # OPTIMIZE_UTILIZATION makes the Cluster Autoscaler more aggressive about
-  # bin-packing — when a pending pod could fit on multiple node pools (we
-  # have 5 batch pool shapes sharing the same label/taint), it picks the
-  # smallest-fitting pool and prefers consolidating onto fewer nodes. This
-  # is the GKE-side counterpart of AWS Cluster Autoscaler's "least-waste"
-  # expander, and it's what makes the multi-pool batch layout actually save
-  # money (vs picking pools at random).
+  # Cluster-wide Node Auto-Provisioning is intentionally OFF.
+  #
+  # We tried cluster-wide NAP for the batch tier and hit a hard wall: without
+  # a pinned machine family, GKE Standard NAP shapes nodes within the default
+  # E2 family, which is ratio-capped (~4-6.5 GiB/vCPU). Batch jobs request a
+  # high memory:CPU ratio (e.g. 62 vCPU / 484 GiB ≈ 7.8 GiB/vCPU), which no
+  # E2 shape can satisfy, and NAP does NOT reach for predefined highmem
+  # machine types on its own. Result: every batch ProvisioningRequest failed
+  # with `no.scale.up.nap.pod.zonal.resources.exceeded` ("no machine type
+  # could fit the request"). Cluster-wide NAP also created stray e2 pools for
+  # floating kube-system pods during bootstrap.
+  #
+  # Instead, batch capacity is provisioned by a custom ComputeClass
+  # (terraform-platforma/computeclass.tf) that names n2d-highmem / n2-highmem
+  # machine types explicitly and auto-creates pools standalone (GKE >= 1.33.3
+  # supports nodePoolAutoCreation without cluster-wide NAP). Only pods that
+  # select the compute class trigger pool creation — system/ui/kube-system
+  # stay on their static pools.
+  #
+  # OPTIMIZE_UTILIZATION still tunes the autoscaler's bin-packing for the
+  # static pools and the ComputeClass-created pools (least-waste expander).
   cluster_autoscaling {
     autoscaling_profile = "OPTIMIZE_UTILIZATION"
   }
@@ -170,61 +184,7 @@ resource "google_container_node_pool" "ui" {
   }
 }
 
-# Batch node pools — one resource per shape in local.batch_pool_specs.
-#
-# All pools share the same Kubernetes label (role=batch) and taint
-# (dedicated=batch:NoSchedule), so the scheduler treats them as a single
-# logical pool. The GKE Cluster Autoscaler picks the smallest-fitting pool
-# when a pending pod arrives, minimising waste — small jobs land on small
-# nodes, big jobs on big nodes. Mirrors AWS CloudFormation's 5-pool batch
-# layout (m7i.4xlarge / .8xlarge / .16xlarge + r7i.8xlarge / .16xlarge).
-#
-# Pool name: "batch-${shape}" e.g. batch-16c-64g. The shape is also exposed
-# as a label (platforma.bio/batch-pool=<shape>) for diagnostics — workloads
-# don't select on it, the autoscaler picks based on resource requests.
-resource "google_container_node_pool" "batch" {
-  for_each = local.batch_pool_specs
-
-  name     = "batch-${each.key}"
-  project  = var.project_id
-  location = local.zone
-  cluster  = google_container_cluster.primary.name
-
-  initial_node_count = 0
-
-  autoscaling {
-    min_node_count = 0
-    max_node_count = local.effective_batch_pool_max_nodes[each.key]
-  }
-
-  node_config {
-    machine_type = each.value.machine_type
-    disk_type    = "pd-balanced"
-    disk_size_gb = var.batch_pool_disk_size_gb
-
-    labels = {
-      role                       = "batch"
-      dedicated                  = "batch"
-      "platforma.bio/batch-pool" = each.key
-    }
-
-    taint {
-      key    = "dedicated"
-      value  = "batch"
-      effect = "NO_SCHEDULE"
-    }
-
-    oauth_scopes = [
-      "https://www.googleapis.com/auth/cloud-platform",
-    ]
-
-    workload_metadata_config {
-      mode = "GKE_METADATA"
-    }
-  }
-
-  management {
-    auto_repair  = true
-    auto_upgrade = true
-  }
-}
+# Batch node pools — provisioned dynamically by NAP (see cluster_autoscaling
+# block above). No explicit google_container_node_pool resources here;
+# NAP creates pools on demand with the dedicated=batch:NoSchedule taint
+# inferred from pod tolerations.

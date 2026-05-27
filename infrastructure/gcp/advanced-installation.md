@@ -206,37 +206,43 @@ dns_zone_project = "your-network-services-project"   # zone lives here, not proj
 The deployer SA (or your local gcloud account) needs `roles/dns.admin` on the
 DNS project.
 
-### Custom node-pool sizing
+### Custom batch capacity
 
-The `deployment_size` preset sets sensible defaults. Override individually:
+Batch nodes are provisioned dynamically by GKE Node Auto-Provisioning (NAP) —
+there are no per-shape pool definitions to override anymore. The
+`deployment_size` preset sets a cluster-wide capacity envelope (CPU + memory
+ceiling) that NAP cannot exceed. NAP picks machine types per pending pod
+from the allowed families (`n2d-*` primary, `n2-*` as STOCKOUT fallback).
+
+Override individually:
 
 ```hcl
 deployment_size = "large"
 
-# Per-batch-pool overrides — keys are pool shapes; only listed pools are
-# overridden, the rest fall back to preset defaults. Mirror AWS pool families:
-#   16c-64g  → n2d-standard-16  (small jobs)
-#   32c-128g → n2d-standard-32
-#   64c-256g → n2d-standard-64
-#   32c-256g → n2d-highmem-32   (memory-heavy)
-#   64c-512g → n2d-highmem-64   (largest pool)
-batch_pool_max_nodes_overrides = {
-  "16c-64g"  = 32   # double the preset (large default = 16) for small-job heavy load
-  "64c-512g" = 8    # double large-mem capacity
-}
-
-ui_pool_max_nodes      = 8       # preset large = 16
+ui_pool_max_nodes      = 8       # preset large = 16; UI is still a static pool
 workspace_capacity_gb  = 8192    # preset large = 4096
 
-# Kueue caps for very large jobs (default 62 CPU / 500Gi).
-# Note: per-job cap must fit within a SINGLE pool's allocatable resources,
-# not the sum across pools. The largest pool (64c-512g, n2d-highmem-64) has
-# ~62 vCPU / ~500 GiB allocatable after GKE daemonset overhead — that's the
-# upper bound. Raising this without also adding a larger machine-type pool
-# means jobs won't be schedulable.
+# Kueue caps for very large jobs (defaults: 62 CPU / 484Gi).
+# 484Gi = measured GKE allocatable on n2d-highmem-64 (486.94 GiB)
+# minus ~1 GiB GKE DaemonSet overhead minus 1 GiB safety margin.
+# Raising this requires nodes whose allocatable can host the request —
+# n2d-highmem-64 / n2-highmem-64 are the largest families NAP will pick
+# at stage-1 allowed-families settings.
 kueue_max_job_cpu     = 62
-kueue_max_job_memory  = "500Gi"
+kueue_max_job_memory  = "484Gi"
+
+# Override the cluster-wide batch capacity envelope (replaces the old
+# per-pool max-node overrides). NAP cannot exceed these regardless of
+# pending demand.
+kueue_batch_queue_cpu    = 1500
+kueue_batch_queue_memory = "8000Gi"
 ```
+
+> **Deprecated:** `batch_pool_max_nodes_overrides` is now a no-op (NAP
+> doesn't have per-shape pools). The variable is kept for tfvars
+> backwards-compatibility but does nothing. Use
+> `kueue_batch_queue_cpu` / `kueue_batch_queue_memory` to tune the
+> cluster-wide envelope instead.
 
 ### Skip quota auto-request
 
@@ -244,7 +250,7 @@ If your project already has user-managed `QuotaPreference` records and the
 auto-request collides:
 
 ```hcl
-skip_quota_requests = ["cpus_global", "n2d_cpus_region", "pd_ssd_region"]
+skip_quota_requests = ["cpus_global", "n2d_cpus_region", "n2_cpus_region", "pd_ssd_region"]
 ```
 
 Or disable auto-request entirely and manage quotas yourself:

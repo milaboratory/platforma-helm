@@ -34,7 +34,17 @@ trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 GCP_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"             # infrastructure/gcp
 REPO_ROOT="$(cd -- "${GCP_DIR}/../.." &>/dev/null && pwd)"           # platforma-helm
-BUNDLE_TF_DIR="${GCP_DIR}/terraform"
+
+# Two-stage deployment: install.sh submits the infra module first (cluster,
+# IAM, network, storage, certmap), waits for it, reads its outputs, then
+# submits the platforma module (Kueue, AppWrapper, Platforma chart, secrets,
+# Gateway). The platforma module routes its k8s/helm/kubectl providers
+# through data.google_container_cluster.primary, so by the time it plans
+# the cluster already exists and the provider config resolves cleanly —
+# sidesteps the kubectl-2.4 eager-validation chicken-and-egg the monolithic
+# module hit.
+BUNDLE_INFRA_TF_DIR="${GCP_DIR}/terraform-infra"
+BUNDLE_PLATFORMA_TF_DIR="${GCP_DIR}/terraform-platforma"
 BUNDLE_CHART_DIR="${REPO_ROOT}/charts/platforma"
 
 # Service account that Infrastructure Manager runs Terraform under. Created
@@ -745,12 +755,21 @@ EOF
 # deployment_size needs (the deployment will succeed but may run out of
 # quota during scale-up).
 #
-# Lookup table mirrors presets.tf — keep in sync on each preset change.
+# Lookup table mirrors presets.tf — keep in sync on each preset change AND
+# whenever NAP allowed-families changes. Adding a new family (e.g. c3, c3d)
+# requires:
+#   1. Append to nap_allowed_families in presets.tf
+#   2. Add the matching N<FAMILY>-CPUS quota request in quotas.tf
+#   3. Add the matching PRESET_<FAMILY>_CPUS array here + key in
+#      QUOTA_TO_PRESET_KEY + case branch in required_for_preset_key()
 # -----------------------------------------------------------------------------
 
 declare -A PRESET_CPUS_GLOBAL=(    [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
 declare -A PRESET_N2D_CPUS=(       [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
-declare -A PRESET_PD_SSD_GB=(      [small]=2048 [medium]=4096 [large]=8192 [xlarge]=16384 )
+# N2_CPUS mirrors N2D — either family alone can host the full batch load
+# if the other is stocked out. NAP picks whichever has stock at scale-up.
+declare -A PRESET_N2_CPUS=(        [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
+declare -A PRESET_PD_SSD_GB=(      [small]=4096 [medium]=8192 [large]=16384 [xlarge]=32768 )
 declare -A PRESET_INSTANCES=(      [small]=32   [medium]=48   [large]=64   [xlarge]=128   )
 declare -A PRESET_FILESTORE_GB=(   [small]=1024 [medium]=2048 [large]=4096 [xlarge]=8192  )
 
@@ -758,6 +777,7 @@ declare -A PRESET_FILESTORE_GB=(   [small]=1024 [medium]=2048 [large]=4096 [xlar
 declare -A QUOTA_TO_PRESET_KEY=(
   ["CPUS-ALL-REGIONS-per-project"]="cpus_global"
   ["N2D-CPUS-per-project-region"]="n2d_cpus_region"
+  ["N2-CPUS-per-project-region"]="n2_cpus_region"
   ["SSD-TOTAL-GB-per-project-region"]="pd_ssd_region"
   ["INSTANCES-per-project-region"]="instances_region"
   ["EnterpriseStorageGibPerRegion"]="filestore_zonal_region"
@@ -769,6 +789,7 @@ required_for_preset_key() {
   case "${key}" in
     cpus_global)             echo "${PRESET_CPUS_GLOBAL[$DEPLOYMENT_SIZE]}"   ;;
     n2d_cpus_region)         echo "${PRESET_N2D_CPUS[$DEPLOYMENT_SIZE]}"      ;;
+    n2_cpus_region)          echo "${PRESET_N2_CPUS[$DEPLOYMENT_SIZE]}"       ;;
     pd_ssd_region)           echo "${PRESET_PD_SSD_GB[$DEPLOYMENT_SIZE]}"     ;;
     instances_region)        echo "${PRESET_INSTANCES[$DEPLOYMENT_SIZE]}"     ;;
     filestore_zonal_region)  echo "${PRESET_FILESTORE_GB[$DEPLOYMENT_SIZE]}"  ;;
@@ -898,6 +919,7 @@ normalize_boolean_inputs() {
 declare -A QUOTA_PRESET_TO_SERVICE=(
   [cpus_global]="compute.googleapis.com"
   [n2d_cpus_region]="compute.googleapis.com"
+  [n2_cpus_region]="compute.googleapis.com"
   [pd_ssd_region]="compute.googleapis.com"
   [instances_region]="compute.googleapis.com"
   [filestore_zonal_region]="file.googleapis.com"
@@ -905,6 +927,7 @@ declare -A QUOTA_PRESET_TO_SERVICE=(
 declare -A QUOTA_PRESET_TO_QUOTAID=(
   [cpus_global]="CPUS-ALL-REGIONS-per-project"
   [n2d_cpus_region]="N2D-CPUS-per-project-region"
+  [n2_cpus_region]="N2-CPUS-per-project-region"
   [pd_ssd_region]="SSD-TOTAL-GB-per-project-region"
   [instances_region]="INSTANCES-per-project-region"
   [filestore_zonal_region]="EnterpriseStorageGibPerRegion"
@@ -913,6 +936,7 @@ declare -A QUOTA_PRESET_TO_QUOTAID=(
 declare -A QUOTA_PRESET_TO_DIMREGION=(
   [cpus_global]=""
   [n2d_cpus_region]="1"
+  [n2_cpus_region]="1"
   [pd_ssd_region]="1"
   [instances_region]="1"
   [filestore_zonal_region]="1"
@@ -929,6 +953,34 @@ declare -A QUOTA_PRESET_TO_DIMREGION=(
 # preference in, ordered non-deterministically. We jq-filter to the
 # matching REGION so we don't compare against an unrelated region's limit
 # (which would produce both false positives and false negatives).
+# Resolve which gcloud command path is available for Cloud Quotas reads.
+# `gcloud quotas` (no prefix) was promoted to GA in SDK ~452 (Oct 2024);
+# `gcloud beta quotas` has been available since late 2023. CloudShell
+# environments occasionally ship an SDK older than 452, in which case the
+# GA path errors with "Invalid choice: 'quotas'" and the pre-flight check
+# silently fell through. Probe at startup, cache in QUOTAS_CLI (empty
+# string = unavailable, skip pre-flight gracefully).
+#
+# This pre-flight is non-load-bearing — quotas.tf sets ignore_safety_checks
+# to suppress the QUOTA_DECREASE_PERCENTAGE_TOO_HIGH safety check at apply
+# time, so the install proceeds even if we can't read current limits here.
+resolve_quotas_cli() {
+  # QUOTAS_CLI_FLAVOR matters because the two CLI flavors take DIFFERENT
+  # argument shapes (see fetch_effective_quota_for_preset_key):
+  #   ga:   gcloud quotas info describe services/<svc>/quotaInfos/<id> ...
+  #   beta: gcloud beta quotas info describe <id> --service=<svc> ...
+  if gcloud quotas info describe --help >/dev/null 2>&1; then
+    QUOTAS_CLI="gcloud quotas info describe"
+    QUOTAS_CLI_FLAVOR="ga"
+  elif gcloud beta quotas info describe --help >/dev/null 2>&1; then
+    QUOTAS_CLI="gcloud beta quotas info describe"
+    QUOTAS_CLI_FLAVOR="beta"
+  else
+    QUOTAS_CLI=""
+    QUOTAS_CLI_FLAVOR="none"
+  fi
+}
+
 fetch_effective_quota_for_preset_key() {
   local preset_key="$1"
   local service quota_id needs_region
@@ -936,34 +988,57 @@ fetch_effective_quota_for_preset_key() {
   quota_id="${QUOTA_PRESET_TO_QUOTAID[${preset_key}]:-}"
   needs_region="${QUOTA_PRESET_TO_DIMREGION[${preset_key}]:-}"
   [[ -z "${service}" || -z "${quota_id}" ]] && return 0
+  [[ -z "${QUOTAS_CLI:-}" ]] && return 0
 
   local json
-  json="$(gcloud quotas info describe \
-    "services/${service}/quotaInfos/${quota_id}" \
-    --project="${PROJECT_ID}" --format=json 2>/dev/null)" || return 0
+  # The GA and beta CLIs take different argument shapes — build the right
+  # one. The previous code always used the GA positional resource path,
+  # which fails on beta-only environments ("argument --service: Must be
+  # specified") → empty result → no auto-skip → downsizing apply fails.
+  if [[ "${QUOTAS_CLI_FLAVOR}" == "beta" ]]; then
+    json="$(gcloud beta quotas info describe "${quota_id}" \
+      --service="${service}" \
+      --project="${PROJECT_ID}" --format=json 2>/dev/null)" || return 0
+  else
+    json="$(gcloud quotas info describe \
+      "services/${service}/quotaInfos/${quota_id}" \
+      --project="${PROJECT_ID}" --format=json 2>/dev/null)" || return 0
+  fi
   [[ -z "${json}" ]] && return 0
 
+  local v=""
   if [[ -n "${needs_region}" ]]; then
-    # Pick the dimensionsInfo whose dimensions.region matches REGION.
-    echo "${json}" | jq -r --arg r "${REGION}" \
+    # Region-scoped quota: pick the dimensionsInfo whose dimensions.region
+    # matches REGION.
+    v="$(echo "${json}" | jq -r --arg r "${REGION}" \
       '.dimensionsInfos[]? | select(.dimensions.region == $r) | .details.value' \
-      2>/dev/null | head -1
-  else
-    # Global quota — pick the dimensionsInfo with no region (or no
-    # dimensions block at all). Fallback to [0] only if that filter
-    # returns nothing.
-    local v
+      2>/dev/null | head -1)"
+  fi
+  if [[ -z "${v}" ]]; then
+    # Fallback (global quotas, AND per-region quotas that report a single
+    # dimensionsInfo with dimensions=null instead of a region key — notably
+    # Filestore EnterpriseStorageGibPerRegion, which the region filter above
+    # misses): take the no-region entry, then the first entry.
     v="$(echo "${json}" | jq -r \
       '.dimensionsInfos[]? | select(.dimensions == null or (.dimensions | has("region") | not)) | .details.value' \
       2>/dev/null | head -1)"
     [[ -z "${v}" ]] && v="$(echo "${json}" | jq -r '.dimensionsInfos[0]?.details.value' 2>/dev/null)"
-    echo "${v}"
   fi
+  echo "${v}"
 }
 
 detect_quota_decrease_collisions() {
   if [[ "${ENABLE_QUOTA_AUTO_REQUEST:-true}" != "true" ]]; then
     # User already opted out globally — nothing to validate.
+    return 0
+  fi
+
+  if [[ -z "${QUOTAS_CLI:-}" ]]; then
+    bold "Checking for >10% quota-decrease collisions"
+    warn "Skipped: gcloud quotas API unavailable (SDK older than ~452, neither 'gcloud quotas' nor 'gcloud beta quotas' resolves)."
+    warn "To enable pre-flight check, run: gcloud components update — or open a fresh Cloud Shell session."
+    info "Continuing: quotas.tf ignore_safety_checks handles QUOTA_DECREASE_PERCENTAGE_TOO_HIGH at apply time, so the deploy proceeds regardless."
+    echo
     return 0
   fi
 
@@ -989,7 +1064,7 @@ detect_quota_decrease_collisions() {
     done
   fi
 
-  local has_collision=0
+  local auto_skipped=0
   local preset_key required current
 
   for preset_key in "${!QUOTA_PRESET_TO_QUOTAID[@]}"; do
@@ -1013,25 +1088,24 @@ detect_quota_decrease_collisions() {
     # Cloud Quotas rejects when the new effective would be <90% of current.
     # Equivalently: collision when current > required / 0.9, i.e.
     # current > required * 10/9. Exact integer form: current * 9 > required * 10.
+    #
+    # When this fires, auto-add the preset key to skip_quota_requests rather
+    # than prompting the user. The project already has more headroom than the
+    # preset would request, so skipping is a strict superset of what the
+    # auto-request would have given us — the deploy proceeds cleanly without
+    # the user needing to know that Cloud Quotas API rejects >10% decreases.
     if (( current * 9 > required * 10 )); then
-      warn "Quota '${QUOTA_PRESET_TO_QUOTAID[${preset_key}]}'${QUOTA_PRESET_TO_DIMREGION[${preset_key}]:+ (region=${REGION})}: effective=${current} already exceeds preset=${required} by >10%."
-      warn "  → Cloud Quotas API will reject the auto-request (QUOTA_DECREASE_TOO_LARGE)."
-      has_collision=1
+      info "Auto-skip ${QUOTA_PRESET_TO_QUOTAID[${preset_key}]}${QUOTA_PRESET_TO_DIMREGION[${preset_key}]:+ (region=${REGION})}: project effective=${current} already exceeds preset=${required} by >10% (Cloud Quotas API would reject)."
+      SKIP_QUOTA_REQUESTS_AUTO+=("${preset_key}")
+      auto_skipped=$((auto_skipped + 1))
     fi
   done
 
-  if (( has_collision > 0 )); then
-    echo
-    warn "One or more effective quotas already exceed what the '${DEPLOYMENT_SIZE}' preset would request."
-    warn "Cloud Quotas API rejects preferences that would lower an effective limit by more than 10%."
-    warn "Recommended: set ENABLE_QUOTA_AUTO_REQUEST=false in your env and re-run install.sh."
-    echo
-    if ! prompt_yn "Continue with auto-request anyway (terraform apply WILL fail mid-run on these quotas)?"; then
-      red "Aborted."; exit 1
-    fi
+  if (( auto_skipped > 0 )); then
+    info "Auto-skipped ${auto_skipped} quota request(s) the project doesn't need."
     echo
   else
-    info "No >10% decrease collisions — auto-request is safe to proceed."
+    info "No >10% decrease collisions — all quota requests will be submitted."
     echo
   fi
 }
@@ -1069,12 +1143,17 @@ ensure_im_service_account() {
 # Submit / update IM deployment
 # -----------------------------------------------------------------------------
 
-# Builds a JSON file at $1 with all TF inputs. We embed this in the IM source
-# bundle as inputs.auto.tfvars.json — Terraform auto-loads any *.auto.tfvars.json
-# in its working directory, so the user-supplied values become the deployment
-# inputs without ever passing through gcloud's --input-values flag (which has
-# no way to express list/object types like data_libraries or ldap_search_rules).
-build_tfvars_json() {
+# Builds a JSON file at $1 containing the UNION of variables both modules
+# accept. build_tfvars_json_infra / build_tfvars_json_platforma below
+# project this document down to just the keys each module declares — TF
+# warns (loudly) about undeclared variables, so we filter rather than
+# pass the full set to both.
+#
+# Terraform auto-loads any *.auto.tfvars.json in its working directory, so
+# the user-supplied values become deployment inputs without ever passing
+# through gcloud's --input-values flag (which has no way to express list/
+# object types like data_libraries or ldap_search_rules).
+build_tfvars_json_full() {
   local out="$1"
 
   # Base scalars — start a JSON document via jq.
@@ -1217,44 +1296,128 @@ build_tfvars_json() {
   echo "${doc}" > "${out}"
 }
 
+# Project the full tfvars document to just the keys terraform-infra/
+# declares. Drops any null/missing entries so we don't pass empty strings
+# for vars the user didn't set.
+#
+# $1: path to write the projected JSON file.
+build_tfvars_json_infra() {
+  local out="$1"
+  local full; full="$(mktemp)"
+  build_tfvars_json_full "${full}"
+  jq '{
+    project_id, region, zone_suffix, cluster_name, deployment_size,
+    vpc_name, subnet_nodes_cidr, subnet_pods_cidr, subnet_services_cidr,
+    master_ipv4_cidr_block, enable_private_nodes,
+    system_pool_machine_type, system_pool_node_count,
+    ui_pool_machine_type, ui_pool_max_nodes,
+    batch_pool_max_nodes_overrides, batch_pool_disk_size_gb,
+    filestore_tier, workspace_capacity_gb, workspace_share_name,
+    gcs_bucket_name, gcs_force_destroy,
+    platforma_namespace, helm_release_name,
+    data_libraries,
+    ingress_enabled, domain_name, dns_zone_name, dns_zone_project,
+    enable_google_batch,
+    enable_quota_auto_request, contact_email, skip_quota_requests,
+    kueue_max_job_cpu, kueue_max_job_memory,
+    kueue_batch_queue_cpu, kueue_batch_queue_memory
+  } | with_entries(select(.value != null))' "${full}" > "${out}"
+  rm -f "${full}"
+}
+
+# Project the full tfvars document to just the keys terraform-platforma/
+# declares, then patch in the two values that come from the infra
+# module's outputs (gcs_bucket, filestore_instance_name) — install.sh
+# fetches these via read_infra_outputs after the infra deployment settles.
+#
+# $1: path to write the projected JSON file.
+# Reads globals: INFRA_OUT_GCS_BUCKET, INFRA_OUT_FILESTORE_INSTANCE_NAME.
+build_tfvars_json_platforma() {
+  local out="$1"
+  local full; full="$(mktemp)"
+  build_tfvars_json_full "${full}"
+  jq --arg gcs_bucket            "${INFRA_OUT_GCS_BUCKET}" \
+     --arg filestore_instance    "${INFRA_OUT_FILESTORE_INSTANCE_NAME}" \
+     '{
+        project_id, region, zone_suffix, cluster_name,
+        platforma_namespace, helm_release_name, deployment_size,
+        ingress_enabled, domain_name,
+        kueue_max_job_cpu, kueue_max_job_memory,
+        kueue_batch_queue_cpu, kueue_batch_queue_memory,
+        batch_pool_max_nodes_overrides, ui_pool_max_nodes, workspace_capacity_gb,
+        license_key, platforma_chart_version, helm_chart_repository,
+        platforma_image_override, deploy_platforma,
+        admin_username, auth_method, htpasswd_content,
+        ldap_server, ldap_start_tls, ldap_bind_dn,
+        ldap_search_rules, ldap_search_user, ldap_search_password,
+        enable_demo_data_library, data_libraries
+      }
+      | with_entries(select(.value != null))
+      | . + {gcs_bucket: $gcs_bucket, filestore_instance_name: $filestore_instance}' \
+     "${full}" > "${out}"
+  rm -f "${full}"
+}
+
+# submit_deployment <deployment_name> <bundle_tf_dir> <module> [bundle_chart]
+#
+# Args:
+#   $1 deployment_name  — full IM deployment name (e.g. "${DEPLOYMENT_NAME}-infra")
+#   $2 bundle_tf_dir    — local path to the module's .tf files
+#   $3 module           — "infra" or "platforma" (selects tfvars projection)
+#   $4 bundle_chart     — "true" to copy the Platforma chart into the bundle
+#                         (only meaningful for the platforma module and only
+#                         when HELM_CHART_REPOSITORY is empty)
 submit_deployment() {
-  bold "Submitting deployment"
+  local deployment_name="$1"
+  local bundle_tf_dir="$2"
+  local module="$3"
+  local bundle_chart="${4:-false}"
+
+  bold "Submitting deployment ${deployment_name} (${module})"
 
   local source_ref
   source_ref="$(git -C "${REPO_ROOT}" describe --tags --always --dirty 2>/dev/null || echo "(unknown)")"
-  info "Source: ${REPO_ROOT} @ ${source_ref}"
+  info "Source: ${bundle_tf_dir} @ ${source_ref}"
 
-  local deployment_path="projects/${PROJECT_ID}/locations/${IM_LOCATION}/deployments/${DEPLOYMENT_NAME}"
-  local work_dir="${INSTALL_TMPDIR}/im-bundle"
+  local deployment_path="projects/${PROJECT_ID}/locations/${IM_LOCATION}/deployments/${deployment_name}"
+  local work_dir="${INSTALL_TMPDIR}/im-bundle-${module}"
+  rm -rf "${work_dir}"
   mkdir -p "${work_dir}"
 
   # Assemble the IM source bundle from the local checkout:
   #   - drop backend.tf (IM manages state internally)
   #   - drop dev-only files
-  #   - bundle the chart at terraform/platforma/ and rewrite the chart path
-  #     in app.tf for the IM context (will be replaced by a chart pull from
-  #     oci://ghcr.io once PR #70 merges and a 3.4.0 release is cut).
-  # When HELM_CHART_REPOSITORY is set, skip the bundling/rewrite — the
-  # helm_chart_repository tfvar makes app.tf pull the chart from OCI instead.
+  #   - keep .terraform.lock.hcl (IM honors it for reproducible provider
+  #     versions — previously stripped, which caused IM to silently pull
+  #     newer provider patches; alekc/kubectl 2.4.0 broke the old module
+  #     this way).
+  # For the platforma module, also bundle the chart at terraform-platforma/
+  # platforma/ and rewrite the chart path in app.tf for the IM context.
+  # When HELM_CHART_REPOSITORY is set, the helm_chart_repository tfvar
+  # makes app.tf pull the chart from OCI instead.
   info "Assembling bundle from local checkout…"
-  cp -R "${BUNDLE_TF_DIR}/." "${work_dir}/"
+  cp -R "${bundle_tf_dir}/." "${work_dir}/"
   rm -f  "${work_dir}/backend.tf" "${work_dir}/terraform.tfvars" \
          "${work_dir}/tfplan" "${work_dir}/errored.tfstate"
   rm -rf "${work_dir}/.terraform"
-  rm -f  "${work_dir}/.terraform.lock.hcl"
-  if [[ -z "${HELM_CHART_REPOSITORY:-}" ]]; then
+
+  if [[ "${bundle_chart}" == "true" ]] && [[ -z "${HELM_CHART_REPOSITORY:-}" ]]; then
     cp -R "${BUNDLE_CHART_DIR}" "${work_dir}/platforma"
     if grep -q '"${path.module}/../../../charts/platforma"' "${work_dir}/app.tf"; then
       sed -i.bak 's|"${path.module}/../../../charts/platforma"|"${path.module}/platforma"|' "${work_dir}/app.tf"
       rm -f "${work_dir}/app.tf.bak"
     fi
-  else
+  elif [[ "${bundle_chart}" == "true" ]]; then
     info "Chart source: OCI registry ${HELM_CHART_REPOSITORY} (version ${PLATFORMA_CHART_VERSION:-<chart default>})"
   fi
 
   # Embed user-supplied inputs as a tfvars file the bundle picks up
   # automatically (Terraform auto-loads any *.auto.tfvars.json).
-  build_tfvars_json "${work_dir}/inputs.auto.tfvars.json"
+  case "${module}" in
+    infra)     build_tfvars_json_infra     "${work_dir}/inputs.auto.tfvars.json" ;;
+    platforma) build_tfvars_json_platforma "${work_dir}/inputs.auto.tfvars.json" ;;
+    *) red "submit_deployment: unknown module '${module}'"; exit 1 ;;
+  esac
 
   info "Inputs (with secrets redacted):"
   jq 'to_entries
@@ -1265,29 +1428,38 @@ submit_deployment() {
   # (FAILED with no successful revision — the apply path tries to read the
   # latestRevision and crashes with IndexError). We delete + recreate.
   local existing_state existing_revision
-  existing_state="$(gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
+  existing_state="$(gcloud infra-manager deployments describe "${deployment_name}" \
     --location="${IM_LOCATION}" --project="${PROJECT_ID}" \
     --format='value(state)' 2>/dev/null || echo NOTFOUND)"
-  existing_revision="$(gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
+  existing_revision="$(gcloud infra-manager deployments describe "${deployment_name}" \
     --location="${IM_LOCATION}" --project="${PROJECT_ID}" \
     --format='value(latestRevision)' 2>/dev/null || echo "")"
 
   case "${existing_state}" in
     NOTFOUND)
-      bold "Creating deployment ${DEPLOYMENT_NAME}…"
+      bold "Creating deployment ${deployment_name}…"
       ;;
     ACTIVE|FAILED)
       if [[ -z "${existing_revision}" ]]; then
         warn "Existing deployment is in ${existing_state} state with no revision (initial creation never succeeded). Deleting before recreating…"
-        gcloud infra-manager deployments delete "${DEPLOYMENT_NAME}" \
+        gcloud infra-manager deployments delete "${deployment_name}" \
           --location="${IM_LOCATION}" --project="${PROJECT_ID}" --quiet
-        bold "Creating deployment ${DEPLOYMENT_NAME}…"
+        bold "Creating deployment ${deployment_name}…"
       else
-        bold "Updating existing deployment ${DEPLOYMENT_NAME} (state: ${existing_state})…"
+        bold "Updating existing deployment ${deployment_name} (state: ${existing_state})…"
       fi
       ;;
+    CREATING|UPDATING|DELETING)
+      # IM rejects concurrent operations on the same deployment with a
+      # confusing 'ABORTED' error. Tell the operator to wait rather than
+      # firing off an apply that's guaranteed to fail.
+      red   "Deployment ${deployment_name} is busy (state: ${existing_state})."
+      red   "  Wait for the in-flight operation to finish, then re-run install.sh."
+      red   "  Watch progress: https://console.cloud.google.com/infra-manager/deployments/details/${IM_LOCATION}/${deployment_name}?project=${PROJECT_ID}"
+      exit 1
+      ;;
     *)
-      bold "Creating/updating deployment ${DEPLOYMENT_NAME} (state: ${existing_state})…"
+      bold "Creating/updating deployment ${deployment_name} (state: ${existing_state})…"
       ;;
   esac
 
@@ -1297,7 +1469,7 @@ submit_deployment() {
   echo
   bold "Monitor progress (open in browser if Cloud Shell disconnects):"
   cat <<EOF
-  Infrastructure Manager:  https://console.cloud.google.com/infra-manager/deployments/details/${IM_LOCATION}/${DEPLOYMENT_NAME}?project=${PROJECT_ID}
+  Infrastructure Manager:  https://console.cloud.google.com/infra-manager/deployments/details/${IM_LOCATION}/${deployment_name}?project=${PROJECT_ID}
   Cloud Build (TF runs):   https://console.cloud.google.com/cloud-build/builds?project=${PROJECT_ID}
 EOF
   echo
@@ -1314,12 +1486,14 @@ EOF
 # Wait for completion
 # -----------------------------------------------------------------------------
 
+# wait_for_completion <deployment_name>
 wait_for_completion() {
-  bold "Waiting for deployment to settle (~15-25 min)"
+  local deployment_name="$1"
+  bold "Waiting for ${deployment_name} to settle"
   local last_state=""
   while :; do
     local state
-    state="$(gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
+    state="$(gcloud infra-manager deployments describe "${deployment_name}" \
               --location="${IM_LOCATION}" --project="${PROJECT_ID}" \
               --format='value(state)' 2>/dev/null || echo UNKNOWN)"
     if [[ "${state}" != "${last_state}" ]]; then
@@ -1327,9 +1501,9 @@ wait_for_completion() {
       last_state="${state}"
     fi
     case "${state}" in
-      ACTIVE) green "Deployment ACTIVE."; return 0 ;;
-      FAILED) red   "Deployment FAILED. Inspect:"; \
-              red   "  gcloud infra-manager deployments describe ${DEPLOYMENT_NAME} --location=${IM_LOCATION} --project=${PROJECT_ID}"; \
+      ACTIVE) green "Deployment ${deployment_name} ACTIVE."; return 0 ;;
+      FAILED) red   "Deployment ${deployment_name} FAILED. Inspect:"; \
+              red   "  gcloud infra-manager deployments describe ${deployment_name} --location=${IM_LOCATION} --project=${PROJECT_ID}"; \
               return 1 ;;
       DELETED|SUSPENDED) red "Unexpected state ${state}"; return 1 ;;
     esac
@@ -1337,13 +1511,81 @@ wait_for_completion() {
   done
 }
 
+# read_infra_outputs — discover the GCS bucket name and Filestore instance
+# name that the infra module created, so build_tfvars_json_platforma can
+# pass them to the platforma module.
+#
+# Previously this called 'gcloud infra-manager deployments describe' and
+# parsed terraformBlueprint.outputValues — but that field only carries the
+# bundle gcsSource; TF outputs live on the revision object, not the
+# deployment object, and the gcloud surface for reading them through the
+# deployment varies between SDK versions. Switching to direct GCP-native
+# discovery removes that fragility entirely:
+#
+#   filestore_instance_name is fully deterministic from cluster_name:
+#     "${cluster_name}-workspace"  (matches terraform-infra/storage.tf)
+#
+#   gcs_bucket can be either user-provided (var.gcs_bucket_name) or
+#     auto-generated with a random suffix. terraform-infra/storage.tf
+#     labels every bucket with cluster=${cluster_name}, so we list and
+#     filter on that label — unambiguous within a project.
+read_infra_outputs() {
+  local deployment_name="$1"
+  bold "Discovering infra outputs"
+
+  # CLUSTER_NAME is set in build_tfvars_json_full as "${DEPLOYMENT_NAME}-cluster".
+  local cluster_name="${DEPLOYMENT_NAME}-cluster"
+
+  INFRA_OUT_FILESTORE_INSTANCE_NAME="${cluster_name}-workspace"
+
+  local matches matches_count
+  matches="$(gcloud storage buckets list \
+    --project="${PROJECT_ID}" \
+    --filter="labels.cluster=${cluster_name}" \
+    --format='value(name)' 2>/dev/null)"
+  matches_count="$(printf '%s' "${matches}" | grep -c . || true)"
+
+  if (( matches_count == 0 )); then
+    red "Could not find GCS bucket labelled cluster=${cluster_name} in project ${PROJECT_ID}."
+    red "  The infra deployment created the bucket but discovery failed — check:"
+    red "    gcloud storage buckets list --project=${PROJECT_ID} --filter='labels.cluster=${cluster_name}'"
+    red "  (If empty, the infra deploy may have rolled back or the label is missing.)"
+    return 1
+  fi
+  if (( matches_count > 1 )); then
+    # Ambiguous: a previous deploy that failed to tear down cleanly can
+    # leave a stale bucket with the same label. Refuse rather than pick
+    # one — picking the wrong one points the platforma module at the
+    # wrong storage and corrupts state silently.
+    red "Multiple GCS buckets match labels.cluster=${cluster_name}:"
+    printf '%s\n' "${matches}" | sed 's/^/  /' >&2
+    red "  Ambiguous — delete the stale bucket(s) before redeploying, or"
+    red "  override with var.gcs_bucket_name in the infra deploy."
+    return 1
+  fi
+  INFRA_OUT_GCS_BUCKET="${matches}"
+
+  info "gcs_bucket:              ${INFRA_OUT_GCS_BUCKET}"
+  info "filestore_instance_name: ${INFRA_OUT_FILESTORE_INSTANCE_NAME}"
+  echo
+
+  # Unused note: deployment_name is kept as a parameter so the function
+  # signature documents the dependency on the infra deploy having settled,
+  # even though discovery happens via the GCP-side resource queries above.
+  : "${deployment_name}"
+}
+
 # -----------------------------------------------------------------------------
 # Final outputs
 # -----------------------------------------------------------------------------
 
+# print_outputs <platforma_deployment_name>
+# Reads outputs from the platforma IM deployment (post-deploy steps, URLs,
+# port-forward command — generated by terraform-platforma/outputs.tf).
 print_outputs() {
+  local deployment_name="$1"
   bold "Deployment outputs"
-  gcloud infra-manager deployments describe "${DEPLOYMENT_NAME}" \
+  gcloud infra-manager deployments describe "${deployment_name}" \
     --location="${IM_LOCATION}" --project="${PROJECT_ID}" \
     --format='value(terraformBlueprint.outputValues)' || true
 
@@ -1380,6 +1622,7 @@ main() {
   echo
 
   preflight
+  resolve_quotas_cli
   collect_inputs
   normalize_boolean_inputs
   verify_dns_delegation
@@ -1388,11 +1631,15 @@ main() {
   detect_quota_decrease_collisions
   ensure_im_service_account
 
+  # Two-stage deployment names — both managed by IM in the same location.
+  local infra_deployment="${DEPLOYMENT_NAME}-infra"
+  local platforma_deployment="${DEPLOYMENT_NAME}-platforma"
+
   bold "Review"
   cat <<EOF
   Project:         ${PROJECT_ID}
   Region:          ${REGION}  (zone ${REGION}-${ZONE_SUFFIX})
-  Deployment:      ${DEPLOYMENT_NAME}  (in IM location ${IM_LOCATION})
+  Deployments:     ${infra_deployment}, ${platforma_deployment}  (in IM location ${IM_LOCATION})
   Size:            ${DEPLOYMENT_SIZE}
   Domain:          https://${DOMAIN_NAME}
   DNS zone:        ${DNS_ZONE_NAME}
@@ -1408,9 +1655,19 @@ EOF
   fi
   echo
 
-  submit_deployment
-  wait_for_completion
-  print_outputs
+  # Stage 1 — cluster + everything except k8s/helm/kubectl resources.
+  submit_deployment "${infra_deployment}" "${BUNDLE_INFRA_TF_DIR}" "infra" "false"
+  wait_for_completion "${infra_deployment}"
+  read_infra_outputs  "${infra_deployment}"
+
+  # Stage 2 — Kueue, AppWrapper, Platforma chart, secrets, Gateway/HTTPRoute.
+  # By now the cluster exists, so data.google_container_cluster.primary
+  # resolves at plan time and the k8s/helm/kubectl providers configure
+  # without the kubectl-2.4 eager-validation chicken-and-egg.
+  submit_deployment "${platforma_deployment}" "${BUNDLE_PLATFORMA_TF_DIR}" "platforma" "true"
+  wait_for_completion "${platforma_deployment}"
+
+  print_outputs "${platforma_deployment}"
 }
 
 main "$@"

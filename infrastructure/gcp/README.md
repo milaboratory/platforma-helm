@@ -43,11 +43,11 @@ All three share the same Terraform module under [`terraform/`](terraform/).
                       │  ┌─UI pool──────┐      │                             │
                       │  │ scale 0-N    │      │ ──Filestore CSI──▶ Filestore (Zonal SSD)
                       │  └──────────────┘      │                             │
-                      │  ┌─batch pools (5) ─┐  │                             │
-                      │  │ 16c64g  32c128g  │  │                             │
-                      │  │ 64c256g 32c256g  │  │                             │
-                      │  │ 64c512g          │  │                             │
-                      │  │ scale 0-N each   │  │                             │
+                      │  ┌─ batch nodes ────┐  │                             │
+                      │  │ ComputeClass:    │  │                             │
+                      │  │ platforma-batch  │  │                             │
+                      │  │ n2d/n2 highmem   │  │                             │
+                      │  │ auto, scale to 0 │  │                             │
                       │  └──────────────────┘  │                             │
                       └────────────┬───────────┘                             │
                                    │ private IPs only                        │
@@ -81,16 +81,21 @@ the values the installer requests via the Cloud Quotas API. **All sizes
 share the same per-job cap of 62 vCPU / 484 GiB RAM** — the preset
 controls cluster-wide parallelism.
 
-Batch nodes are provisioned dynamically by **GKE Node Auto-Provisioning
-(NAP)** — there are no per-shape static pools. NAP picks the cheapest
-machine type that fits each pending pod from the allowed GCP families
-(`n2d-*` primary, `n2-*` as STOCKOUT fallback when AMD capacity in the
-zone is exhausted). Cross-tenant isolation is via the
-`dedicated=batch:NoSchedule` taint NAP applies automatically based on
-pod tolerations.
+Batch nodes are provisioned on demand by a custom **GKE ComputeClass**
+(`platforma-batch`) — there are no static batch pools. Cluster-wide Node
+Auto-Provisioning is **off**; the ComputeClass names highmem machine types
+explicitly and creates node pools as batch pods appear, scaling them back to
+zero when idle. (Bare NAP defaults to the E2 family and can't satisfy the high
+memory:CPU ratio batch jobs need — naming the machine types is the fix.) The
+list is an ordered fallback: `n2d-*` highmem first, `n2-*` as a stockout
+fallback when AMD capacity in the zone is exhausted. Cross-tenant isolation is
+via the `dedicated=batch:NoSchedule` taint + `role=batch` label on the
+auto-created nodes; pods opt in with
+`nodeSelector: cloud.google.com/compute-class=platforma-batch`.
 
-Cluster-wide batch envelope per preset (CPU + memory caps NAP cannot
-exceed). The envelope mirrors what the previous 5-static-pool layout
+Cluster-wide batch envelope per preset — the **Kueue ClusterQueue** admission
+quota, which is the real cap on concurrent batch work (the ComputeClass itself
+has no ceiling). The envelope mirrors what the previous static-pool layout
 summed to, so `deployment_size` retains the same workload capacity:
 
 | Preset | Batch vCPU | Batch memory (GiB) | UI nodes max |
@@ -100,9 +105,9 @@ summed to, so `deployment_size` retains the same workload capacity:
 | `large`  | 1280 |  6580 | 16 |
 | `xlarge` | 2560 | 13160 | 16 |
 
-NAP picks from these GCP machine families (more can be added later by
-extending `nap_allowed_families` in `terraform-{infra,platforma}/presets.tf`
-and adding matching quota requests):
+The ComputeClass tries these GCP machine families in priority order (extend by
+editing `batch_machine_priorities` in `terraform-{infra,platforma}/presets.tf`
+— keep both copies in sync — and adding matching quota requests):
 
 | Family    | Role     | Used when                              | AWS counterpart family |
 |---|---|---|---|
@@ -138,21 +143,29 @@ Rough idle cost (no jobs running, Tier-1 small):
 | Static IP + Cloud DNS records + Cert Manager | ~$0 |
 | **Idle total** | **~$0.90/hour (~$650/month)** |
 
-Batch + UI pools scale from zero, so they don't burn when idle. Active-job
-cost varies with the pool the autoscaler picks for each job:
+**UI pool** is a static pool that autoscales from zero (`min_node_count = 0`),
+so it adds nothing idle. **Batch nodes don't exist until needed** — there are
+no static batch pools; the `platforma-batch` ComputeClass creates a node pool
+the first time a batch pod is scheduled and scales it back to zero when idle.
+Active-job cost depends on which machine type the ComputeClass provisions:
 
-| Pool | Approximate $/hour per running node |
-|---|---|
-| 16c-64g  | ~$0.90 |
-| 32c-128g | ~$1.80 |
-| 64c-256g | ~$3.60 |
-| 32c-256g | ~$2.30 |
-| 64c-512g | ~$4.60 |
+| Machine type      | vCPU / RAM     | Approx. $/hour | Notes |
+|---|---|---|---|
+| `n2d-highmem-16`  | 16 / 128 GiB   | ~$1.05 | smallest batch shape |
+| `n2d-highmem-32`  | 32 / 256 GiB   | ~$2.10 | |
+| `n2d-highmem-48`  | 48 / 384 GiB   | ~$3.15 | |
+| `n2d-highmem-64`  | 64 / 512 GiB   | ~$4.20 | primary host for max 62/484 jobs |
+| `n2-highmem-64`   | 64 / 512 GiB   | ~$4.70 | Intel fallback on n2d stockout |
+| `n2d-standard-128`| 128 / 512 GiB  | ~$5.40 | last-resort fallback |
+| `n2-standard-128` | 128 / 512 GiB  | ~$6.20 | last-resort fallback |
 
-(Spot pricing in europe-west1, list price; commit / SUD discounts apply
-separately.) Smaller jobs landing on smaller pools is the whole point of
-the multi-pool design — a 16-vCPU MiXCR job on a `16c-64g` node costs ~$0.90/h
-versus ~$3.60/h on a `64c-256g` node.
+(europe-west1 list prices; spot / commit / SUD discounts apply separately —
+always check the GCP price calculator for current numbers.) The priority list
+is an **availability fallback**, not a per-pod sizing menu. Once a large pool
+exists, smaller pods bin-pack onto it instead of triggering a new small pool,
+so per-job cost isn't always the cheapest shape that would have fit — it's
+whichever shape the cluster already has capacity on. The autoscaler scales
+down underused pools as work drains.
 
 GKE control plane is the only fixed cost (~$73/month). Filestore SSD is the
 floor — at 1 TiB, ~$300/month. Smaller deployments can drop to BASIC_HDD
@@ -167,9 +180,20 @@ Two methods supported (mirrors the AWS CloudFormation runbook):
   - **Auto-generated** (default — `htpasswd_content=""`): the installer
     creates a random admin password and stores it in Secret Manager.
     **TESTING ONLY** — the password ends up in Terraform state.
-  - **User-supplied content** (`htpasswd_content` = pre-bcrypted string, or
-    `HTPASSWD_FILE=path/to/htpasswd` env var): production-ready single-team
-    setup. Generate with `htpasswd -nB <username>`.
+  - **User-supplied file** (`HTPASSWD_FILE=path/to/htpasswd` env var, or
+    `htpasswd_content` = pre-bcrypted string): production-ready single-team
+    setup. Build the file in Cloud Shell with one bcrypt line per user —
+    `-c` **creates** (first user only; it overwrites), `-B` = bcrypt:
+
+    ```bash
+    htpasswd -cB ~/htpasswd alice    # first user — prompts for the password
+    htpasswd -B  ~/htpasswd bob      # add more users — omit -c, or it wipes the file
+    ```
+
+    Then point the installer at it: `export AUTH_METHOD=htpasswd
+    HTPASSWD_FILE=~/htpasswd`. To add a user later, append with
+    `htpasswd -B ~/htpasswd <name>` and re-run `install.sh` — the
+    `platforma-htpasswd-provided` secret updates on the next revision.
 - **LDAP** (`auth_method=ldap`) — corporate directory integration. Supports
   direct-bind (template) or search-bind (rules + service-account creds).
 

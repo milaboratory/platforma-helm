@@ -760,8 +760,8 @@ EOF
 # requires:
 #   1. Append to nap_allowed_families in presets.tf
 #   2. Add the matching N<FAMILY>-CPUS quota request in quotas.tf
-#   3. Add the matching PRESET_<FAMILY>_CPUS array here + key in
-#      QUOTA_TO_PRESET_KEY + case branch in required_for_preset_key()
+#   3. Add the matching PRESET_<FAMILY>_CPUS array here + the preset key in
+#      ALL_QUOTA_PRESET_KEYS + a case branch in required_for_preset_key()
 # -----------------------------------------------------------------------------
 
 declare -A PRESET_CPUS_GLOBAL=(    [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
@@ -773,14 +773,20 @@ declare -A PRESET_PD_SSD_GB=(      [small]=4096 [medium]=8192 [large]=16384 [xla
 declare -A PRESET_INSTANCES=(      [small]=32   [medium]=48   [large]=64   [xlarge]=128   )
 declare -A PRESET_FILESTORE_GB=(   [small]=1024 [medium]=2048 [large]=4096 [xlarge]=8192  )
 
-# Map GCP quota ID → our preset_key + required-value lookup.
-declare -A QUOTA_TO_PRESET_KEY=(
-  ["CPUS-ALL-REGIONS-per-project"]="cpus_global"
-  ["N2D-CPUS-per-project-region"]="n2d_cpus_region"
-  ["N2-CPUS-per-project-region"]="n2_cpus_region"
-  ["SSD-TOTAL-GB-per-project-region"]="pd_ssd_region"
-  ["INSTANCES-per-project-region"]="instances_region"
-  ["EnterpriseStorageGibPerRegion"]="filestore_zonal_region"
+# Every quota preference terraform's quotas.tf creates. The TF resource names
+# them platforma-<preset-key-with-dashes> (cpus_global → platforma-cpus-global).
+# Authoritative list for the adopt-by-skip probe in detect_existing_quota_prefs:
+# it MUST list every key in quotas.tf's quota_requests, or a missing one
+# hard-collides ("QuotaPreference ... already exist") on any re-deploy into a
+# project that previously ran Platforma.
+ALL_QUOTA_PRESET_KEYS=(
+  cpus_global
+  n2d_cpus_region
+  n2_cpus_region
+  pd_ssd_region
+  instances_region
+  filestore_zonal_region
+  in_use_addresses_region
 )
 
 # What value each preset key needs for the chosen DEPLOYMENT_SIZE.
@@ -801,46 +807,74 @@ detect_existing_quota_prefs() {
   SKIP_QUOTA_REQUESTS_AUTO=()
 
   # The beta component is required and may not be installed in raw envs.
-  if ! gcloud beta quotas preferences list --help >/dev/null 2>&1; then
+  if ! gcloud beta quotas preferences describe --help >/dev/null 2>&1; then
     info "Installing gcloud beta component (one-time)…"
-    gcloud components install beta --quiet >/dev/null
+    gcloud components install beta --quiet >/dev/null 2>&1 || true
   fi
 
-  local prefs_json
-  prefs_json="$(gcloud beta quotas preferences list --project="${PROJECT_ID}" --format=json 2>/dev/null || echo '[]')"
-
-  # gcloud emits "Listed 0 items." (plain text, not JSON) on empty lists in
-  # some configurations even with --format=json — defend against parse error.
-  if ! echo "${prefs_json}" | jq -e . >/dev/null 2>&1; then
-    prefs_json='[]'
-  fi
-
-  if [[ "${prefs_json}" == "[]" || -z "${prefs_json}" ]]; then
-    info "No existing user-managed quota preferences."
+  # If beta is still unusable (component-manager disabled, network/quota on the
+  # components bucket, read-only runner FS), every describe below would fail
+  # silently, the skip set would stay empty, and — because the Cloud Quotas API
+  # has no DELETE — a re-deploy would then crash with "QuotaPreference ...
+  # already exist". Surface it loudly with an actionable workaround instead of
+  # silently probing 7 keys that all come back empty.
+  if ! gcloud beta quotas preferences describe --help >/dev/null 2>&1; then
+    warn "gcloud beta 'quotas preferences' unavailable — cannot detect existing quota preferences."
+    warn "  → On a project that previously ran Platforma, terraform apply may fail with"
+    warn "    'QuotaPreference ... already exist'. If so, re-run with ENABLE_QUOTA_AUTO_REQUEST=false."
     echo
     return 0
   fi
 
-  local count
-  count="$(echo "${prefs_json}" | jq 'length')"
-  info "Found ${count} existing preference(s) — checking for collisions with our presets."
+  # Probe each preference TF would create *by its exact resource name* via
+  # 'describe' (deterministic NOT_FOUND-or-found). We used to parse 'list',
+  # but an empty/non-JSON list response — or any quota id not in the lookup
+  # table — silently yielded an empty skip set; and because the API has no
+  # DELETE, the next 'terraform apply' then hard-failed with "QuotaPreference
+  # ... already exist" on every preference. A per-name describe can't miss one.
+  #
+  # --billing-project is REQUIRED: cloudquotas.googleapis.com is billed to the
+  # caller's quota project, and ADC in Cloud Shell often has none set (the
+  # set-quota-project attempt earlier is best-effort and no-ops there). Without
+  # it the call fails PERMISSION_DENIED/SERVICE_DISABLED against the wrong
+  # consumer project, 2>/dev/null hides it, desc is empty for all keys, and we'd
+  # skip nothing — reintroducing the collision. Pin it to the deployment project
+  # (where the infra module enables the API). All preferences live at
+  # locations/global (even region-dimensioned ones), so the bare name resolves.
+  local has_warning=0 found=0
+  local preset_key name desc preferred required
+  for preset_key in "${ALL_QUOTA_PRESET_KEYS[@]}"; do
+    name="platforma-${preset_key//_/-}"
+    desc="$(gcloud beta quotas preferences describe "${name}" \
+              --project="${PROJECT_ID}" --billing-project="${PROJECT_ID}" \
+              --format=json 2>/dev/null)" || desc=""
+    [[ -z "${desc}" ]] && continue   # absent → let terraform create it
 
-  local has_warning=0
-  while IFS=$'\t' read -r quota_id region preferred; do
-    local preset_key="${QUOTA_TO_PRESET_KEY[${quota_id}]:-}"
-    [[ -z "${preset_key}" ]] && continue   # unrelated quota — ignore
+    found=$(( found + 1 ))
     SKIP_QUOTA_REQUESTS_AUTO+=("${preset_key}")
-    local required; required="$(required_for_preset_key "${preset_key}")"
-    local label="${quota_id}${region:+ (region=${region})}"
-    if (( preferred < required )); then
-      warn "Existing quota ${label}: current=${preferred} < required=${required} for ${DEPLOYMENT_SIZE}"
+
+    # Warn (don't block) when an existing preference is below what the chosen
+    # deployment_size needs. Keys without a required-value mapping (e.g.
+    # in_use_addresses_region) skip the comparison.
+    required="$(required_for_preset_key "${preset_key}")"
+    preferred="$(echo "${desc}" | jq -r '.quotaConfig.preferredValue // "0"' 2>/dev/null || echo 0)"
+    if [[ -n "${required}" ]] && (( preferred < required )); then
+      warn "Existing preference ${name}: value=${preferred} < required=${required} for ${DEPLOYMENT_SIZE}"
       warn "  → deployment will succeed but may run out of quota during job scale-up."
       warn "  → bump at: https://console.cloud.google.com/iam-admin/quotas?project=${PROJECT_ID}"
       has_warning=1
+    elif [[ -n "${required}" ]]; then
+      info "Existing preference ${name}: value=${preferred} ≥ required=${required} ✓ (skip auto-request)"
     else
-      info "Existing quota ${label}: ${preferred} ≥ ${required} ✓ (will skip auto-request)"
+      info "Existing preference ${name}: value=${preferred} (no preset threshold) — skip auto-request"
     fi
-  done < <(echo "${prefs_json}" | jq -r '.[] | "\(.quotaId)\t\(.dimensions.region // "")\t\(.quotaConfig.preferredValue // "0")"')
+  done
+
+  if (( found == 0 )); then
+    info "No existing platforma-* quota preferences."
+  else
+    info "Found ${found} existing platforma-* preference(s) — skipping their creates."
+  fi
 
   if (( has_warning > 0 )); then
     echo
@@ -998,11 +1032,13 @@ fetch_effective_quota_for_preset_key() {
   if [[ "${QUOTAS_CLI_FLAVOR}" == "beta" ]]; then
     json="$(gcloud beta quotas info describe "${quota_id}" \
       --service="${service}" \
-      --project="${PROJECT_ID}" --format=json 2>/dev/null)" || return 0
+      --project="${PROJECT_ID}" --billing-project="${PROJECT_ID}" \
+      --format=json 2>/dev/null)" || return 0
   else
     json="$(gcloud quotas info describe \
       "services/${service}/quotaInfos/${quota_id}" \
-      --project="${PROJECT_ID}" --format=json 2>/dev/null)" || return 0
+      --project="${PROJECT_ID}" --billing-project="${PROJECT_ID}" \
+      --format=json 2>/dev/null)" || return 0
   fi
   [[ -z "${json}" ]] && return 0
 

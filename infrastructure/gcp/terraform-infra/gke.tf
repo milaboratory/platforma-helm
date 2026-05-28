@@ -184,7 +184,9 @@ resource "google_container_node_pool" "ui" {
   }
 }
 
-# Batch node pools — provisioned dynamically by NAP (see cluster_autoscaling
-# block above). No explicit google_container_node_pool resources here;
-# NAP creates pools on demand with the dedicated=batch:NoSchedule taint
-# inferred from pod tolerations.
+# Batch node pools — created on demand by the platforma-batch ComputeClass
+# (terraform-platforma/computeclass.tf), NOT by cluster-wide NAP (which is off
+# — see cluster_autoscaling block above). No explicit google_container_node_pool
+# resources here; the ComputeClass's nodePoolAutoCreation provisions pools from
+# its machine-type priority list, with the dedicated=batch:NoSchedule taint and
+# role=batch label from its nodePoolConfig.

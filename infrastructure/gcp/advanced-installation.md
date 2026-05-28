@@ -192,8 +192,22 @@ ldap_bind_dn     = "cn=%u,ou=users,dc=yourcompany,dc=bio"
 
 ```hcl
 auth_method      = "htpasswd"
-htpasswd_content = file("./htpasswd")   # generate locally with: htpasswd -nB <user>
+htpasswd_content = file("./htpasswd")
 ```
+
+Build the `htpasswd` file with one bcrypt line per user. `-c` **creates** the
+file (use it only for the first user — it overwrites), `-B` selects bcrypt
+(required by the chart):
+
+```bash
+htpasswd -cB ./htpasswd alice    # first user — prompts for the password
+htpasswd -B  ./htpasswd bob      # add more users — omit -c, or it wipes the file
+```
+
+To add or remove a user later, edit the file and re-apply (`tofu apply`) — the
+change rolls the `platforma-htpasswd-provided` secret. Non-interactive form
+(password on the command line, lands in shell history): `htpasswd -cbB
+./htpasswd alice 'S3cret!'`.
 
 ### Cross-project Cloud DNS zone
 
@@ -208,11 +222,13 @@ DNS project.
 
 ### Custom batch capacity
 
-Batch nodes are provisioned dynamically by GKE Node Auto-Provisioning (NAP) —
-there are no per-shape pool definitions to override anymore. The
-`deployment_size` preset sets a cluster-wide capacity envelope (CPU + memory
-ceiling) that NAP cannot exceed. NAP picks machine types per pending pod
-from the allowed families (`n2d-*` primary, `n2-*` as STOCKOUT fallback).
+Batch nodes are provisioned on demand by a custom GKE **ComputeClass**
+(`platforma-batch`) — cluster-wide Node Auto-Provisioning is off and there are
+no per-shape pool definitions to override. The ComputeClass names highmem
+machine types explicitly (`batch_machine_priorities`) and creates node pools as
+batch pods appear, scaling to zero when idle. The `deployment_size` preset sets
+the **Kueue ClusterQueue** admission quota — the real cap on concurrent batch
+work; the ComputeClass itself has no ceiling.
 
 Override individually:
 
@@ -225,24 +241,28 @@ workspace_capacity_gb  = 8192    # preset large = 4096
 # Kueue caps for very large jobs (defaults: 62 CPU / 484Gi).
 # 484Gi = measured GKE allocatable on n2d-highmem-64 (486.94 GiB)
 # minus ~1 GiB GKE DaemonSet overhead minus 1 GiB safety margin.
-# Raising this requires nodes whose allocatable can host the request —
-# n2d-highmem-64 / n2-highmem-64 are the largest families NAP will pick
-# at stage-1 allowed-families settings.
+# Raising this requires a machine in batch_machine_priorities whose
+# allocatable can host the request — n2d-highmem-64 / n2-highmem-64 are
+# the largest highmem shapes in the default priority list.
 kueue_max_job_cpu     = 62
 kueue_max_job_memory  = "484Gi"
 
-# Override the cluster-wide batch capacity envelope (replaces the old
-# per-pool max-node overrides). NAP cannot exceed these regardless of
-# pending demand.
+# Override the Kueue ClusterQueue admission quota (the cluster-wide batch
+# envelope). Kueue won't admit more concurrent batch work than this,
+# regardless of pending demand.
 kueue_batch_queue_cpu    = 1500
 kueue_batch_queue_memory = "8000Gi"
 ```
 
-> **Deprecated:** `batch_pool_max_nodes_overrides` is now a no-op (NAP
-> doesn't have per-shape pools). The variable is kept for tfvars
-> backwards-compatibility but does nothing. Use
-> `kueue_batch_queue_cpu` / `kueue_batch_queue_memory` to tune the
-> cluster-wide envelope instead.
+To change which machine types the ComputeClass provisions (e.g. add a family
+once the team has verified it), edit `batch_machine_priorities` in **both**
+`terraform-infra/presets.tf` and `terraform-platforma/presets.tf` (kept
+byte-identical) and add the matching CPU quota request in `quotas.tf`.
+
+> **Deprecated:** `batch_pool_max_nodes_overrides` is now a no-op (there are no
+> per-shape pools). The variable is kept for tfvars backwards-compatibility but
+> does nothing. Use `kueue_batch_queue_cpu` / `kueue_batch_queue_memory` to
+> tune the cluster-wide envelope instead.
 
 ### Skip quota auto-request
 

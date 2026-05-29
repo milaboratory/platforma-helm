@@ -241,9 +241,19 @@ Parameters:
     Description: >
       htpasswd file content (one line per user, e.g. "user:$apr1$...").
       Supports up to ~45 users due to CloudFormation parameter size limit (4096 chars).
-      For more users, create the 'platforma-htpasswd' secret manually and restart the backend.
-      When empty and AuthMethod=htpasswd, a random users password is auto-generated
-      and stored in SSM Parameter Store (see outputs).
+      SECURITY NOTE: any value passed here is stored plaintext in the
+      'platforma-deployer' CodeBuild project's env vars AND in every historical
+      build's env vars (visible to anyone with codebuild:BatchGetProjects /
+      BatchGetBuilds). For production multi-user setups, leave this empty and
+      create the 'platforma-htpasswd' Kubernetes Secret directly with kubectl —
+      the deployer preserves an operator-managed secret across upgrades (see
+      README "Operator-managed htpasswd"), and the content never enters AWS
+      API surfaces. To reset to an auto-generated single-user secret: (1) delete
+      the secret with 'kubectl -n platforma delete secret platforma-htpasswd',
+      then (2) trigger a CodeBuild re-run (a no-op CF update won't re-run the
+      deployer — bump ForceUpdatePlatforma or change a tracked parameter).
+      When empty AND no 'platforma-htpasswd' secret exists yet, a random users
+      password is auto-generated and stored in SSM Parameter Store (see outputs).
       Generate manually with: htpasswd -nB username
 
   LdapServer:
@@ -2271,6 +2281,29 @@ Resources:
         - Key: platforma
           Value: !Ref ClusterName
 
+  # metrics-server — required for HorizontalPodAutoscaler and `kubectl top`.
+  # GKE bundles it by default; EKS does not. The EKS-managed addon installs
+  # the upstream kubernetes-sigs/metrics-server (no IAM role needed — it's
+  # an in-cluster component reading the kubelet metrics API).
+  #
+  # ResolveConflicts: OVERWRITE is the right choice for THIS template because
+  # this CF is the greenfield/quickstart installer — it creates the EKS
+  # cluster fresh, so there is no pre-existing operator-managed metrics-server
+  # to clobber. Operators integrating Platforma into a pre-existing cluster
+  # should follow advanced-installation.md (manual Helm install), NOT re-apply
+  # this CF on top of their cluster — see the README "When to use this path"
+  # section.
+  MetricsServerAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: SystemNodeGroupV4
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: metrics-server
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
   # ---------------------------------------------------------------------------
   # 5b. Helm deployer — two CodeBuild projects + shared Lambda trigger
   #     HelmDeployerProject:          infra controllers (Kueue, AppWrapper,
@@ -2950,33 +2983,120 @@ Resources:
                     --dry-run=client -o yaml | kubectl apply -f -
 
                   if [ "$AUTH_METHOD" = "htpasswd" ]; then
-                    # CloudFormation console collapses multiline input to spaces;
-                    # htpasswd entries never contain spaces, so restore newlines.
+                    # CFN console collapses multiline to spaces; restore them
+                    # for kubectl. Empty-check the trimmed RAW value so a
+                    # whitespace-only input doesn't bypass the preserve-on-
+                    # empty contract below (a single space → "\n" after tr).
+                    HTPASSWD_TRIMMED=$(echo "$HTPASSWD_CONTENT" | tr -d '[:space:]')
                     HTPASSWD_CONTENT=$(echo "$HTPASSWD_CONTENT" | tr ' ' '\n')
-                    if [ -z "$HTPASSWD_CONTENT" ]; then
-                      EXISTING=$(aws ssm get-parameter \
+
+                    # Probe the existing secret. We stamp
+                    # platforma.bio/managed-by=deployer on every secret we
+                    # apply, so subsequent runs distinguish our own (safe to
+                    # refresh) from an operator-managed one (preserve).
+                    # Also extract the existing apr1 hash + salt: reused
+                    # below for legacy detection and for salt reuse on
+                    # refresh (keeps the rendered hash byte-stable across
+                    # runs for the same SSM password).
+                    HTPASSWD_SECRET_EXISTS=0
+                    HTPASSWD_MARKER=""
+                    HTPASSWD_EXISTING_APR1=""
+                    HTPASSWD_EXISTING_SALT=""
+                    if kubectl get secret platforma-htpasswd -n $NAMESPACE >/dev/null 2>&1; then
+                      HTPASSWD_SECRET_EXISTS=1
+                      HTPASSWD_MARKER=$(kubectl -n $NAMESPACE get secret platforma-htpasswd \
+                        -o jsonpath='{.metadata.annotations.platforma\.bio/managed-by}' 2>/dev/null) || true
+                      HTPASSWD_EXISTING_APR1=$(kubectl -n $NAMESPACE get secret platforma-htpasswd \
+                        -o jsonpath='{.data.htpasswd}' 2>/dev/null | base64 -d 2>/dev/null \
+                        | grep -oE '\$apr1\$[^:]+' | head -1)
+                      if [ -n "$HTPASSWD_EXISTING_APR1" ]; then
+                        HTPASSWD_EXISTING_SALT=$(echo "$HTPASSWD_EXISTING_APR1" | cut -d'$' -f3)
+                      fi
+                    fi
+
+                    # Legacy-deployer migration: pre-marker deployer versions
+                    # left a secret without our annotation. If we just looked
+                    # at "no marker" we'd false-positive preserve those forever
+                    # — secret frozen, SSM rotation no-ops. Confirm "this is
+                    # ours" by verifying the apr1 hash against the SSM-stored
+                    # password; on match, fall through to refresh (which
+                    # stamps the marker via the atomic apply below).
+                    LEGACY_DEPLOYER_MANAGED=0
+                    if [ "$HTPASSWD_SECRET_EXISTS" = "1" ] && [ "$HTPASSWD_MARKER" != "deployer" ] && [ -n "$HTPASSWD_EXISTING_APR1" ]; then
+                      SSM_PASS=$(aws ssm get-parameter \
                         --name "/${CLUSTER_NAME}/platforma/users-password" \
                         --with-decryption --query Parameter.Value --output text \
-                        --region $REGION 2>/dev/null) || true
-                      if [ -n "$EXISTING" ]; then
-                        echo "Using existing users password from SSM: /${CLUSTER_NAME}/platforma/users-password"
-                        USERS_PASSWORD="$EXISTING"
-                      else
-                        echo "No HtpasswdContent provided — generating random users password"
-                        USERS_PASSWORD=$(openssl rand -base64 12)
-                        aws ssm put-parameter \
-                          --name "/${CLUSTER_NAME}/platforma/users-password" \
-                          --type SecureString \
-                          --value "$USERS_PASSWORD" \
-                          --region $REGION
-                        echo "Users password stored in SSM: /${CLUSTER_NAME}/platforma/users-password"
+                        --region $REGION 2>/dev/null) || SSM_PASS=""
+                      if [ -n "$SSM_PASS" ]; then
+                        EXPECTED=$(openssl passwd -apr1 -salt "$HTPASSWD_EXISTING_SALT" "$SSM_PASS" 2>/dev/null) || EXPECTED=""
+                        if [ "$HTPASSWD_EXISTING_APR1" = "$EXPECTED" ]; then
+                          LEGACY_DEPLOYER_MANAGED=1
+                          echo "Detected legacy deployer-managed platforma-htpasswd secret (apr1 hash matches SSM users password) — migrating: stamping the deployer marker and refreshing on this run."
+                        fi
                       fi
-                      HTPASSWD_CONTENT="platforma:$(openssl passwd -apr1 "$USERS_PASSWORD")"
                     fi
-                    kubectl create secret generic platforma-htpasswd \
-                      -n $NAMESPACE \
-                      --from-literal=htpasswd="$HTPASSWD_CONTENT" \
-                      --dry-run=client -o yaml | kubectl apply -f -
+
+                    # Preserve operator-managed multi-user secret: empty
+                    # CFN input + secret exists + no marker + not legacy.
+                    if [ -z "$HTPASSWD_TRIMMED" ] && [ "$HTPASSWD_SECRET_EXISTS" = "1" ] && [ "$HTPASSWD_MARKER" != "deployer" ] && [ "$LEGACY_DEPLOYER_MANAGED" != "1" ]; then
+                      echo "Preserving operator-managed platforma-htpasswd secret (HtpasswdContent CFN parameter is empty; no deployer marker on the existing secret)."
+                      echo "  → To reset to auto-generated single-user mode:"
+                      echo "      1. kubectl -n $NAMESPACE delete secret platforma-htpasswd"
+                      echo "      2. Bump ForceUpdatePlatforma or change a tracked parameter (a no-op stack update won't re-run the deployer)."
+                    else
+                      # Warn (don't block) before overwriting what looks like
+                      # an operator-managed secret with CFN-supplied content.
+                      if [ -n "$HTPASSWD_TRIMMED" ] && [ "$HTPASSWD_SECRET_EXISTS" = "1" ] && [ "$HTPASSWD_MARKER" != "deployer" ] && [ "$LEGACY_DEPLOYER_MANAGED" != "1" ]; then
+                        echo "WARNING: HtpasswdContent CFN parameter is non-empty AND the existing platforma-htpasswd secret has no deployer marker (likely operator-managed)."
+                        echo "  → The CFN parameter content will OVERWRITE that secret."
+                        echo "  → If you intended to keep the manual secret, clear HtpasswdContent in the CFN stack first and re-deploy."
+                      fi
+
+                      if [ -z "$HTPASSWD_TRIMMED" ]; then
+                        EXISTING=$(aws ssm get-parameter \
+                          --name "/${CLUSTER_NAME}/platforma/users-password" \
+                          --with-decryption --query Parameter.Value --output text \
+                          --region $REGION 2>/dev/null) || true
+                        if [ -n "$EXISTING" ]; then
+                          echo "Using existing users password from SSM: /${CLUSTER_NAME}/platforma/users-password"
+                          USERS_PASSWORD="$EXISTING"
+                        else
+                          echo "No HtpasswdContent provided — generating random users password"
+                          USERS_PASSWORD=$(openssl rand -base64 12)
+                          aws ssm put-parameter \
+                            --name "/${CLUSTER_NAME}/platforma/users-password" \
+                            --type SecureString \
+                            --value "$USERS_PASSWORD" \
+                            --region $REGION
+                          echo "Users password stored in SSM: /${CLUSTER_NAME}/platforma/users-password"
+                        fi
+                        # Reuse the existing apr1 salt (if any) so the hash
+                        # is byte-stable across runs for the same password.
+                        if [ -n "$HTPASSWD_EXISTING_SALT" ]; then
+                          HTPASSWD_CONTENT="platforma:$(openssl passwd -apr1 -salt "$HTPASSWD_EXISTING_SALT" "$USERS_PASSWORD")"
+                        else
+                          HTPASSWD_CONTENT="platforma:$(openssl passwd -apr1 "$USERS_PASSWORD")"
+                        fi
+                      fi
+
+                      # Atomic apply: marker baked into the manifest. Either
+                      # the annotation lands or the apply fails — no
+                      # in-between state where a separate kubectl annotate
+                      # could fail silently and lock the deployer out.
+                      HTPASSWD_B64=$(printf '%s' "$HTPASSWD_CONTENT" | base64 -w0)
+                      printf '%s\n' \
+                        'apiVersion: v1' \
+                        'kind: Secret' \
+                        'metadata:' \
+                        '  name: platforma-htpasswd' \
+                        "  namespace: $NAMESPACE" \
+                        '  annotations:' \
+                        '    platforma.bio/managed-by: deployer' \
+                        'type: Opaque' \
+                        'data:' \
+                        "  htpasswd: $HTPASSWD_B64" \
+                        | kubectl apply -f -
+                    fi
                   fi
                   # Build dataSources for configured data libraries
                   DATASOURCES_YAML=""
@@ -3354,7 +3474,7 @@ Resources:
       # Properties below trigger re-deployment when changed during stack update.
       # CF re-invokes this custom resource (and thus re-runs the platforma
       # deployer CodeBuild) whenever ANY property value here changes.
-      ForceUpdatePlatforma: "1"  # Bump to force Platforma re-deployment
+      ForceUpdatePlatforma: "4"  # Bump to force Platforma re-deployment
       # Resolved sizing values mirror the platforma-deployer env vars. Watching
       # them here means a change to the DeploymentSize Mappings (e.g.
       # BatchMemoryGi 4000 -> 3872 when we tightened the per-node ceiling)

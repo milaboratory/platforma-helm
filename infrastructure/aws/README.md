@@ -2,7 +2,17 @@
 
 A single CloudFormation stack creates all infrastructure (EKS, EFS, S3, IAM) and installs all Kubernetes components (Kueue, Cluster Autoscaler, ALB Controller, External DNS, Platforma) via CodeBuild.
 
-> For manual CLI setup, see [Advanced installation](advanced-installation.md).
+## When to use this path
+
+This CloudFormation template is the **greenfield quickstart**: it creates a brand-new EKS cluster and all surrounding infrastructure, owns the lifecycle of every cluster-level component (addons, RBAC, controllers, the Platforma chart), and is designed to be re-applied end-to-end on upgrades.
+
+Use it when:
+- You're standing up Platforma on AWS from scratch.
+- You want one CF stack to own the full deployment (infra + cluster + addons + chart).
+
+**Do *not* re-apply this CF on top of a pre-existing EKS cluster** you already manage. The deployer is opinionated about cluster-level resources (e.g. `metrics-server` is installed as an EKS managed addon with `ResolveConflicts: OVERWRITE`; the `platforma-htpasswd` Kubernetes Secret is managed by the deployer; certain IAM roles, node groups, and addons assume sole ownership). Applying this stack on a cluster you've already configured can silently overwrite operator-managed resources.
+
+If you have a pre-existing EKS cluster (or any other Kubernetes cluster) and want to integrate Platforma into it, use the manual Helm install path documented in **[Advanced installation](advanced-installation.md)** as a reference. That path installs the chart and its dependencies without taking ownership of cluster-level infrastructure you didn't ask it to manage.
 
 ### Architecture
 
@@ -270,6 +280,60 @@ To update Platforma, replace the CloudFormation template URL with the new versio
 
 Only the Platforma deployer CodeBuild project runs — infrastructure stays unchanged.
 The auto-generated password persists across updates. The deployer reads it from SSM on each deploy.
+
+---
+
+## Operator-managed htpasswd (recommended for multi-user)
+
+The `HtpasswdContent` CloudFormation parameter has a ~4 KiB hard limit (≈ 45 users) and — more importantly — anything passed through it is stored **plaintext** in the deployer's CodeBuild project and in every historical build's env vars. For any production multi-user setup, manage the `platforma-htpasswd` Kubernetes Secret directly with `kubectl`: the content stays out of every AWS API surface, and the deployer preserves it across upgrades.
+
+### Set up
+
+Leave `HtpasswdContent` empty in CloudFormation and create the Secret yourself:
+
+```bash
+# Build the htpasswd file locally (-c creates, -B = bcrypt; first user only uses -c)
+htpasswd -cB ~/htpasswd alice
+htpasswd -B  ~/htpasswd bob
+htpasswd -B  ~/htpasswd carol
+
+# Apply to the cluster (kubectl apply is idempotent — safe to re-run)
+kubectl -n platforma create secret generic platforma-htpasswd \
+  --from-file=htpasswd=$HOME/htpasswd \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Force the Platforma pods to re-read the file
+kubectl -n platforma rollout restart deployment -l app.kubernetes.io/name=platforma
+```
+
+The deployer detects this operator-managed Secret by the absence of its `platforma.bio/managed-by=deployer` annotation and **skips overwriting it** on subsequent CF upgrades.
+
+### Add / remove users later
+
+```bash
+htpasswd -B ~/htpasswd dave              # add a user
+htpasswd -D ~/htpasswd bob               # remove a user
+
+kubectl -n platforma create secret generic platforma-htpasswd \
+  --from-file=htpasswd=$HOME/htpasswd \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n platforma rollout restart deployment -l app.kubernetes.io/name=platforma
+```
+
+No CodeBuild trigger, no CFN involvement, no plaintext anywhere outside Kubernetes.
+
+### Reset to auto-generated mode
+
+If you want to abandon operator management and let the deployer take over:
+
+```bash
+kubectl -n platforma delete secret platforma-htpasswd
+# Then trigger the deployer (a no-op CF update won't re-run it):
+#   - bump the ForceUpdatePlatforma parameter in CloudFormation, OR
+#   - change a tracked parameter (e.g. PlatformaVersion)
+```
+
+The next deployer run sees no Secret, falls into the auto-generate path, and stamps its own `platforma.bio/managed-by=deployer` marker.
 
 ---
 

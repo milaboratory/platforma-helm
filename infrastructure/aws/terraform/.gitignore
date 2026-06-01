@@ -1,0 +1,17 @@
+# Local Terraform / OpenTofu state and caches — never commit these.
+# State holds secrets (license key, htpasswd hash, data-library credentials).
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+tfplan
+
+# Environment-specific values. Commit terraform.tfvars.example instead.
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+
+# The provider lock file (.terraform.lock.hcl) is intentionally NOT ignored —
+# commit it to pin provider versions across machines.

@@ -1,0 +1,70 @@
+# =============================================================================
+# infra — example variables
+# =============================================================================
+# Copy to terraform.tfvars and edit. The shared identifiers (region,
+# cluster_name, platforma_namespace, helm_release_name, deployment_size,
+# enable_gpu, ingress_enabled, domain_name, route53_zone_id, data_libraries)
+# MUST be passed identically to the platforma module.
+# =============================================================================
+
+# --- Required ----------------------------------------------------------------
+region = "eu-central-1" # GPU node groups need a region with g6/g6e capacity.
+
+# --- Cluster identity (defaults shown; keep in sync with platforma)-
+cluster_name        = "platforma-cluster"
+platforma_namespace = "platforma"
+helm_release_name   = "platforma"
+deployment_size     = "small" # small | medium | large | xlarge
+system_node_az      = "a"     # AZ suffix the database EBS volume is pinned to
+enable_gpu          = true
+
+# --- Networking --------------------------------------------------------------
+# Greenfield (default): leave vpc_id empty and a new VPC + subnets are created.
+# vpc_cidr = "10.0.0.0/16"
+
+# Bring-your-own VPC: set vpc_id and supply exactly 3 private + 3 public subnets
+# (one per AZ). EFS creates a mount target per AZ; the ALB needs the public set.
+# vpc_id             = "vpc-0123456789abcdef0"
+# private_subnet_ids = ["subnet-aaa1", "subnet-bbb2", "subnet-ccc3"]
+# public_subnet_ids  = ["subnet-ddd4", "subnet-eee5", "subnet-fff6"]
+
+# --- Ingress / DNS / TLS -----------------------------------------------------
+# On by default (the Desktop App connects over TLS). domain_name + route53_zone_id
+# are required when ingress_enabled = true; an ACM cert is issued and validated
+# via the hosted zone.
+ingress_enabled = true
+domain_name     = "platforma.example.com"
+route53_zone_id = "Z0123456789ABCDEFGHIJ"
+
+# Infra-only smoke test (no cert, no DNS):
+# ingress_enabled = false
+
+# --- Storage -----------------------------------------------------------------
+# Empty = auto-generate platforma-<cluster>-<random>. Pass the resulting
+# `terraform output -raw s3_bucket_name` to the platforma module.
+# s3_bucket_name = ""
+# s3_force_destroy = false  # true lets `destroy` delete a non-empty bucket
+
+# --- Extra cluster admins ----------------------------------------------------
+# Only needed when a DIFFERENT principal applies platforma (e.g. a CI
+# role). The principal running THIS apply is already cluster-admin.
+# cluster_admin_principal_arns = ["arn:aws:iam::111122223333:role/ci-deployer"]
+
+# --- Data libraries (pass the SAME list to platforma) --------------
+# No access_key  → uses the platforma IRSA role; the bucket must be in this
+#                  account and infra grants read here.
+# With access_key→ cross-account/external; platforma makes a K8s Secret.
+# data_libraries = [
+#   {
+#     name   = "reference-genomes"
+#     bucket = "my-in-account-bucket"
+#     prefix = "genomes/"
+#   },
+#   {
+#     name       = "partner-data"
+#     bucket     = "partner-external-bucket"
+#     region     = "us-east-1"
+#     access_key = "AKIA..."
+#     secret_key = "..."
+#   },
+# ]

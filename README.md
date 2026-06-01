@@ -35,7 +35,7 @@ These guides cover cluster creation, storage, node pools, autoscaling, and all p
 helm install kueue oci://registry.k8s.io/kueue/charts/kueue \
   --version 0.16.1 \
   -n kueue-system --create-namespace \
-  -f infrastructure/aws/kueue-values.yaml  # or infrastructure/gcp/kueue-values.yaml
+  -f infrastructure/aws/cloudformation/kueue-values.yaml  # or infrastructure/gcp/kueue-values.yaml
 ```
 
 ### 2. Install AppWrapper
@@ -68,7 +68,7 @@ kubectl create secret generic platforma-htpasswd \
 ```bash
 helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   -n platforma \
-  -f infrastructure/aws/values-aws-s3.yaml \
+  -f infrastructure/aws/cloudformation/values-aws-s3.yaml \
   --set storage.main.s3.bucket=my-platforma-bucket \
   --set storage.main.s3.region=eu-central-1
 ```

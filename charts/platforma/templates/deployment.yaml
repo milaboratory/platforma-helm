@@ -5,13 +5,22 @@
 {{- if ne (include "platforma.workspaceConfigured" .) "true" }}
 {{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.fsxLustre.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
 {{- end }}
+{{- $hasAuthToken := false -}}
+{{- range .Values.app.extraArgs -}}
+  {{- if or (eq . "--auth-token") (hasPrefix "--auth-token=" .) -}}
+    {{- $hasAuthToken = true -}}
+  {{- end -}}
+{{- end -}}
 {{- if not (or (include "platforma.htpasswdSecretName" .)
-               (has "--no-auth" .Values.app.extraArgs)
-               .Values.auth.ldap.server ) }}
-{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n\nTo disable auth for development, add to app.extraArgs:\n  - \"--no-auth\"" }}
+               .Values.auth.ldap.server
+               $hasAuthToken ) }}
+{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n\nFor development/testing, pass a static token via app.extraArgs:\n  - \"--auth-token=<token>\"" }}
 {{- end }}
 {{- if and .Values.auth.htpasswd.secretName (gt (len .Values.auth.htpasswd.credentials) 0) }}
 {{- fail "ERROR: Set either auth.htpasswd.secretName or auth.htpasswd.credentials, not both." }}
+{{- end }}
+{{- if not .Values.masterSecret.secretName }}
+{{- fail "ERROR: masterSecret.secretName is required for Platforma security layer.\n\nCreate the secret first:\n  kubectl create secret generic platforma-master-secret \\\n    --from-literal=master-secret=\"$(openssl rand -base64 32)\"\n\nThen set in values.yaml:\n  masterSecret:\n    secretName: platforma-master-secret" }}
 {{- end }}
 {{- /* Validate main storage type vs environment */ -}}
 {{- $mainType := include "platforma.mainStorageType" . -}}
@@ -39,6 +48,10 @@
 {{- if and (eq $mainType "gcs") (not .Values.storage.main.gcs.serviceAccount) }}
 {{- fail "ERROR: storage.main.gcs.serviceAccount is required when using GCS storage (Workload Identity)." }}
 {{- end }}
+{{- /* Verify that every Secret the chart references actually exists in the
+       target namespace and contains the expected keys. No-op during
+       `helm template` / client-side dry-run. */ -}}
+{{- include "platforma.validateSecrets" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -238,6 +251,9 @@ spec:
             - "--auth-ldap-client-cert=/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.certKey }},/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.keyKey }}"
             {{- end }}
             {{- end }}
+            {{- if .Values.masterSecret.secretName }}
+            - "--master-secret-file={{ include "platforma.path.secrets" . }}/master-secret/{{ .Values.masterSecret.secretKey }}"
+            {{- end }}
             # Disable default host data library (exposes entire pod filesystem)
             - "--no-host-data-library"
             # Data library sources
@@ -284,9 +300,6 @@ spec:
             {{- else }}
             - "--debug-ip=127.0.0.1"
             {{- end }}
-            # Keeps user sessions valid across pod restarts.
-            # To force-logout all users: add "--auth-sessions-gen=2" to app.extraArgs
-            - "--auth-sessions-gen=1"
             # Extra arguments
             {{- range .Values.app.extraArgs }}
             - {{ . | quote }}
@@ -431,6 +444,11 @@ spec:
               mountPath: {{ include "platforma.path.secrets" . }}/ldap-client
               readOnly: true
             {{- end }}
+            {{- if .Values.masterSecret.secretName }}
+            - name: master-secret
+              mountPath: {{ include "platforma.path.secrets" . }}/master-secret
+              readOnly: true
+            {{- end }}
             {{- range .Values.dataSources }}
             {{- if eq .type "pvc" }}
             - name: datasource-{{ .name }}
@@ -481,6 +499,14 @@ spec:
         - name: ldap-client
           secret:
             secretName: {{ .Values.auth.ldap.tls.clientCertSecretRef.name }}
+        {{- end }}
+        {{- if .Values.masterSecret.secretName }}
+        - name: master-secret
+          secret:
+            secretName: {{ .Values.masterSecret.secretName }}
+            items:
+              - key: {{ .Values.masterSecret.secretKey }}
+                path: {{ .Values.masterSecret.secretKey }}
         {{- end }}
         {{- range .Values.dataSources }}
         {{- if eq .type "pvc" }}

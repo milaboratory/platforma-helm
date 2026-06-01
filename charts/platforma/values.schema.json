@@ -43,6 +43,15 @@
         ]
       }
     },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "checkSecrets": {
+          "type": "boolean"
+        }
+      }
+    },
     "environment": {
       "type": "string",
       "enum": [
@@ -174,6 +183,18 @@
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "masterSecret": {
+      "type": "object",
+      "properties": {
+        "secretName": {
+          "type": "string"
+        },
+        "secretKey": {
+          "type": "string"
         }
       },
       "additionalProperties": false

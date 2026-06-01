@@ -56,6 +56,28 @@ license:
   secretKey: "MI_LICENSE"
 
 # =============================================================================
+# MASTER SECRET
+# =============================================================================
+# The master secret is the root key for two independent platform features:
+#   (a) encryption of sensitive data persisted in the platform DB
+#   (b) signing/validation of user sessions and resource signatures
+#
+# Rotating it invalidates all DB-encrypted secrets, all sessions, and all
+# resource signatures.
+#
+# Required for Platforma security layer. Affects authentication and data
+# encryption in DB.
+#
+# Create the secret before installing:
+#   kubectl create secret generic platforma-master-secret \
+#     --from-literal=master-secret="$(openssl rand -base64 32)"
+masterSecret:
+  # -- Name of existing K8s Secret containing the master secret
+  secretName: "platforma-master-secret"
+  # -- Key within the secret
+  secretKey: "master-secret"
+
+# =============================================================================
 # AUTHENTICATION
 # =============================================================================
 # Authentication is mandatory — users cannot log in without it.
@@ -538,3 +560,15 @@ jobs:
   # -- Secret mounted into every job pod
   # Contains credentials jobs need at runtime (license key, etc.).
   secretName: "platforma-license"
+
+# =============================================================================
+# CHART-LEVEL VALIDATION. You usually don't need to change it.
+# =============================================================================
+# Toggles for the pre-flight checks the chart runs at render time.
+validation:
+  # -- Verify that every Secret the chart references actually exists in the
+  # target namespace (and contains the expected keys) before installing.
+  # You can disable it if you don't have access to secrets, but you are sure
+  # Service Account of final workload has this access.
+  # See templates/_validate-secrets.tpl for the full list of checks.
+  checkSecrets: true

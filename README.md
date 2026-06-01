@@ -237,8 +237,6 @@ auth:
       key: "password"
 ```
 
-To disable auth for development, add `--no-auth` to `app.extraArgs`.
-
 See [values.yaml](charts/platforma/values.yaml) `auth` section for TLS, CA certificates, and client certificate options.
 
 ### Service accounts

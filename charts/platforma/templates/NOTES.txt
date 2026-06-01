@@ -139,3 +139,23 @@ To connect from Platforma Desktop App, use:
 Or if using port-forward:
   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "platforma.fullname" . }} 6345:6345
   Server: localhost:6345
+
+{{- if not .Values.validation.checkSecrets }}
+
+=============================================================================
+WARNING: Chart-level Secret existence checks are DISABLED.
+=============================================================================
+
+`validation.checkSecrets` is set to `false`. The chart did NOT verify
+that every Secret it references actually exists in namespace
+"{{ .Release.Namespace }}" with the expected keys.
+
+If any of secrets not exist or is not available for the service,
+Platforma Backend will fail to start.
+
+To re-enable this check in values.yaml and stay safe:
+
+  validation:
+    checkSecrets: true
+
+{{- end }}

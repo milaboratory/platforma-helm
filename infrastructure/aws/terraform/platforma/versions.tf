@@ -39,6 +39,14 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    # Used by the master-secret BYO lookup in app.tf — shells out to
+    # `aws ssm get-parameter` so an existing SSM SecureString overrides
+    # the random_password fallback. Matches the GCP module's pattern in
+    # terraform-platforma/versions.tf.
+    external = {
+      source  = "hashicorp/external"
+      version = "~> 2.3"
+    }
   }
 
   # No backend block — customers wire their own. See the README.

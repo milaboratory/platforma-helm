@@ -40,6 +40,16 @@ output "htpasswd_password_command" {
   ]) : null
 }
 
+output "master_secret_command" {
+  description = "Command to fetch the platforma master secret from SSM. The command output is the secret, not this string. Rotating this key invalidates all DB-encrypted secrets, sessions, and resource signatures."
+  value = join(" ", [
+    "aws ssm get-parameter",
+    "--name /${var.cluster_name}/platforma/master-secret",
+    "--with-decryption --region ${var.region}",
+    "--query Parameter.Value --output text",
+  ])
+}
+
 output "configured_data_sources" {
   description = "Names of the data libraries exposed in the Desktop App (configured libraries plus the demo library when enabled)."
   value       = [for ds in local.data_sources : ds.name]

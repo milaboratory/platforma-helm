@@ -30,6 +30,14 @@ locals {
   libs_with_creds = var.deploy_platforma ? {
     for lib in var.data_libraries : lib.name => lib if lib.access_key != ""
   } : {}
+
+  # Master-secret resolution: existing SSM value wins (BYO path / re-apply
+  # persistence); otherwise fall back to a freshly-generated random_password.
+  # See the resource block below for the full design notes.
+  master_secret_value = coalesce(
+    data.external.master_secret_existing.result.value,
+    base64encode(random_password.master_secret.result),
+  )
 }
 
 # -----------------------------------------------------------------------------
@@ -99,6 +107,67 @@ resource "kubernetes_secret" "htpasswd_generated" {
   lifecycle {
     ignore_changes = [data]
   }
+
+  depends_on = [kubernetes_namespace.platforma]
+}
+
+# -----------------------------------------------------------------------------
+# Master secret — root key for DB encryption + session/resource signing
+# (charts/platforma/values.yaml:58-78). Mirrors AWS CFN deployer
+# (cloudformation-eks-1-35.yaml:3105-3127):
+#   1. Look up an existing SecureString value in SSM via the external
+#      provider (shells out to `aws ssm get-parameter --with-decryption`).
+#      On miss the lookup returns empty without erroring.
+#   2. Otherwise fall back to a freshly-generated 32-byte random string,
+#      base64-encoded for symmetry with `openssl rand -base64 32`.
+#   3. Persist the chosen value back to SSM and materialize the K8s Secret.
+#
+# Re-applies pick the same value back up via the data source, so the key
+# stays stable. `tofu destroy` removes the SSM parameter alongside the
+# Kubernetes Secret — same trade-off as `aws_ssm_parameter.users_password`.
+#
+# The SSM path /${cluster_name}/platforma/master-secret matches the CFN
+# deployer's path so a stack originally provisioned via CFN can be migrated
+# to this module without rotating the key.
+# -----------------------------------------------------------------------------
+data "external" "master_secret_existing" {
+  program = [
+    "bash",
+    "-c",
+    <<-EOT
+      value=$(aws ssm get-parameter \
+        --name "/${var.cluster_name}/platforma/master-secret" \
+        --with-decryption \
+        --query Parameter.Value \
+        --output text 2>/dev/null || true)
+      printf '{"value":%s}' "$(printf '%s' "$value" | jq -Rs .)"
+    EOT
+  ]
+}
+
+resource "random_password" "master_secret" {
+  length  = 32
+  special = false
+}
+
+resource "aws_ssm_parameter" "master_secret" {
+  name        = "/${var.cluster_name}/platforma/master-secret"
+  description = "Platforma root key (DB encryption + session/resource signing). Rotating invalidates all sessions and encrypted secrets."
+  type        = "SecureString"
+  value       = local.master_secret_value
+}
+
+resource "kubernetes_secret" "master_secret" {
+  metadata {
+    name      = "platforma-master-secret"
+    namespace = var.platforma_namespace
+  }
+
+  data = {
+    "master-secret" = local.master_secret_value
+  }
+
+  type = "Opaque"
 
   depends_on = [kubernetes_namespace.platforma]
 }
@@ -294,6 +363,13 @@ locals {
     jobs    = { secretName = local.license_secret_effective }
   }
 
+  master_secret_values = {
+    masterSecret = {
+      secretName = kubernetes_secret.master_secret.metadata[0].name
+      secretKey  = "master-secret"
+    }
+  }
+
   # When enabled, the ALB-specific keys are added on top of `enabled`. Built via
   # merge over a 0-or-1-element list (rather than a ternary that returns two
   # differently-shaped objects, which OpenTofu rejects as a type mismatch).
@@ -350,6 +426,7 @@ locals {
   platforma_values = merge(
     local.base_values,
     local.license_values,
+    local.master_secret_values,
     local.ingress_values,
     local.auth_values,
     local.image_values,
@@ -397,6 +474,8 @@ resource "helm_release" "platforma" {
     kubernetes_secret.htpasswd_provided,
     kubernetes_secret.library_creds,
     kubernetes_secret.demo_library,
+    kubernetes_secret.master_secret,
     aws_ssm_parameter.users_password,
+    aws_ssm_parameter.master_secret,
   ]
 }

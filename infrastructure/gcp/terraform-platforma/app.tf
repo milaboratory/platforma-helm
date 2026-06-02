@@ -158,6 +158,71 @@ resource "google_secret_manager_secret_version" "admin_password" {
 }
 
 # =============================================================================
+# Master secret for Platforma security layer. 
+# Stored in Secret Manager (KMS-encrypted),
+# materialized as a Kubernetes Secret consumed by the chart via
+# masterSecret.secretName. Generated once and reused across applies via
+# Terraform state — destroy rotates it (same trade-off as admin_password).
+# =============================================================================
+
+# BYO support: if a Secret Manager secret with the expected name already
+# holds a value, reuse it instead of generating a fresh one. Matches the
+# try-existing-then-generate semantics of the AWS CFN deployer (see
+# cloudformation-eks-1-35.yaml:3105-3127). The shell command exits 0 with
+# empty stdout on miss, so plan/apply never errors on first deploy.
+data "external" "master_secret_existing" {
+  program = [
+    "bash",
+    "-c",
+    <<-EOT
+      value=$(gcloud secrets versions access latest \
+        --secret="${var.cluster_name}-platforma-master-secret" \
+        --project="${var.project_id}" 2>/dev/null || true)
+      printf '{"value":%s}' "$(printf '%s' "$value" | jq -Rs .)"
+    EOT
+  ]
+}
+
+resource "random_password" "master_secret" {
+  length  = 32
+  special = false
+}
+
+locals {
+  master_secret_value = coalesce(
+    data.external.master_secret_existing.result.value,
+    base64encode(random_password.master_secret.result),
+  )
+}
+
+resource "google_secret_manager_secret" "master_secret" {
+  secret_id = "${var.cluster_name}-platforma-master-secret"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "master_secret" {
+  secret      = google_secret_manager_secret.master_secret.id
+  secret_data = local.master_secret_value
+}
+
+resource "kubernetes_secret" "master_secret" {
+  metadata {
+    name      = "platforma-master-secret"
+    namespace = kubernetes_namespace.platforma.metadata[0].name
+  }
+
+  data = {
+    "master-secret" = local.master_secret_value
+  }
+
+  type = "Opaque"
+}
+
+# =============================================================================
 # Auth: htpasswd-content secret (when user supplied bcrypted content) or
 # LDAP search-password secret (when ldap with search bind). The auto-gen
 # htpasswd path uses random_password.admin + Secret Manager (above); the
@@ -281,6 +346,11 @@ resource "helm_release" "platforma" {
         }
 
         auth = local.auth_helm_value
+
+        masterSecret = {
+          secretName = kubernetes_secret.master_secret.metadata[0].name
+          secretKey  = "master-secret"
+        }
 
         license = {
           secretName = kubernetes_secret.license.metadata[0].name
@@ -423,5 +493,6 @@ resource "helm_release" "platforma" {
     kubernetes_secret.license,
     kubernetes_secret.htpasswd_provided,
     kubernetes_secret.ldap_search_password,
+    kubernetes_secret.master_secret,
   ]
 }

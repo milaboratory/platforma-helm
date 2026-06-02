@@ -690,12 +690,53 @@ kubectl get crd appwrappers.workload.codeflare.dev
 
 ---
 
-## Step 9: Create license secret
+## Step 9: Create secrets
+
+### Step 9a: Create license secret
 
 ```bash
 kubectl create secret generic platforma-license \
   -n $PLATFORMA_NAMESPACE \
   --from-literal=MI_LICENSE="$MI_LICENSE"
+```
+
+---
+
+### Step 9b: Create master secret
+
+The chart requires a Kubernetes secret named `platforma-master-secret` (key `master-secret`) before install. It's the root key for two independent platform features: encryption of sensitive data persisted in the platform DB, and signing/validation of user sessions and resource signatures.
+
+> **Rotating this secret invalidates all DB-encrypted secrets and all client sessions.** Treat it as a long-lived root key. Persist the generated value in SSM Parameter Store so re-deploys reuse it.
+
+This mirrors the CloudFormation deployer's logic — fetch from SSM if a value already exists, otherwise generate a fresh 32-byte base64 string and store it back.
+
+```bash
+# Try to reuse an existing master secret stored in SSM (SecureString —
+# requires --with-decryption). On miss this returns empty and the next
+# block generates a fresh one.
+MASTER_SECRET=$(aws ssm get-parameter \
+  --name "/${CLUSTER_NAME}/platforma/master-secret" \
+  --with-decryption \
+  --region $AWS_REGION \
+  --query Parameter.Value --output text 2>/dev/null || true)
+
+if [ -n "$MASTER_SECRET" ]; then
+  echo "Reusing existing master secret from SSM: /${CLUSTER_NAME}/platforma/master-secret"
+else
+  echo "Generating master secret (32 bytes)"
+  MASTER_SECRET=$(openssl rand -base64 32)
+  aws ssm put-parameter \
+    --name "/${CLUSTER_NAME}/platforma/master-secret" \
+    --type SecureString \
+    --value "$MASTER_SECRET" \
+    --region $AWS_REGION
+  echo "Master secret stored in SSM: /${CLUSTER_NAME}/platforma/master-secret"
+fi
+
+kubectl create secret generic platforma-master-secret \
+  -n $PLATFORMA_NAMESPACE \
+  --from-literal=master-secret="$MASTER_SECRET" \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 ---
@@ -729,6 +770,8 @@ helm install platforma oci://ghcr.io/milaboratory/platforma-helm/platforma \
   --set storage.main.s3.region=$AWS_REGION \
   --set auth.htpasswd.credentials[0].username=platforma \
   --set auth.htpasswd.credentials[0].password=changeme \
+  --set masterSecret.secretName=platforma-master-secret \
+  --set masterSecret.secretKey=master-secret \
   --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_ROLE_ARN" \
   --set "jobServiceAccount.annotations.eks\.amazonaws\.com/role-arn=$PLATFORMA_JOBS_ROLE_ARN" \
   --set ingress.enabled=true \
@@ -854,6 +897,12 @@ aws ec2 delete-security-group --group-id $SG_ID
 
 # Delete S3 bucket (uncomment to remove data)
 # aws s3 rb s3://${S3_BUCKET} --force
+
+# Delete the master secret from SSM (uncomment to permanently destroy the
+# root key — invalidates all DB-encrypted secrets, sessions, and resource
+# signatures; re-deploys against the same cluster name will generate a
+# fresh value)
+# aws ssm delete-parameter --name "/${CLUSTER_NAME}/platforma/master-secret" --region $AWS_REGION
 
 # Delete ACM certificate
 # aws acm delete-certificate --certificate-arn $CERT_ARN

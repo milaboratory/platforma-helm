@@ -156,6 +156,11 @@ variable "license_secret_name" {
   default     = ""
 }
 
+variable "master_secret_ssm_parameter_name" {
+  type        = string
+  description = "Name of a pre-existing SSM SecureString parameter holding the Platforma master secret (chart security layer — DB encryption + session/resource signing). Required: pre-stage the parameter and value before apply. The latest version is read at apply time via the AWS provider; the value never travels through tfvars. SSM Parameter Store is the source of truth, so re-applies are stable and rotation is performed by overwriting the parameter out-of-band."
+}
+
 # -----------------------------------------------------------------------------
 # Authentication — htpasswd (default) or LDAP. Mirrors CF AuthMethod.
 # -----------------------------------------------------------------------------

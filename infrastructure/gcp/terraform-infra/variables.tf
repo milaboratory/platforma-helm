@@ -55,10 +55,16 @@ variable "deployment_size" {
 # Networking
 # -----------------------------------------------------------------------------
 
+variable "resource_name_prefix" {
+  type        = string
+  description = "Prefix for project-scoped resources whose default names would otherwise collide when multiple Platforma deployments share one GCP project (VPC, server/jobs service accounts). Default 'platforma' preserves legacy naming."
+  default     = "platforma"
+}
+
 variable "vpc_name" {
   type        = string
-  description = "VPC network name."
-  default     = "platforma-vpc"
+  description = "VPC network name. If null, derived as '<resource_name_prefix>-vpc'."
+  default     = null
 }
 
 variable "subnet_nodes_cidr" {

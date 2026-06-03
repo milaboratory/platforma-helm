@@ -165,48 +165,25 @@ resource "google_secret_manager_secret_version" "admin_password" {
 # Terraform state — destroy rotates it (same trade-off as admin_password).
 # =============================================================================
 
-# BYO support: if a Secret Manager secret with the expected name already
-# holds a value, reuse it instead of generating a fresh one. Matches the
-# try-existing-then-generate semantics of the AWS CFN deployer (see
-# cloudformation-eks-1-35.yaml:3105-3127). The shell command exits 0 with
-# empty stdout on miss, so plan/apply never errors on first deploy.
-data "external" "master_secret_existing" {
-  program = [
-    "bash",
-    "-c",
-    <<-EOT
-      value=$(gcloud secrets versions access latest \
-        --secret="${var.cluster_name}-platforma-master-secret" \
-        --project="${var.project_id}" 2>/dev/null || true)
-      printf '{"value":%s}' "$(printf '%s' "$value" | jq -Rs .)"
-    EOT
-  ]
-}
-
-resource "random_password" "master_secret" {
-  length  = 32
-  special = false
+# BYO support: when var.master_secret_secret_id is set, read the value from
+# Secret Manager via the Google provider. Only the secret *name* travels
+# through tfvars / the IM bundle; the value never leaves Secret Manager except
+# into TF state.
+#
+# When unset, random_id generates a fresh 256-bit base64 value on first apply;
+# its result is persisted in TF state, so subsequent applies don't rotate it.
+# Single path: Secret Manager is the source of truth. install.sh pre-creates
+# the secret + initial version (random on first run, MASTER_SECRET env value
+# when the operator wants to pin or rotate). TF reads the latest version via
+# the Google provider — no gcloud dependency, no value in tfvars or the IM
+# bundle, stable across TF state loss.
+data "google_secret_manager_secret_version" "master_secret" {
+  secret  = var.master_secret_secret_id
+  project = var.project_id
 }
 
 locals {
-  master_secret_value = coalesce(
-    data.external.master_secret_existing.result.value,
-    base64encode(random_password.master_secret.result),
-  )
-}
-
-resource "google_secret_manager_secret" "master_secret" {
-  secret_id = "${var.cluster_name}-platforma-master-secret"
-  project   = var.project_id
-
-  replication {
-    auto {}
-  }
-}
-
-resource "google_secret_manager_secret_version" "master_secret" {
-  secret      = google_secret_manager_secret.master_secret.id
-  secret_data = local.master_secret_value
+  master_secret_value = data.google_secret_manager_secret_version.master_secret.secret_data
 }
 
 resource "kubernetes_secret" "master_secret" {
@@ -220,6 +197,38 @@ resource "kubernetes_secret" "master_secret" {
   }
 
   type = "Opaque"
+
+  # Surface short / non-base64 BYO master secrets at plan time. The Platforma
+  # backend base64-decodes this field and rejects anything < 32 raw bytes at
+  # pod startup; without this check the failure shows up ~15 min into a Helm
+  # install (after image pull + PVC bind) and gets atomic-rolled back, taking
+  # the pod's logs with it.
+  #
+  # We deliberately do NOT call base64decode() here — OpenTofu's
+  # base64decode requires the decoded result to be valid UTF-8, and random
+  # 32-byte master secrets almost never are. Instead we (a) check the value
+  # matches base64 alphabet + padding, then (b) compute decoded length
+  # arithmetically as floor(len*3/4) - padding_count.
+  lifecycle {
+    precondition {
+      condition = (
+        can(regex("^[A-Za-z0-9+/]*={0,2}$", local.master_secret_value))
+        && floor(length(local.master_secret_value) * 3 / 4)
+        -length(regexall("=", local.master_secret_value)) >= 32
+      )
+      error_message = <<-EOT
+        Platforma master secret must be base64-encoded with at least 32 raw bytes of payload after decoding.
+        The current value (from Secret Manager secret ${var.cluster_name}-platforma-master-secret) is too short or not valid base64.
+        To rotate, either:
+          - delete the Secret Manager secret so terraform regenerates it:
+              gcloud secrets delete ${var.cluster_name}-platforma-master-secret --project=${var.project_id}
+            (then re-run tofu apply), or
+          - replace it with a fresh value:
+              openssl rand -base64 32 | gcloud secrets versions add \
+                ${var.cluster_name}-platforma-master-secret --project=${var.project_id} --data-file=-
+      EOT
+    }
+  }
 }
 
 # =============================================================================

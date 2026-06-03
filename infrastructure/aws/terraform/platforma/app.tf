@@ -31,13 +31,7 @@ locals {
     for lib in var.data_libraries : lib.name => lib if lib.access_key != ""
   } : {}
 
-  # Master-secret resolution: existing SSM value wins (BYO path / re-apply
-  # persistence); otherwise fall back to a freshly-generated random_password.
-  # See the resource block below for the full design notes.
-  master_secret_value = coalesce(
-    data.external.master_secret_existing.result.value,
-    base64encode(random_password.master_secret.result),
-  )
+  master_secret_value = data.aws_ssm_parameter.master_secret.value
 }
 
 # -----------------------------------------------------------------------------
@@ -113,48 +107,23 @@ resource "kubernetes_secret" "htpasswd_generated" {
 
 # -----------------------------------------------------------------------------
 # Master secret — root key for DB encryption + session/resource signing
-# (charts/platforma/values.yaml:58-78). Mirrors AWS CFN deployer
-# (cloudformation-eks-1-35.yaml:3105-3127):
-#   1. Look up an existing SecureString value in SSM via the external
-#      provider (shells out to `aws ssm get-parameter --with-decryption`).
-#      On miss the lookup returns empty without erroring.
-#   2. Otherwise fall back to a freshly-generated 32-byte random string,
-#      base64-encoded for symmetry with `openssl rand -base64 32`.
-#   3. Persist the chosen value back to SSM and materialize the K8s Secret.
+# (charts/platforma/values.yaml:58-78).
 #
-# Re-applies pick the same value back up via the data source, so the key
-# stays stable. `tofu destroy` removes the SSM parameter alongside the
-# Kubernetes Secret — same trade-off as `aws_ssm_parameter.users_password`.
+# Externally owned: the SSM SecureString parameter is pre-staged by the
+# operator (or by the CloudFormation deployer for CFN-based installs)
+# before apply, and its name is passed via var.master_secret_ssm_parameter_name.
+# Terraform reads the latest value here and materializes the Kubernetes
+# Secret consumed by the chart; it does NOT create, own, or rotate the
+# SSM parameter. terraform destroy leaves the parameter intact.
 #
-# The SSM path /${cluster_name}/platforma/master-secret matches the CFN
-# deployer's path so a stack originally provisioned via CFN can be migrated
-# to this module without rotating the key.
+# Rotation is performed out-of-band:
+#   aws ssm put-parameter --type SecureString --overwrite \
+#     --name "$PARAM_NAME" --value "$(openssl rand -base64 32)"
+# Re-applies pick up the latest version on the next plan.
 # -----------------------------------------------------------------------------
-data "external" "master_secret_existing" {
-  program = [
-    "bash",
-    "-c",
-    <<-EOT
-      value=$(aws ssm get-parameter \
-        --name "/${var.cluster_name}/platforma/master-secret" \
-        --with-decryption \
-        --query Parameter.Value \
-        --output text 2>/dev/null || true)
-      printf '{"value":%s}' "$(printf '%s' "$value" | jq -Rs .)"
-    EOT
-  ]
-}
-
-resource "random_password" "master_secret" {
-  length  = 32
-  special = false
-}
-
-resource "aws_ssm_parameter" "master_secret" {
-  name        = "/${var.cluster_name}/platforma/master-secret"
-  description = "Platforma root key (DB encryption + session/resource signing). Rotating invalidates all sessions and encrypted secrets."
-  type        = "SecureString"
-  value       = local.master_secret_value
+data "aws_ssm_parameter" "master_secret" {
+  name            = var.master_secret_ssm_parameter_name
+  with_decryption = true
 }
 
 resource "kubernetes_secret" "master_secret" {
@@ -168,6 +137,36 @@ resource "kubernetes_secret" "master_secret" {
   }
 
   type = "Opaque"
+
+  # Surface short / non-base64 BYO master secrets at plan time. The Platforma
+  # backend base64-decodes this field and rejects anything < 32 raw bytes at
+  # pod startup; without this check the failure shows up ~15 min into a Helm
+  # install (after image pull + PVC bind) and gets atomic-rolled back, taking
+  # the pod's logs with it.
+  #
+  # We deliberately do NOT call base64decode() here — Terraform
+  # base64decode requires the decoded result to be valid UTF-8, and random
+  # 32-byte master secrets almost never are. Instead we (a) check the value
+  # matches base64 alphabet + padding, then (b) compute decoded length
+  # arithmetically as floor(len*3/4) - padding_count.
+  lifecycle {
+    precondition {
+      condition = (
+        can(regex("^[A-Za-z0-9+/]*={0,2}$", local.master_secret_value))
+        && floor(length(local.master_secret_value) * 3 / 4)
+        -length(regexall("=", local.master_secret_value)) >= 32
+      )
+      error_message = <<-EOT
+        Platforma master secret must be base64-encoded with at least 32 raw bytes of payload after decoding.
+        The current value (from SSM parameter ${var.master_secret_ssm_parameter_name}) is too short or not valid base64.
+        Terraform does not own this parameter — overwrite it with a fresh value:
+          aws ssm put-parameter --type SecureString --overwrite \
+            --name ${var.master_secret_ssm_parameter_name} \
+            --value "$(openssl rand -base64 32)"
+        then re-run terraform apply.
+      EOT
+    }
+  }
 
   depends_on = [kubernetes_namespace.platforma]
 }
@@ -476,6 +475,5 @@ resource "helm_release" "platforma" {
     kubernetes_secret.demo_library,
     kubernetes_secret.master_secret,
     aws_ssm_parameter.users_password,
-    aws_ssm_parameter.master_secret,
   ]
 }

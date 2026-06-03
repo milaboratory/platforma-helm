@@ -44,13 +44,6 @@ terraform {
       source  = "hashicorp/null"
       version = "~> 3.2"
     }
-    # Used by the master-secret BYO lookup in app.tf — shells out to
-    # `gcloud secrets versions access` so an existing Secret Manager
-    # entry overrides the random_password fallback.
-    external = {
-      source  = "hashicorp/external"
-      version = "~> 2.3"
-    }
   }
 
   # No backend block here — Infrastructure Manager manages state externally.

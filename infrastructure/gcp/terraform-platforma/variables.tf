@@ -16,17 +16,6 @@ variable "project_id" {
   description = "GCP project ID. Must match the infra module."
 }
 
-variable "resource_name_prefix" {
-  type        = string
-  description = "Prefix for project-scoped resources (server/jobs service accounts). Must match the value passed to the infra module. Default 'platforma' preserves legacy naming."
-  default     = "platforma"
-}
-
-variable "master_secret_secret_id" {
-  type        = string
-  description = "Secret Manager secret name (not value) holding the Platforma master secret. Required — pre-stage the secret + at least one version before apply (install.sh does this automatically). The latest version is read at apply time via the Google provider; the value never travels through tfvars or the IM bundle. Secret Manager is the source of truth: re-applies are stable, and rotation is performed by adding a new version out-of-band."
-}
-
 variable "region" {
   type        = string
   description = "GCP region. Must match the infra module."

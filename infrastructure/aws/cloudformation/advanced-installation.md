@@ -710,8 +710,6 @@ The chart requires a Kubernetes secret named `platforma-master-secret` (key `mas
 
 This mirrors the CloudFormation deployer's logic — fetch from SSM if a value already exists, otherwise generate a fresh 32-byte base64 string and store it back.
 
-> **TF path:** if you're using the Terraform module instead of this manual flow, stage the same SSM parameter and pass its name via `master_secret_ssm_parameter_name` — see [`aws/terraform/README.md`](../terraform/README.md#step-2--pre-stage-the-master-secret). The module reads the value and creates the K8s secret for you, so you can skip the `kubectl create secret` step below.
-
 ```bash
 # Try to reuse an existing master secret stored in SSM (SecureString —
 # requires --with-decryption). On miss this returns empty and the next

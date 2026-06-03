@@ -139,10 +139,9 @@ default_username            = "platforma"
 password_secret_console_url = "https://console.cloud.google.com/security/secret-manager/..."
 ```
 
-The module reads the **master secret** from a Secret Manager entry you
-stage beforehand and points the chart at it. See [Master secret](#master-secret)
-below for the staging step and rotation flow — this must be done before
-the first `tofu apply`.
+The module also writes a root key — `${cluster_name}-platforma-master-secret`
+— to Secret Manager. See [Master secret](#master-secret) below for what it
+is, when to bring your own value, and the destroy/rotation caveat.
 
 Wait for the TLS cert to provision (5-15 min after apply — check
 `gcloud certificate-manager certificates describe platforma-cluster-cert
@@ -216,86 +215,53 @@ change rolls the `platforma-htpasswd-provided` secret. Non-interactive form
 
 ### Master secret
 
-The chart requires a root key — the **master secret** — for security layer
-configuration of Platforma: it affects encryption of sensitive data
-persisted in the platform DB, active user sessions trust and other things
-related to data and connection security (see
-`charts/platforma/values.yaml` lines 58-78).
+The chart requires a root key — the **master secret** — for security layer configuration
+of Platforma: it affects encryption of sensitive data persisted in the platform
+DB, active user sessions trust and other things related to data and connection security.
+(see `charts/platforma/values.yaml` lines 58-78).
 
 > **Rotating the master secret invalidates all DB-encrypted secrets,
 > existing user sessions and so on.** Treat it as a long-lived root
 > key.
 
-The module **does not** create the Secret Manager entry and **does not**
-generate the value. You stage both before the first `tofu apply` and
-point Terraform at the secret name via the required tfvar
-`master_secret_secret_id`. At apply time the module reads the latest
-version through the Google provider, materializes it as the Kubernetes
-secret `platforma-master-secret` (key `master-secret`) in the Platforma
-namespace, and never writes the value through `tfvars` or any state
-artefact other than the value cached in TF state for the data source.
+The Terraform module provisions it for you:
 
-(The Cloud Shell `install.sh` performs the staging step below
-automatically; advanced-path operators do it themselves.)
+- On first apply, generates a fresh 32-byte value (`random_password.master_secret`).
+- Stores it in Secret Manager as `${cluster_name}-platforma-master-secret`.
+- Materializes it as the Kubernetes secret `platforma-master-secret` (key
+  `master-secret`) in the Platforma namespace.
+- On subsequent applies, **reads the existing Secret Manager value first**
+  via a `data "external"` lookup; the random fallback is only used when no
+  prior value is present. This matches the AWS deployer's
+  try-existing-then-generate semantics so the key survives re-applies.
 
-#### Stage the secret before first apply
-
-```bash
-SECRET_NAME="${CLUSTER_NAME}-platforma-master-secret"
-
-# Generate a fresh 32-byte value; or pipe in your own payload instead of
-# `openssl rand` to pin a known secret.
-openssl rand -base64 32 | gcloud secrets create "${SECRET_NAME}" \
-  --project="${PROJECT_ID}" \
-  --replication-policy=automatic \
-  --data-file=-
-
-cat >> terraform.tfvars <<EOF
-master_secret_secret_id = "${SECRET_NAME}"
-EOF
-```
-
-`master_secret_secret_id` has no default — `tofu plan` fails without it.
-
-#### Rotation
-
-Add a new version out-of-band and re-apply:
-
-```bash
-openssl rand -base64 32 | gcloud secrets versions add "${SECRET_NAME}" \
-  --project="${PROJECT_ID}" \
-  --data-file=-
-
-tofu apply
-```
-
-The data source always reads `latest`, so no state import is needed. As
-called out above, rotation invalidates everything encrypted under the
-prior key — do it deliberately.
-
-#### Re-apply / state-loss stability
-
-Secret Manager is the source of truth. Rebuilding Terraform state from
-scratch no longer rotates the master secret — TF just re-reads the
-existing latest version.
-
-#### Destroy
-
-`tofu destroy` no longer touches the Secret Manager entry (Terraform
-doesn't own it). If you really want it gone, delete it explicitly:
-
-```bash
-gcloud secrets delete "${SECRET_NAME}" --project="${PROJECT_ID}"
-```
-
-Before doing that, back the value up if you might want to restore the
-stack with DB-encrypted data intact:
+**Caveat:** `tofu destroy` removes the Secret Manager secret along with the
+rest of the module's resources. Same trade-off as `admin_password`. If you
+plan to recreate the stack and keep DB data intact, back the value up first:
 
 ```bash
 gcloud secrets versions access latest \
-  --secret="${SECRET_NAME}" \
+  --secret="${cluster_name}-platforma-master-secret" \
   --project="${PROJECT_ID}" > /path/to/secure/backup
 ```
+
+**Bring your own master secret.** Pre-create the Secret Manager entry
+before `tofu apply` and the module picks it up instead of generating:
+
+```bash
+# Payload is whatever opaque value you want to use; base64-encoded 32 random
+# bytes is what the module's default fallback produces.
+openssl rand -base64 32 | gcloud secrets create \
+  "${CLUSTER_NAME}-platforma-master-secret" \
+  --project="${PROJECT_ID}" \
+  --replication-policy=automatic \
+  --data-file=-
+```
+
+Then run `tofu apply` as normal. The data-source lookup returns your value,
+the `random_password` fallback is never read, and both the Secret Manager
+version managed by Terraform and the in-cluster `platforma-master-secret`
+will carry your payload.
 
 ### Cross-project Cloud DNS zone
 

@@ -32,11 +32,6 @@ license_key = "your-license-key"
 # ...or point at a pre-existing secret holding MI_LICENSE:
 # license_secret_name = "platforma-license"
 
-# Master secret (required). Name of a pre-existing SSM SecureString parameter
-# holding the Platforma root key. Stage it before apply:
-#   aws ssm put-parameter --type SecureString --name <name> --value "$(openssl rand -base64 32)"
-master_secret_ssm_parameter_name = "/your-cluster-name/platforma/master-secret"
-
 # Chart source: pinned OCI release by default. Override for a local chart:
 # chart_version    = "3.5.0"
 # chart_local_path = "../../../../charts/platforma"   # dev / air-gapped

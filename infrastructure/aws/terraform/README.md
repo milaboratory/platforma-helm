@@ -117,13 +117,54 @@ Capture the bucket name the platforma module needs:
 terraform output -raw s3_bucket_name
 ```
 
-### Step 2 — controllers + Platforma
+### Step 2 — pre-stage the master secret
+
+The platforma module reads a Platforma **master secret** from an SSM
+SecureString parameter you stage beforehand. It's the chart's root key
+for two independent features: encryption of sensitive data persisted in
+the platform DB, and signing/validation of user sessions and resource
+signatures (see `charts/platforma/values.yaml` lines 58-78).
+
+> **Rotating the master secret invalidates all DB-encrypted secrets and
+> all active sessions.** Treat it as a long-lived root key.
+
+Terraform does **not** create the parameter and does **not** generate
+the value — it only reads the latest version. You stage both before
+the next step:
+
+```bash
+PARAM_NAME="/${CLUSTER_NAME}/platforma/master-secret"
+
+# Generate a fresh 32-byte value (or pipe in your own payload to pin a
+# known secret).
+aws ssm put-parameter \
+  --name "${PARAM_NAME}" \
+  --type SecureString \
+  --region "${AWS_REGION}" \
+  --value "$(openssl rand -base64 32)"
+
+# Wire it into the platforma module.
+cat >> platforma/terraform.tfvars <<EOF
+master_secret_ssm_parameter_name = "${PARAM_NAME}"
+EOF
+```
+
+`master_secret_ssm_parameter_name` has no default — `terraform plan`
+fails without it.
+
+The CloudFormation deployer runs the equivalent step automatically
+inside CodeBuild; only this TF path requires the manual
+`aws ssm put-parameter`.
+
+### Step 3 — controllers + Platforma
 
 ```bash
 cd ../platforma
 cp terraform.tfvars.example terraform.tfvars
 $EDITOR terraform.tfvars          # match Step 1's shared identifiers;
                                   # set s3_bucket_name (from above) + license_key
+                                  # (master_secret_ssm_parameter_name already
+                                  # appended by Step 2)
 
 terraform init
 terraform plan                    # needs AWS creds AND an applied Step 1
@@ -136,7 +177,7 @@ terraform apply                   # ~5-10 min
 > both `terraform.tfvars` files — the IRSA trust policies, ACM cert, ECR cache,
 > and Kueue quotas from Step 1 are keyed to those exact values.
 
-### Step 3 — connect
+### Step 4 — connect
 
 ```bash
 terraform output                  # platforma_url + how to fetch the password
@@ -147,6 +188,51 @@ eval "$(terraform output -raw htpasswd_password_command)"
 
 Open the Platforma Desktop App and connect to `platforma_url`. DNS and the ALB
 take a few minutes to come up after apply.
+
+## Master secret operations
+
+The master secret is staged in Step 2 — see there for the initial setup.
+Day-2 operations:
+
+**Rotation.** Add a new version out-of-band; Terraform reads `latest`
+on the next plan, no state import needed.
+
+```bash
+aws ssm put-parameter \
+  --name "${PARAM_NAME}" \
+  --type SecureString \
+  --overwrite \
+  --region "${AWS_REGION}" \
+  --value "$(openssl rand -base64 32)"
+
+terraform apply
+```
+
+Rotation invalidates DB-encrypted data and active sessions — do it
+deliberately.
+
+**Re-apply / state-loss stability.** SSM Parameter Store is the source
+of truth, so rebuilding Terraform state from scratch no longer rotates
+the master secret.
+
+**Destroy.** `terraform destroy` no longer touches the SSM parameter
+(Terraform doesn't own it). If you really want it gone, delete it
+explicitly:
+
+```bash
+aws ssm delete-parameter --name "${PARAM_NAME}" --region "${AWS_REGION}"
+```
+
+**Backup.** Before deleting the parameter, save the value off-cluster
+if you might want to restore the stack with DB-encrypted data intact:
+
+```bash
+aws ssm get-parameter \
+  --name "${PARAM_NAME}" \
+  --with-decryption \
+  --region "${AWS_REGION}" \
+  --query Parameter.Value --output text > /path/to/secure/backup
+```
 
 ## Networking: greenfield or bring-your-own VPC
 

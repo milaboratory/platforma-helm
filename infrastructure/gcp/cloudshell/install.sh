@@ -1176,6 +1176,66 @@ ensure_im_service_account() {
 }
 
 # -----------------------------------------------------------------------------
+# Master secret pre-staging
+# -----------------------------------------------------------------------------
+# Secret Manager is the single source of truth for the Platforma master secret.
+# Terraform reads it via a data source at apply time; the value never travels
+# through tfvars or the IM bundle, and the BYO data source can't shell out to
+# gcloud inside Infrastructure Manager's tf-runner container.
+#
+# Behavior (always runs):
+#   - If the secret has at least one version → leave it alone. Stable across
+#     re-deploys and across TF state loss; Secret Manager is the source of truth.
+#   - Else if MASTER_SECRET env var is set → use that value as the first version.
+#   - Else → generate a fresh value via 'openssl rand -base64 32' and add it.
+#
+# Rotation: set MASTER_SECRET=<new value> on a re-run — install.sh will add a
+# new version and TF picks up "latest" on the next apply. Without MASTER_SECRET,
+# re-runs are no-ops on the secret.
+
+prestage_master_secret() {
+  bold "Pre-staging master secret"
+  local secret_name="${DEPLOYMENT_NAME}-cluster-platforma-master-secret"
+  MASTER_SECRET_SECRET_ID="${secret_name}"
+
+  if ! gcloud secrets describe "${secret_name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    info "Creating Secret Manager secret ${secret_name}…"
+    gcloud secrets create "${secret_name}" \
+      --replication-policy=automatic \
+      --project="${PROJECT_ID}" --quiet >/dev/null
+  fi
+
+  # Has any version been added? Empty secret (no versions) would make the TF
+  # data source fail at apply time — treat it the same as a fresh secret.
+  local has_version=0
+  if gcloud secrets versions list "${secret_name}" \
+       --project="${PROJECT_ID}" --limit=1 --format='value(name)' 2>/dev/null \
+       | grep -q .; then
+    has_version=1
+  fi
+
+  if [[ "${has_version}" == "1" && -z "${MASTER_SECRET:-}" ]]; then
+    info "Secret ${secret_name} already has a version — reusing (no rotation)."
+    echo
+    return 0
+  fi
+
+  local value
+  if [[ -n "${MASTER_SECRET:-}" ]]; then
+    info "MASTER_SECRET env var supplied — adding as new version (rotation)."
+    value="${MASTER_SECRET}"
+  else
+    info "Generating a fresh master secret (openssl rand -base64 32)."
+    value="$(openssl rand -base64 32)"
+  fi
+
+  printf '%s' "${value}" | gcloud secrets versions add "${secret_name}" \
+    --data-file=- --project="${PROJECT_ID}" --quiet >/dev/null
+  info "Master secret staged in ${secret_name}."
+  echo
+}
+
+# -----------------------------------------------------------------------------
 # Submit / update IM deployment
 # -----------------------------------------------------------------------------
 
@@ -1221,6 +1281,13 @@ build_tfvars_json_full() {
        enable_demo_data_library: $enable_demo_data_library,
        auth_method:              $auth_method
      }')"
+
+  # Master secret reference — install.sh always pre-stages the secret in Secret
+  # Manager (see prestage_master_secret) and passes only the name. Required by
+  # terraform-platforma; TF reads the latest version via the Google provider.
+  if [[ -n "${MASTER_SECRET_SECRET_ID:-}" ]]; then
+    doc="$(echo "${doc}" | jq --arg v "${MASTER_SECRET_SECRET_ID}" '. + {master_secret_secret_id: $v}')"
+  fi
 
   # Auth: htpasswd-content path
   if [[ "${AUTH_METHOD}" == "htpasswd" && -n "${HTPASSWD_CONTENT:-}" ]]; then
@@ -1278,6 +1345,15 @@ build_tfvars_json_full() {
   # Production deployments leave the default (false) to protect user data.
   if [[ -n "${GCS_FORCE_DESTROY:-}" ]]; then
     doc="$(echo "${doc}" | jq --argjson v "${GCS_FORCE_DESTROY}" '. + {gcs_force_destroy: $v}')"
+  fi
+
+  # Hidden override: prefix for project-scoped resources (VPC, server/jobs SAs).
+  # Only relevant when sharing one GCP project across multiple Platforma
+  # deployments — set RESOURCE_NAME_PREFIX=<deployment-id> to avoid colliding
+  # with another deployment's "platforma-vpc" / "platforma-server" / "platforma-jobs".
+  # Not prompted; defaults handled by the TF modules.
+  if [[ -n "${RESOURCE_NAME_PREFIX:-}" ]]; then
+    doc="$(echo "${doc}" | jq --arg v "${RESOURCE_NAME_PREFIX}" '. + {resource_name_prefix: $v}')"
   fi
 
   # Platforma container image override — pin the binary to a specific tag,
@@ -1343,6 +1419,7 @@ build_tfvars_json_infra() {
   build_tfvars_json_full "${full}"
   jq '{
     project_id, region, zone_suffix, cluster_name, deployment_size,
+    resource_name_prefix,
     vpc_name, subnet_nodes_cidr, subnet_pods_cidr, subnet_services_cidr,
     master_ipv4_cidr_block, enable_private_nodes,
     system_pool_machine_type, system_pool_node_count,
@@ -1376,6 +1453,7 @@ build_tfvars_json_platforma() {
      --arg filestore_instance    "${INFRA_OUT_FILESTORE_INSTANCE_NAME}" \
      '{
         project_id, region, zone_suffix, cluster_name,
+        resource_name_prefix,
         platforma_namespace, helm_release_name, deployment_size,
         ingress_enabled, domain_name,
         kueue_max_job_cpu, kueue_max_job_memory,
@@ -1383,6 +1461,7 @@ build_tfvars_json_platforma() {
         batch_pool_max_nodes_overrides, ui_pool_max_nodes, workspace_capacity_gb,
         license_key, platforma_chart_version, helm_chart_repository,
         platforma_image_override, deploy_platforma,
+        master_secret_secret_id,
         admin_username, auth_method, htpasswd_content,
         ldap_server, ldap_start_tls, ldap_bind_dn,
         ldap_search_rules, ldap_search_user, ldap_search_password,
@@ -1666,6 +1745,7 @@ main() {
   detect_existing_quota_prefs
   detect_quota_decrease_collisions
   ensure_im_service_account
+  prestage_master_secret
 
   # Two-stage deployment names — both managed by IM in the same location.
   local infra_deployment="${DEPLOYMENT_NAME}-infra"

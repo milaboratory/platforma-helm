@@ -23,7 +23,7 @@ locals {
 }
 
 resource "google_service_account" "server" {
-  account_id   = "${var.resource_name_prefix}-server"
+  account_id   = "platforma-server"
   display_name = "Platforma server (Workload Identity for K8s SA ${local.k8s_sa_server})"
   project      = var.project_id
 
@@ -31,7 +31,7 @@ resource "google_service_account" "server" {
 }
 
 resource "google_service_account" "jobs" {
-  account_id   = "${var.resource_name_prefix}-jobs"
+  account_id   = "platforma-jobs"
   display_name = "Platforma jobs (Workload Identity for K8s SA ${local.k8s_sa_jobs})"
   project      = var.project_id
 

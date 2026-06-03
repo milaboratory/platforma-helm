@@ -23,14 +23,14 @@ All three share the same Terraform module under [`terraform/`](terraform/).
                             ┌────────────────────────────────────────────────┐
                             │        Your GCP project (created by you)       │
                             │                                                │
-  Desktop App  ──HTTPS──▶ ┌─┴────────────┐                                   │
-                          │ GKE Gateway  │  TLS at L7, gRPC to backend       │
-                          │ + Cert Mgr   │                                   │
-                          │ + Cloud DNS  │                                   │
-                          └─┬────────────┘                                   │
-                            │                                                │
-                            │  internal HTTP/2                               │
-                            ▼                                                │
+  Desktop App  ──HTTPS──▶  ┌─┴────────────┐                                  │
+                            │ GKE Gateway   │  TLS at L7, gRPC to backend    │
+                            │ + Cert Mgr    │                                │
+                            │ + Cloud DNS   │                                │
+                            └─┬────────────┘                                 │
+                              │                                              │
+                              │  internal HTTP/2                             │
+                              ▼                                              │
                       ┌────────────────────────┐                             │
                       │  GKE Standard cluster  │                             │
                       │  (private nodes,       │                             │
@@ -38,8 +38,8 @@ All three share the same Terraform module under [`terraform/`](terraform/).
                       │                        │                             │
                       │  ┌─system pool─────┐   │                             │
                       │  │ Platforma srv   │   │                             │
-                      │  │ Kueue / AppWr   │   │ ──ServiceAccount──▶ GCS     │
-                      │  └─────────────────┘   │     (Workload Identity)     │
+                      │  │ Kueue / AppWr   │   │ ──ServiceAccount──▶ GCS    │
+                      │  └─────────────────┘   │     (Workload Identity)    │
                       │  ┌─UI pool──────┐      │                             │
                       │  │ scale 0-N    │      │ ──Filestore CSI──▶ Filestore (Zonal SSD)
                       │  └──────────────┘      │                             │
@@ -53,14 +53,14 @@ All three share the same Terraform module under [`terraform/`](terraform/).
                                    │ private IPs only                        │
                                    ▼                                         │
                             ┌──────────────┐                                 │
-                            │  Cloud NAT   │ ── public egress for image      │
-                            │  + Router    │    pulls / external LDAP /      │
-                            │              │    cross-cloud demo data        │
+                            │  Cloud NAT   │ ── public egress for image     │
+                            │  + Router    │    pulls / external LDAP /     │
+                            │              │    cross-cloud demo data       │
                             └──────────────┘                                 │
                                    ┃                                         │
-                                   ┃ Private Google Access (no NAT cost)     │
-                                   ┃ for *.googleapis.com                    │
-                            └──────┸─────────────────────────────────────────┘
+                                   ┃ Private Google Access (no NAT cost)    │
+                                   ┃ for *.googleapis.com                   │
+                            └──────┸──────────────────────────────────────────┘
 ```
 
 ## Prerequisites

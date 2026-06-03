@@ -1,9 +1,5 @@
-locals {
-  vpc_name = coalesce(var.vpc_name, "${var.resource_name_prefix}-vpc")
-}
-
 resource "google_compute_network" "vpc" {
-  name                    = local.vpc_name
+  name                    = var.vpc_name
   project                 = var.project_id
   auto_create_subnetworks = false
   routing_mode            = "REGIONAL"
@@ -12,7 +8,7 @@ resource "google_compute_network" "vpc" {
 }
 
 resource "google_compute_subnetwork" "nodes" {
-  name          = "${local.vpc_name}-nodes"
+  name          = "${var.vpc_name}-nodes"
   project       = var.project_id
   region        = var.region
   network       = google_compute_network.vpc.id
@@ -32,7 +28,7 @@ resource "google_compute_subnetwork" "nodes" {
 }
 
 resource "google_compute_global_address" "private_service_access" {
-  name          = "${local.vpc_name}-psa"
+  name          = "${var.vpc_name}-psa"
   project       = var.project_id
   network       = google_compute_network.vpc.id
   purpose       = "VPC_PEERING"

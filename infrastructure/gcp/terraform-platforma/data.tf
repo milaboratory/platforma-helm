@@ -24,12 +24,12 @@ data "google_container_cluster" "primary" {
 #    can annotate the K8s SAs the chart creates without depending on infra
 #    state directly.
 data "google_service_account" "server" {
-  account_id = "${var.resource_name_prefix}-server"
+  account_id = "platforma-server"
   project    = var.project_id
 }
 
 data "google_service_account" "jobs" {
-  account_id = "${var.resource_name_prefix}-jobs"
+  account_id = "platforma-jobs"
   project    = var.project_id
 }
 

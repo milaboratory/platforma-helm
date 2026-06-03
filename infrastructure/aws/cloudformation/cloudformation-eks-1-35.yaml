@@ -220,6 +220,10 @@ Parameters:
   PlatformaHelmChart:
     Type: String
     Default: ''
+    AllowedPattern: '^(|oci://.+)$'
+    ConstraintDescription: >
+      PlatformaHelmChart must be empty or start with "oci://"
+      (e.g. oci://123456.dkr.ecr.eu-central-1.amazonaws.com/platforma).
     Description: >
       Custom Helm chart OCI reference (e.g. oci://123456.dkr.ecr.eu-central-1.amazonaws.com/platforma).
       Leave empty to use the official chart from ghcr.io/milaboratory/platforma-helm/platforma.

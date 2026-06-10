@@ -81,13 +81,52 @@ data "kubectl_file_documents" "appwrapper" {
   content = data.http.appwrapper_manifest.response_body
 }
 
+# The appwrapper namespace must exist before the 17 other manifests inside it
+# (configmap, serviceaccount, webhooks, deployment, ...) can apply. Terraform
+# parallelises kubectl_manifest for_each across all manifests in the install
+# YAML, so without an explicit gate the first apply races — typically
+# `appwrapper-operator-config` is attempted before the namespace exists and
+# fails with `namespaces "appwrapper-system" not found`. Pull the namespace
+# out as a separate resource and have the rest depend on it.
+#
+# The manifest key produced by kubectl_file_documents follows the kubectl
+# resource path pattern: /api/v1/namespaces/<name>.
+locals {
+  appwrapper_namespace_key = "/api/v1/namespaces/appwrapper-system"
+  appwrapper_other_manifests = {
+    for k, v in data.kubectl_file_documents.appwrapper.manifests : k => v
+    if k != local.appwrapper_namespace_key
+  }
+}
+
+# State migration for workspaces that already applied the old single-resource
+# layout: rename the for_each instance to the new standalone resource so
+# terraform does NOT plan a destroy of the namespace (which would cascade and
+# wipe every resource inside it). Remove this block once all environments have
+# applied this change.
+moved {
+  from = kubectl_manifest.appwrapper["/api/v1/namespaces/appwrapper-system"]
+  to   = kubectl_manifest.appwrapper_namespace
+}
+
+resource "kubectl_manifest" "appwrapper_namespace" {
+  yaml_body         = data.kubectl_file_documents.appwrapper.manifests[local.appwrapper_namespace_key]
+  server_side_apply = true
+  force_conflicts   = true
+
+  depends_on = [
+    helm_release.kueue,
+    terraform_data.appwrapper_manifest_integrity,
+  ]
+}
+
 resource "kubectl_manifest" "appwrapper" {
   # Data source resolves at plan time so for_each keys are known.
   # The integrity check (terraform_data.appwrapper_manifest_integrity)
   # is depended-on at the resource level instead of on the data source,
   # so terraform gates the kubectl apply on the SHA-256 verification
   # passing without making the data source's outputs unknown at plan time.
-  for_each = data.kubectl_file_documents.appwrapper.manifests
+  for_each = local.appwrapper_other_manifests
 
   yaml_body         = each.value
   server_side_apply = true
@@ -96,5 +135,6 @@ resource "kubectl_manifest" "appwrapper" {
   depends_on = [
     helm_release.kueue,
     terraform_data.appwrapper_manifest_integrity,
+    kubectl_manifest.appwrapper_namespace,
   ]
 }

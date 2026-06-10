@@ -498,6 +498,7 @@ resource "helm_release" "platforma" {
   # IAM) are guaranteed by install.sh applying the infra module first.
   depends_on = [
     helm_release.kueue,
+    kubectl_manifest.appwrapper_namespace,
     kubectl_manifest.appwrapper,
     kubernetes_secret.license,
     kubernetes_secret.htpasswd_provided,

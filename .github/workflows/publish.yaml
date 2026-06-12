@@ -51,4 +51,26 @@ jobs:
           aws-region: eu-central-1
 
       - name: Upload CFN template to S3
-        run: aws s3 cp ./infrastructure/aws/cloudformation-eks-1-35.yaml s3://platforma-cloudformation/cloudformation-eks-1-35.yaml
+        env:
+          CHART_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          CFN_FILE=./infrastructure/aws/cloudformation/cloudformation-eks-1-35.yaml
+
+          # Fail loudly if the template is missing (e.g. moved by an upstream sync)
+          # instead of silently leaving the public S3 object stale.
+          if [ ! -f "${CFN_FILE}" ]; then
+            echo "::error::CFN template not found at ${CFN_FILE}"
+            exit 1
+          fi
+
+          # Guard: the template's Platforma version must match the chart version
+          # being released, so we never publish a mismatched template.
+          TPL_VERSION=$(sed -nE '/^[[:space:]]*Platforma:/{n;s/.*Version:[[:space:]]*"([^"]+)".*/\1/p}' "${CFN_FILE}")
+          echo "template Platforma version: ${TPL_VERSION}, chart version: ${CHART_VERSION}"
+          if [ "${TPL_VERSION}" != "${CHART_VERSION}" ]; then
+            echo "::error::CFN template version (${TPL_VERSION}) != chart version (${CHART_VERSION})"
+            exit 1
+          fi
+
+          aws s3 cp "${CFN_FILE}" s3://platforma-cloudformation/cloudformation-eks-1-35.yaml --content-type text/yaml

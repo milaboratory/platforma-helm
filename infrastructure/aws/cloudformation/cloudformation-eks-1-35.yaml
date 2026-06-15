@@ -554,7 +554,7 @@ Mappings:
     EKS:
       Version: "1.35"
     Platforma:
-      Version: "4.0.1"
+      Version: "4.0.0"
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
@@ -3237,6 +3237,10 @@ Resources:
                     maxJobResources:
                       cpu: 62
                       memory: 484Gi
+                      # gpuMemory mirrors the largest VRAM provisioned by the
+                      # CF GPU node groups (gpu-96g → g6e.12xlarge, 192 GiB
+                      # VRAM via 8 x L4). Only consumed when GPU_ENABLED=true.
+                      gpuMemory: 192Gi
                     mode: dedicated
                     pools:
                       ui:

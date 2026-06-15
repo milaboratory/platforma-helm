@@ -298,9 +298,12 @@ kueue:
 
   # -- Maximum resources a single job can request
   # Jobs requesting more than this are rejected. Increase if you have large-memory nodes.
+  # gpuMemory is required when kueue.pools.gpu.enabled=true (chart fails to render otherwise);
+  # it is ignored when GPU is disabled. Set it to the largest VRAM on a single GPU node.
   maxJobResources:
     cpu: 64
     memory: 256Gi
+    gpuMemory: 192Gi
 
   # -- Node pool topology — controls where jobs run
   # Set nodeSelector/tolerations to match your node groups.

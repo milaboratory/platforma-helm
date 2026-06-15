@@ -198,9 +198,15 @@ spec:
             {{- end }}
             {{- end }}
             - "--runner-enable-docker"
-            # GPU availability (K8s never auto-probes; explicit on/off based on the GPU pool)
+            # GPU availability (K8s never auto-probes; explicit on/off based on the GPU pool).
+            # When GPU is enabled, --runner-max-gpu-memory-request is required by the
+            # backend and forbidden otherwise — gate the flag on the same condition.
             {{- if .Values.kueue.pools.gpu.enabled }}
             - "--runner-gpu-available=enabled"
+            {{- if not (and .Values.kueue.maxJobResources .Values.kueue.maxJobResources.gpuMemory) }}
+            {{- fail "ERROR: kueue.maxJobResources.gpuMemory is required when kueue.pools.gpu.enabled=true.\nSet it to the largest VRAM available on a single GPU node in your cluster (e.g. 24Gi, 80Gi, 192Gi)." }}
+            {{- end }}
+            - "--runner-max-gpu-memory-request={{ .Values.kueue.maxJobResources.gpuMemory }}"
             {{- else }}
             - "--runner-gpu-available=disabled"
             {{- end }}

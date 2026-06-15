@@ -67,9 +67,12 @@ kueue:
   # overhead minus 1 GiB safety margin for customer-installed DaemonSets.
   # Matches GCP per-job ceiling on n2d-highmem-64 so deployment_size means the
   # same workload capacity on both clouds. Reduce further if you run heavier DS.
+  # gpuMemory mirrors the largest VRAM available across the GPU node groups
+  # provisioned by the CF stack (gpu-96g → g6e.12xlarge, 192 GiB VRAM via 8 x L4).
   maxJobResources:
     cpu: 62
     memory: 484Gi
+    gpuMemory: 192Gi
   mode: dedicated
   # Node pools — controls where jobs run.
   # Must match your EKS node group labels and taints.

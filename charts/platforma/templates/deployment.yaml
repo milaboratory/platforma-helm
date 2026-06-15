@@ -174,7 +174,7 @@ spec:
             - "--primary-storage-s3-external-endpoint={{ .Values.storage.main.s3.externalEndpoint }}"
             {{- end }}
             {{- if .Values.storage.main.s3.noDataIntegrity }}
-            - "--primary-storage-s3-no-data-integrity=true"
+            - "--primary-storage-s3-no-data-integrity"
             {{- end }}
             {{- else if eq $mainType "gcs" }}
             - "--primary-storage-gcs=gs://{{ .Values.storage.main.gcs.bucket }}{{ if .Values.storage.main.gcs.prefix }}/{{ .Values.storage.main.gcs.prefix }}{{ end }}"

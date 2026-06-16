@@ -18,6 +18,11 @@ locals {
   max_job_cpu       = 62
   max_job_memory_gi = 484
 
+  # Per-job GPU memory ceiling. Mirrors the largest VRAM available across the
+  # GPU node groups in infra/nodegroups.tf (gpu-96g → g6e.12xlarge, 192 GiB
+  # VRAM via 8 x L4). Required when var.enable_gpu = true; unused otherwise.
+  max_job_gpu_memory_gi = 192
+
   gpu_queue_gpu       = 8
   gpu_queue_cpu       = 32
   gpu_queue_memory_gi = 128

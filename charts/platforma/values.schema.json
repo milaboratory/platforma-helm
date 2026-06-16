@@ -512,6 +512,9 @@
             },
             "memory": {
               "type": "string"
+            },
+            "gpuMemory": {
+              "type": "string"
             }
           },
           "additionalProperties": false

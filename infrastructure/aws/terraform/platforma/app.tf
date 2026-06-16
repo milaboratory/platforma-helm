@@ -306,10 +306,13 @@ locals {
       }
     }
     kueue = {
-      maxJobResources = {
-        cpu    = local.max_job_cpu
-        memory = "${local.max_job_memory_gi}Gi"
-      }
+      maxJobResources = merge(
+        {
+          cpu    = local.max_job_cpu
+          memory = "${local.max_job_memory_gi}Gi"
+        },
+        var.enable_gpu ? { gpuMemory = "${local.max_job_gpu_memory_gi}Gi" } : {},
+      )
       mode = "dedicated"
       pools = {
         ui = {

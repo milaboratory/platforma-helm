@@ -424,7 +424,9 @@ resource "helm_release" "platforma" {
             # gke.tf). Disable so the chart skips the nvidia-device-plugin
             # DaemonSet, GPU ResourceFlavor + ClusterQueue, and the
             # --runner-gpu-available=enabled flag. Add a GPU pool to gke.tf
-            # before flipping this back on.
+            # before flipping this back on — and set maxJobResources.gpuMemory
+            # to the largest VRAM available on a single GPU node (chart fails
+            # to render otherwise).
             gpu = {
               enabled = false
             }

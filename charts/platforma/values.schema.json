@@ -183,6 +183,40 @@
             }
           },
           "additionalProperties": false
+        },
+        "sso": {
+          "type": "object",
+          "properties": {
+            "issuer": {
+              "type": "string"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "scopes": {
+              "type": "string"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string",
+              "enum": [
+                "",
+                "none",
+                "login",
+                "consent",
+                "select_account"
+              ]
+            },
+            "userIdClaim": {
+              "type": "string"
+            },
+            "groupsClaim": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

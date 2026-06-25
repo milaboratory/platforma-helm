@@ -13,8 +13,9 @@
 {{- end -}}
 {{- if not (or (include "platforma.htpasswdSecretName" .)
                .Values.auth.ldap.server
+               .Values.auth.sso.issuer
                $hasAuthToken ) }}
-{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n\nFor development/testing, pass a static token via app.extraArgs:\n  - \"--auth-token=<token>\"" }}
+{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n  auth.sso.issuer              # SSO / OIDC auth\n\nFor development/testing, pass a static token via app.extraArgs:\n  - \"--auth-token=<token>\"" }}
 {{- end }}
 {{- if and .Values.auth.htpasswd.secretName (gt (len .Values.auth.htpasswd.credentials) 0) }}
 {{- fail "ERROR: Set either auth.htpasswd.secretName or auth.htpasswd.credentials, not both." }}
@@ -255,6 +256,28 @@ spec:
             {{- end }}
             {{- if .Values.auth.ldap.tls.clientCertSecretRef.name }}
             - "--auth-ldap-client-cert=/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.certKey }},/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.keyKey }}"
+            {{- end }}
+            {{- end }}
+            {{- if .Values.auth.sso.issuer }}
+            {{- if not .Values.auth.sso.clientId }}
+            {{- fail "auth.sso.clientId is required when auth.sso.issuer is set" }}
+            {{- end }}
+            - "--sso-idp-issuer={{ .Values.auth.sso.issuer }}"
+            - "--sso-idp-client-id={{ .Values.auth.sso.clientId }}"
+            {{- if .Values.auth.sso.scopes }}
+            - "--sso-idp-scopes={{ .Values.auth.sso.scopes }}"
+            {{- end }}
+            {{- if .Values.auth.sso.resource }}
+            - "--sso-idp-resource={{ .Values.auth.sso.resource }}"
+            {{- end }}
+            {{- if .Values.auth.sso.prompt }}
+            - "--sso-idp-prompt={{ .Values.auth.sso.prompt }}"
+            {{- end }}
+            {{- if .Values.auth.sso.userIdClaim }}
+            - "--sso-idp-user-id-claim={{ .Values.auth.sso.userIdClaim }}"
+            {{- end }}
+            {{- if .Values.auth.sso.groupsClaim }}
+            - "--sso-idp-groups-claim={{ .Values.auth.sso.groupsClaim }}"
             {{- end }}
             {{- end }}
             {{- if .Values.masterSecret.secretName }}

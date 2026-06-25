@@ -163,6 +163,25 @@ auth:
         certKey: "tls.crt"
         keyKey: "tls.key"
 
+  # -- SSO / OIDC authentication (public/native OAuth client, no client secret)
+  # Set issuer to enable. Backend defaults apply to any field left empty;
+  # advanced flags are available via app.extraArgs.
+  sso:
+    # -- OIDC issuer URL (set to enable SSO). Must be https.
+    issuer: ""
+    # -- Public OAuth client ID registered at the IdP (required when issuer set)
+    clientId: ""
+    # -- Space-separated OIDC scopes (must contain 'openid'). Empty = backend default.
+    scopes: ""
+    # -- Optional 'resource'/audience param (RFC 8707). Required by some IdPs.
+    resource: ""
+    # -- OIDC 'prompt' parameter. One of: none, login, consent, select_account. Empty = backend default.
+    prompt: ""
+    # -- JWT claim carrying the stable user id. Empty = backend default ('sub').
+    userIdClaim: ""
+    # -- JWT claim carrying group memberships. Empty = backend default ('groups').
+    groupsClaim: ""
+
 # =============================================================================
 # STORAGE
 # =============================================================================

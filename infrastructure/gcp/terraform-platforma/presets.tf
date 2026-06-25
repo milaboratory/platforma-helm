@@ -98,6 +98,28 @@ locals {
   ]
 
   # ---------------------------------------------------------------------------
+  # GPU capacity envelope per preset. Sizes the Kueue GPU ClusterQueue
+  # admission quota across BOTH GPU SKUs (L4 and RTX PRO 6000). Sized as
+  #   L4_quota × max(g2-standard-*.vcpu/mem) + RTX_quota × max(g4-standard-*.vcpu/mem)
+  # so the GCE regional GPU quotas are the binding constraint (not Kueue).
+  # Max single-GPU shapes:
+  #   L4:           g2-standard-32 → 32 vCPU /  128 GiB / 1 L4
+  #   RTX PRO 6000: g4-standard-48 → 48 vCPU /  192 GiB / 1 RTX PRO 6000
+  #
+  # Per `small`: 8× L4 + 4× RTX → 12 GPUs, 8×32+4×48=448 vCPU,
+  # 8×128+4×192=1792 GiB. GPU counts mirror gpu_l4_max_nodes_per_shape +
+  # gpu_rtx_pro_6000_max_nodes_per_shape in terraform-infra/presets.tf —
+  # each pool can scale to that many nodes; the admission cap here is
+  # per-cluster, not per-pool.
+  # ---------------------------------------------------------------------------
+  gpu_capacity = {
+    small  = { gpus = 12, cpu = 448, memory_gi = 1792 }
+    medium = { gpus = 24, cpu = 896, memory_gi = 3584 }
+    large  = { gpus = 48, cpu = 1792, memory_gi = 7168 }
+    xlarge = { gpus = 96, cpu = 3584, memory_gi = 14336 }
+  }
+
+  # ---------------------------------------------------------------------------
   # Deployment-size presets. Per-preset values mirror AWS CloudFormation
   # so the same label gives the same parallelism on both clouds.
   # ---------------------------------------------------------------------------
@@ -180,4 +202,10 @@ locals {
   # Kueue ClusterQueue total = batch capacity envelope — the admission cap.
   effective_kueue_batch_queue_cpu    = coalesce(var.kueue_batch_queue_cpu, local.total_batch_cpu)
   effective_kueue_batch_queue_memory = coalesce(var.kueue_batch_queue_memory, "${local.total_batch_memory_gi}Gi")
+
+  # Kueue GPU ClusterQueue admission cap. Consumed by kueue.dedicated.resources.gpu
+  # in app.tf only when var.enable_gpu = true; otherwise the values are unused.
+  effective_kueue_gpu_queue_cpu    = coalesce(var.kueue_gpu_queue_cpu, local.gpu_capacity[var.deployment_size].cpu)
+  effective_kueue_gpu_queue_memory = coalesce(var.kueue_gpu_queue_memory, "${local.gpu_capacity[var.deployment_size].memory_gi}Gi")
+  effective_kueue_gpu_queue_count  = coalesce(var.kueue_gpu_queue_count, local.gpu_capacity[var.deployment_size].gpus)
 }

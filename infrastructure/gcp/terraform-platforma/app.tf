@@ -428,7 +428,13 @@ resource "helm_release" "platforma" {
             # to the largest VRAM available on a single GPU node (chart fails
             # to render otherwise).
             gpu = {
-              enabled = false
+              enabled = var.enable_gpu
+              tolerations = [{
+                key      = "nvidia.com/gpu"
+                operator = "Equal"
+                value    = "present"
+                effect   = "NoSchedule"
+              }]
             }
           }
           dedicated = {
@@ -440,6 +446,16 @@ resource "helm_release" "platforma" {
               batch = {
                 cpu    = local.effective_kueue_batch_queue_cpu
                 memory = local.effective_kueue_batch_queue_memory
+              }
+              # GPU ClusterQueue admission cap. Sized from gpu_capacity in
+              # presets.tf so the GCE NVIDIA_L4_GPUS regional quota is the
+              # binding constraint (not Kueue admission). The "gpu" field
+              # name maps to "nvidia.com/gpu" inside the chart template
+              # (helm/charts/platforma/templates/kueue-clusterqueues.yaml).
+              gpu = {
+                cpu    = local.effective_kueue_gpu_queue_cpu
+                memory = local.effective_kueue_gpu_queue_memory
+                gpu    = local.effective_kueue_gpu_queue_count
               }
             }
           }

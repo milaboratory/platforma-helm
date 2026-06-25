@@ -164,8 +164,40 @@ variable "kueue_batch_queue_memory" {
   default     = null
 }
 
+variable "enable_gpu" {
+  type        = bool
+  description = <<-EOT
+    Pass-through of the infra module's enable_gpu. When true, this module
+    flips kueue.pools.gpu.enabled in the chart and sizes the GPU
+    ClusterQueue admission quota from gpu_capacity in presets.tf.
+
+    Must match the infra module's value — install.sh threads the same tfvar
+    through both modules. See terraform-infra/variables.tf for the full
+    description.
+  EOT
+  default     = false
+}
+
+variable "kueue_gpu_queue_cpu" {
+  type        = number
+  description = "Override GPU ClusterQueue CPU quota. null = computed from gpu_capacity preset (small = 8 L4 × 32 vCPU + 4 RTX PRO 6000 × 48 vCPU = 448)."
+  default     = null
+}
+
+variable "kueue_gpu_queue_memory" {
+  type        = string
+  description = "Override GPU ClusterQueue memory quota. null = computed from gpu_capacity preset (small = 8 L4 × 128 GiB + 4 RTX PRO 6000 × 192 GiB = 1792Gi)."
+  default     = null
+}
+
+variable "kueue_gpu_queue_count" {
+  type        = number
+  description = "Override GPU ClusterQueue nvidia.com/gpu count quota. null = gpu_capacity preset (small = 8 L4 + 4 RTX PRO 6000 = 12). Must be ≤ the SUM of the GCE NVIDIA_L4_GPUS and NVIDIA_RTX_PRO_6000_GPUS regional quotas, or scale-up will block at the GCE layer."
+  default     = null
+}
+
 variable "batch_pool_max_nodes_overrides" {
-  type = map(number)
+  type        = map(number)
   description = <<-EOT
     DEPRECATED — no-op since the Node Auto-Provisioning migration. Batch
     capacity is now governed by a cluster-wide envelope (batch_capacity in
@@ -174,7 +206,7 @@ variable "batch_pool_max_nodes_overrides" {
     Variable kept for tfvars backwards-compatibility; will be removed in
     a future release.
   EOT
-  default = {}
+  default     = {}
 }
 
 variable "ui_pool_max_nodes" {

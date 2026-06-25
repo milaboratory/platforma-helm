@@ -90,6 +90,22 @@ xlarge often needs human review (24–72 h). If your project already has
 user-managed quota preferences, the installer detects them and warns if
 their current values are below what your chosen size needs.
 
+## Optional — GPU pools
+
+To run GPU workloads (L4 + RTX PRO 6000 node pools), set `ENABLE_GPU=true`
+before running the installer:
+
+```bash
+export ENABLE_GPU=true
+```
+
+This is opt-in because GPU quotas (`NVIDIA L4 GPUs`, `NVIDIA RTX PRO 6000
+GPUs`) are not auto-submitted by the installer and must be requested
+manually in Cloud Quotas Console before the first install — see the
+[GPU Support section in the runbook](https://github.com/milaboratory/platforma-helm/blob/main/infrastructure/gcp/README.md#gpu-support-opt-in)
+for the full list of SKUs, regional quota names, and per-preset GPU
+capacity envelopes.
+
 ## Step 3 — Run the installer
 
 The installer script collects the remaining inputs (deployment name, region,

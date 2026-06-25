@@ -190,3 +190,200 @@ resource "google_container_node_pool" "ui" {
 # resources here; the ComputeClass's nodePoolAutoCreation provisions pools from
 # its machine-type priority list, with the dedicated=batch:NoSchedule taint and
 # role=batch label from its nodePoolConfig.
+
+# =============================================================================
+# L4 GPU node pools — one static pool per machine shape
+# =============================================================================
+# Gated on var.enable_gpu. When disabled (default), no resources are created
+# and the cluster runs identically to a pre-GPU deployment.
+#
+# Why static pools instead of a ComputeClass:
+#   GKE's Cluster Autoscaler only triggers ComputeClass scale-up when a pod
+#   carries an explicit cloud.google.com/compute-class nodeSelector. Pure
+#   nodeAffinity on the ComputeClass's nodeLabels does NOT match (validated
+#   empirically on psv-gpu2-cluster 2026-06-08, also confirmed in the public
+#   docs at https://docs.cloud.google.com/kubernetes-engine/docs/concepts/about-custom-compute-classes).
+#
+#   Static pools follow the long-standing kubernetes/autoscaler convention:
+#   the CA reads each pool's template node (machine_type, labels, taints,
+#   accelerators) before any node is created and pre-matches pending pods
+#   to the template. A pod with nodeAffinity on platforma.bio/gpu-memory-gib
+#   thus reaches the right pool without any pool name in the pod spec.
+#   Identical mechanism to AWS Cluster Autoscaler's
+#   `k8s.io/cluster-autoscaler/node-template/label/*` ASG tags
+#   (helm/infrastructure/aws/cloudformation/cloudformation-eks-1-35.yaml:2018-2213).
+#
+# Why one pool per machine shape (5 pools instead of 1):
+#   Each shape has a distinct CPU and RAM ceiling. The CA picks the smallest
+#   shape whose template fits the pending pod (OPTIMIZE_UTILIZATION expander,
+#   set on the cluster above). For a small job (e.g. 4 vCPU / 8 GiB / 1 GPU)
+#   that's g2-standard-4; for a large job (32 vCPU / 100 GiB / 1 GPU) that's
+#   g2-standard-32. Bin-packing then co-tenants additional GPU pods on the
+#   same node when possible.
+#
+# Each pool: 1× NVIDIA L4, label platforma.bio/gpu-memory-gib=24 (the SKU
+# contract with the job template's nodeAffinity), label role=gpu, taint
+# nvidia.com/gpu=present:NoSchedule (pods get the toleration from the chart's
+# kueue.pools.gpu.tolerations). Drivers auto-install via
+# gpu_driver_installation_config = DEFAULT (GKE >= 1.32.2 auto-installs the
+# default NVIDIA driver on accelerator nodes; the cluster's REGULAR channel
+# runs >= 1.33 today).
+#
+# autoscaling 0..N: scale-to-zero when no GPU jobs are pending. N comes from
+# the deployment_size preset (presets.tf: gpu_l4_max_nodes_per_shape).
+locals {
+  gpu_l4_pools = var.enable_gpu ? {
+    "g2-standard-4"  = { machine_type = "g2-standard-4" }
+    "g2-standard-8"  = { machine_type = "g2-standard-8" }
+    "g2-standard-12" = { machine_type = "g2-standard-12" }
+    "g2-standard-16" = { machine_type = "g2-standard-16" }
+    "g2-standard-32" = { machine_type = "g2-standard-32" }
+  } : {}
+
+  # RTX PRO 6000 single-GPU shapes. All 4 carry 1× nvidia-rtx-pro-6000 with
+  # 96 GiB VRAM per GPU. Multi-GPU G4 shapes (g4-standard-96, 192, 384) are
+  # deliberately omitted — strict 1-GPU-per-node semantics across the
+  # platforma.bio/gpu-memory-gib tier; CA picks shape by host CPU/RAM fit.
+  gpu_rtx_pro_6000_pools = var.enable_gpu ? {
+    "g4-standard-6"  = { machine_type = "g4-standard-6" }
+    "g4-standard-12" = { machine_type = "g4-standard-12" }
+    "g4-standard-24" = { machine_type = "g4-standard-24" }
+    "g4-standard-48" = { machine_type = "g4-standard-48" }
+  } : {}
+}
+
+resource "google_container_node_pool" "gpu_l4" {
+  for_each = local.gpu_l4_pools
+
+  name     = "gpu-l4-${replace(each.value.machine_type, "g2-standard-", "")}"
+  project  = var.project_id
+  location = local.zone
+  cluster  = google_container_cluster.primary.name
+  # Spread the pool across all L4-supporting zones in var.region by default
+  # (see local.effective_gpu_l4_node_locations). Cluster Autoscaler picks
+  # the zone with available capacity at scale-up — single-zone stockouts
+  # no longer block scheduling. In mixed regions where some zones lack L4,
+  # set var.gpu_l4_node_locations explicitly.
+  node_locations = local.effective_gpu_l4_node_locations
+
+  initial_node_count = 0
+
+  autoscaling {
+    min_node_count = 0
+    max_node_count = local.effective_gpu_l4_max_nodes_per_shape
+  }
+
+  node_config {
+    machine_type = each.value.machine_type
+    disk_type    = "pd-balanced"
+    disk_size_gb = 100
+
+    guest_accelerator {
+      type  = "nvidia-l4"
+      count = 1
+      gpu_driver_installation_config {
+        gpu_driver_version = "LATEST"
+      }
+    }
+
+    labels = {
+      role                           = "gpu"
+      "platforma.bio/gpu-memory-gib" = "24"
+    }
+
+    taint {
+      key    = "nvidia.com/gpu"
+      value  = "present"
+      effect = "NO_SCHEDULE"
+    }
+
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform",
+    ]
+
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+  }
+
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+}
+
+# =============================================================================
+# RTX PRO 6000 (Blackwell) GPU node pools — one static pool per machine shape
+# =============================================================================
+# Gated on var.enable_gpu (same flag as the L4 pools). Identical mechanism:
+# pre-creation template-label matching against pending pod nodeAffinity. Pods
+# requesting platforma.bio/gpu-memory-gib > 24 (anything that doesn't fit on
+# an L4) land here; the L4's preferred-Lt clause and CA's least-waste expander
+# keep small-VRAM jobs on L4.
+#
+# Each pool: 1× nvidia-rtx-pro-6000, labels role=gpu +
+# platforma.bio/gpu-memory-gib=96, taint nvidia.com/gpu=present:NoSchedule,
+# autoscaling 0..effective_gpu_rtx_pro_6000_max_nodes_per_shape (presets.tf).
+#
+# Driver install via gpu_driver_installation_config = DEFAULT (same as L4 —
+# GKE 1.32.2+ auto-installs on accelerator nodes).
+resource "google_container_node_pool" "gpu_rtx_pro_6000" {
+  for_each = local.gpu_rtx_pro_6000_pools
+
+  name     = "gpu-rtx-6000-${replace(each.value.machine_type, "g4-standard-", "")}"
+  project  = var.project_id
+  location = local.zone
+  cluster  = google_container_cluster.primary.name
+  # Spread across all RTX PRO 6000-supporting zones in var.region by default
+  # (local.effective_gpu_rtx_pro_6000_node_locations). In mixed regions
+  # (us-central1 etc.) set var.gpu_rtx_pro_6000_node_locations explicitly.
+  node_locations = local.effective_gpu_rtx_pro_6000_node_locations
+
+  initial_node_count = 0
+
+  autoscaling {
+    min_node_count = 0
+    max_node_count = local.effective_gpu_rtx_pro_6000_max_nodes_per_shape
+  }
+
+  node_config {
+    machine_type = each.value.machine_type
+    # G4 machines only support Hyperdisk-Balanced / Hyperdisk-Extreme boot
+    # disks (not pd-balanced like G2/L4). Per GCP docs:
+    # https://cloud.google.com/compute/docs/disks#hyperdisk-supported-machines
+    disk_type    = "hyperdisk-balanced"
+    disk_size_gb = 100
+
+    guest_accelerator {
+      type  = "nvidia-rtx-pro-6000"
+      count = 1
+      gpu_driver_installation_config {
+        gpu_driver_version = "LATEST"
+      }
+    }
+
+    labels = {
+      role                           = "gpu"
+      "platforma.bio/gpu-memory-gib" = "96"
+    }
+
+    taint {
+      key    = "nvidia.com/gpu"
+      value  = "present"
+      effect = "NO_SCHEDULE"
+    }
+
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform",
+    ]
+
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+  }
+
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+}

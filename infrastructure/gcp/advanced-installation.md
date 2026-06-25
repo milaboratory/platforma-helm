@@ -367,6 +367,40 @@ Or disable auto-request entirely and manage quotas yourself:
 enable_quota_auto_request = false
 ```
 
+### GPU pools
+
+GPU pools (L4 + RTX PRO 6000) are opt-in and gated on `enable_gpu`:
+
+```hcl
+enable_gpu = true
+
+# Optional — override the per-SKU zone lists. The Cloud Shell installer
+# auto-discovers these via `gcptest.sh`; in the local Terraform path you
+# either set them explicitly or run gcptest.sh yourself and copy the lists.
+# L4 is multi-zone (the full machine ladder is available in most us-central1
+# and europe-west zones); RTX PRO 6000 has narrower availability.
+gpu_l4_node_locations            = ["us-central1-a", "us-central1-b", "us-central1-c"]
+gpu_rtx_pro_6000_node_locations  = ["us-central1-b"]
+
+# Optional — override the Kueue GPU ClusterQueue admission caps. By default
+# these scale with `deployment_size` (see README's "GPU Kueue queue" table).
+# kueue_gpu_queue_count   = 12     # max concurrent GPU jobs
+# kueue_gpu_queue_cpu     = 448    # sized to fit gpu_count × largest single-GPU shape
+# kueue_gpu_queue_memory  = "1792Gi"
+```
+
+**GPU quotas are not auto-submitted.** Request `NVIDIA L4 GPUs` and/or
+`NVIDIA RTX PRO 6000 GPUs` in the regional Cloud Quotas Console before
+running `tofu apply` with `enable_gpu = true` — the first GPU pool create
+fails immediately if the regional quota is 0. See the
+[GPU Support section in the runbook](README.md#gpu-support-opt-in) for the
+SKU → quota mapping and per-preset values.
+
+To enable GPU on an existing GPU-less deployment: add `enable_gpu = true`
+(and any zone overrides) to `terraform.tfvars`, then `tofu plan && apply`.
+The plan adds the GPU pools and Kueue GPU flavor without touching the
+existing CPU pools or batch queue.
+
 ## Updates
 
 Edit `terraform.tfvars`, run:

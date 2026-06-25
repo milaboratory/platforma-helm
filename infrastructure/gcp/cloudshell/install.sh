@@ -902,11 +902,12 @@ detect_existing_quota_prefs() {
 #   GCS_FORCE_DESTROY           tfvar
 #   ENABLE_DEMO                 tfvar (set via prompt_var with default 'true')
 #   LDAP_START_TLS              tfvar (set via prompt_var when AUTH_METHOD=ldap)
+#   ENABLE_GPU                  tfvar (hidden — unset = false; opt-in via env)
 # -----------------------------------------------------------------------------
 
 normalize_boolean_inputs() {
   local var val
-  for var in ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS; do
+  for var in ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS ENABLE_GPU; do
     val="${!var:-}"
     [[ -z "${val}" ]] && continue
     case "${val,,}" in
@@ -1356,6 +1357,59 @@ build_tfvars_json_full() {
     doc="$(echo "${doc}" | jq --arg v "${RESOURCE_NAME_PREFIX}" '. + {resource_name_prefix: $v}')"
   fi
 
+  # Hidden override: provision GPU support (L4 + RTX PRO 6000 node pools +
+  # Kueue GPU pool). Set ENABLE_GPU=true to enable. Default false — GPU path
+  # stays dormant. Opt-in via env var only because the NVIDIA_*_GPUS quotas
+  # aren't auto-requested (operator must arrange them separately).
+  #
+  # When enabled, also runs gcptest.sh discover for each SKU to find the
+  # zones in var.region where the full machine-type ladder is available,
+  # and embeds the resulting zone lists in gpu_l4_node_locations /
+  # gpu_rtx_pro_6000_node_locations. Discovery uses gcloud (available
+  # locally in CloudShell); IM's tf-runner doesn't ship gcloud, which is
+  # why discovery has to happen here rather than at terraform plan time.
+  # If the region has no zone with a SKU's full ladder, discover exits
+  # non-zero and we abort the deploy with a clear error.
+  if [[ -n "${ENABLE_GPU:-}" ]]; then
+    doc="$(echo "${doc}" | jq --argjson v "${ENABLE_GPU}" '. + {enable_gpu: $v}')"
+
+    if [[ "${ENABLE_GPU}" == "true" ]]; then
+      local gcptest="${GCP_DIR}/terraform-infra/gcptest.sh"
+      if [[ ! -x "${gcptest}" ]]; then
+        red "ENABLE_GPU=true but discovery script not found at ${gcptest}"; exit 1
+      fi
+      local discover_stderr
+      discover_stderr="$(mktemp)"
+      for sku in nvidia-l4 nvidia-rtx-pro-6000; do
+        info "Discovering ${sku} zones in region ${REGION}…"
+        local discover_stdout discover_rc zones_csv
+        discover_stdout="$(printf '{"project":"%s","region":"%s","sku":"%s"}' "${PROJECT_ID}" "${REGION}" "${sku}" | "${gcptest}" discover 2>"${discover_stderr}")"
+        discover_rc=$?
+        if [[ ${discover_rc} -ne 0 ]]; then
+          red "$(cat "${discover_stderr}")"
+          rm -f "${discover_stderr}"
+          exit 1
+        fi
+        zones_csv="$(printf '%s' "${discover_stdout}" | jq -r .zones)"
+        if [[ -z "${zones_csv}" || "${zones_csv}" == "null" ]]; then
+          red "discover returned empty zone list for ${sku} in ${REGION}"
+          rm -f "${discover_stderr}"
+          exit 1
+        fi
+        info "  → ${sku}: ${zones_csv}"
+        local var_name
+        case "${sku}" in
+          nvidia-l4)           var_name=gpu_l4_node_locations ;;
+          nvidia-rtx-pro-6000) var_name=gpu_rtx_pro_6000_node_locations ;;
+        esac
+        local zones_json; zones_json="$(printf '%s' "${zones_csv}" | jq -R 'split(",")')"
+        doc="$(echo "${doc}" | jq --argjson v "${zones_json}" --arg k "${var_name}" '. + {($k): $v}')"
+      done
+      rm -f "${discover_stderr}"
+    fi
+  fi
+
+
   # Platforma container image override — pin the binary to a specific tag,
   # e.g. a dev build from main pushed to the project's GAR for testing chart
   # changes against an unreleased platforma version.
@@ -1432,6 +1486,7 @@ build_tfvars_json_infra() {
     ingress_enabled, domain_name, dns_zone_name, dns_zone_project,
     enable_google_batch,
     enable_quota_auto_request, contact_email, skip_quota_requests,
+    enable_gpu, gpu_l4_node_locations, gpu_rtx_pro_6000_node_locations,
     kueue_max_job_cpu, kueue_max_job_memory,
     kueue_batch_queue_cpu, kueue_batch_queue_memory
   } | with_entries(select(.value != null))' "${full}" > "${out}"
@@ -1458,6 +1513,8 @@ build_tfvars_json_platforma() {
         ingress_enabled, domain_name,
         kueue_max_job_cpu, kueue_max_job_memory,
         kueue_batch_queue_cpu, kueue_batch_queue_memory,
+        enable_gpu,
+        kueue_gpu_queue_cpu, kueue_gpu_queue_memory, kueue_gpu_queue_count,
         batch_pool_max_nodes_overrides, ui_pool_max_nodes, workspace_capacity_gb,
         license_key, platforma_chart_version, helm_chart_repository,
         platforma_image_override, deploy_platforma,

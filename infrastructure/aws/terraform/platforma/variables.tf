@@ -122,7 +122,7 @@ variable "deploy_platforma" {
 variable "chart_version" {
   type        = string
   description = "Platforma Helm chart version to pull from the OCI registry. Ignored when chart_local_path is set."
-  default     = "3.5.0"
+  default     = "4.1.2"
 }
 
 variable "chart_repository" {

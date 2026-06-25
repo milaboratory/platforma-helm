@@ -38,7 +38,7 @@ license_key = "your-license-key"
 master_secret_ssm_parameter_name = "/your-cluster-name/platforma/master-secret"
 
 # Chart source: pinned OCI release by default. Override for a local chart:
-# chart_version    = "3.5.0"
+# chart_version    = "4.1.2"
 # chart_local_path = "../../../../charts/platforma"   # dev / air-gapped
 # platforma_image  = "quay.io/milaboratories/platforma:1.2.3"  # repository:tag
 

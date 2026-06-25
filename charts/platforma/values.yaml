@@ -24,7 +24,7 @@ fullnameOverride: ""
 # -- Container image
 image:
   repository: quay.io/milaboratories/platforma
-  tag: ""  # Defaults to Chart.appVersion
+  tag: "" # Defaults to Chart.appVersion
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -151,7 +151,7 @@ auth:
       # -- Skip server certificate verification (not recommended for production)
       insecureSkipVerify: false
       # -- CA certificate: safe way to trust self-signed certificate of LDAP server.
-      # If your LDAP server uses self-signed certificate, or all traffic to LDAP server is 
+      # If your LDAP server uses self-signed certificate, or all traffic to LDAP server is
       # intercepted by some network proxy (like ZScaler), provide this certificate's CA here
       # instead of using `insecureSkipVerify: true`
       caSecretRef:
@@ -181,6 +181,11 @@ auth:
     userIdClaim: ""
     # -- JWT claim carrying group memberships. Empty = backend default ('groups').
     groupsClaim: ""
+    clientSecret:
+      # -- Name of existing K8s Secret containing the IdP client secret
+      secretName: ""
+      # -- Key within the secret
+      secretKey: "client-secret"
 
 # =============================================================================
 # STORAGE
@@ -258,10 +263,10 @@ storage:
       bucket: ""
       region: ""
       prefix: ""
-      endpoint: ""            # Custom S3-compatible endpoint (leave empty for AWS S3)
-      externalEndpoint: ""    # S3 URL for Desktop App if it differs from backend's (S3-compatible only)
-      noDataIntegrity: false  # Disable SHA256 integrity checks (Ceph, old MinIO)
-      secretRef:              # Only needed for non-IRSA setups or S3-compatible storage
+      endpoint: "" # Custom S3-compatible endpoint (leave empty for AWS S3)
+      externalEndpoint: "" # S3 URL for Desktop App if it differs from backend's (S3-compatible only)
+      noDataIntegrity: false # Disable SHA256 integrity checks (Ceph, old MinIO)
+      secretRef: # Only needed for non-IRSA setups or S3-compatible storage
         name: ""
         accessKeyField: "access-key"
         secretKeyField: "secret-key"
@@ -270,7 +275,7 @@ storage:
       bucket: ""
       projectId: ""
       prefix: ""
-      serviceAccount: ""  # GCP service account for Workload Identity
+      serviceAccount: "" # GCP service account for Workload Identity
 
 # -- External read-only data sources (data library)
 # Makes external datasets available to workflows. Each source appears
@@ -313,7 +318,7 @@ dataSources: []
 
 kueue:
   # -- Mode: dedicated (chart creates all resources) or shared (uses existing queues)
-  mode: dedicated  # dedicated | shared
+  mode: dedicated # dedicated | shared
 
   # -- Maximum resources a single job can request
   # Jobs requesting more than this are rejected. Increase if you have large-memory nodes.
@@ -406,8 +411,8 @@ kueue:
   shared:
     # -- ClusterQueue names (chart creates LocalQueues pointing at these)
     clusterQueues:
-      ui: ""       # ClusterQueue for UI tasks
-      batch: ""    # ClusterQueue for batch tasks
+      ui: "" # ClusterQueue for UI tasks
+      batch: "" # ClusterQueue for batch tasks
     # -- WorkloadPriorityClass names (must already exist in cluster)
     workloadPriorityClasses:
       uiTasks: ""
@@ -429,7 +434,7 @@ ingress:
   host: ""
   tls:
     enabled: false
-    secretName: ""  # Leave empty when the ingress controller manages TLS (e.g., ALB with ACM)
+    secretName: "" # Leave empty when the ingress controller manages TLS (e.g., ALB with ACM)
   annotations: {}
 
 # -- Additional ingress (e.g., internal network, second region)
@@ -520,11 +525,11 @@ app:
     persistence:
       enabled: true
       size: 20Gi
-      storageClass: ""      # "" = cluster default
-      existingClaim: ""     # Use pre-created PVC instead of creating one
+      storageClass: "" # "" = cluster default
+      existingClaim: "" # Use pre-created PVC instead of creating one
       rotation:
-        size: 1Gi           # Rotate when a log file reaches this size
-        count: 100          # Number of rotated files to keep
+        size: 1Gi # Rotate when a log file reaches this size
+        count: 100 # Number of rotated files to keep
 
   # -- Monitoring
   # Platforma exposes Prometheus metrics. To enable scraping:
@@ -538,7 +543,6 @@ app:
     gkeMonitoring:
       enabled: false
       interval: 30s
-
 
 # =============================================================================
 # SERVICE ACCOUNTS

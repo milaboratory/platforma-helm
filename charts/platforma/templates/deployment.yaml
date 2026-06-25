@@ -283,6 +283,9 @@ spec:
             {{- if .Values.masterSecret.secretName }}
             - "--master-secret-file={{ include "platforma.path.secrets" . }}/master-secret/{{ .Values.masterSecret.secretKey }}"
             {{- end }}
+            {{- if .Values.auth.sso.clientSecret.secretName }}
+            - "--sso-idp-client-secret-file={{ include "platforma.path.secrets" . }}/sso-client-secret/{{ .Values.auth.sso.clientSecret.secretKey }}"
+            {{- end }}
             # Disable default host data library (exposes entire pod filesystem)
             - "--no-host-data-library"
             # Data library sources
@@ -478,6 +481,11 @@ spec:
               mountPath: {{ include "platforma.path.secrets" . }}/master-secret
               readOnly: true
             {{- end }}
+            {{- if .Values.auth.sso.clientSecret.secretName }}
+            - name: sso-client-secret
+              mountPath: {{ include "platforma.path.secrets" . }}/sso-client-secret
+              readOnly: true
+            {{- end }}
             {{- range .Values.dataSources }}
             {{- if eq .type "pvc" }}
             - name: datasource-{{ .name }}
@@ -536,6 +544,14 @@ spec:
             items:
               - key: {{ .Values.masterSecret.secretKey }}
                 path: {{ .Values.masterSecret.secretKey }}
+        {{- end }}
+        {{- if .Values.auth.sso.clientSecret.secretName }}
+        - name: sso-client-secret
+          secret:
+            secretName: {{ .Values.auth.sso.clientSecret.secretName }}
+            items:
+              - key: {{ .Values.auth.sso.clientSecret.secretKey }}
+                path: {{ .Values.auth.sso.clientSecret.secretKey }}
         {{- end }}
         {{- range .Values.dataSources }}
         {{- if eq .type "pvc" }}

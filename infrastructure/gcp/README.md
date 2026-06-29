@@ -131,10 +131,10 @@ If your project already has user-managed quota preferences, the installer
 detects them, skips re-requesting (the API rejects duplicate creates), and
 warns when an existing value is below the chosen preset's requirement.
 
-## GPU Support (Opt-In)
+## GPU Support (Opt-Out)
 
-GPU node pools are provisioned only when `ENABLE_GPU=true` is set on the
-installer (default off — the GPU path stays dormant). Two SKUs are supported,
+GPU node pools are provisioned **by default** (`ENABLE_GPU=true`) — set
+`ENABLE_GPU=false` to opt out and skip all GPU pools. Two SKUs are supported,
 each with its own ladder of machine shapes:
 
 | SKU | Shapes | Architecture | VRAM | Typical use |
@@ -216,6 +216,11 @@ planner often refuses GPU scale-ups that a plain MIG resize would satisfy
 (per `(machine-type, zone)` inventory variance), and atomic reservation is
 unnecessary for single-pod GPU blocks anyway. ProvReq remains on the CPU
 batch flavor where multi-pod atomicity is a real benefit.
+
+### Ensure cluster routes GPU tasks properly
+
+Add block 'GPU Detection' and run it with default settings. First run may 
+require up to 10-15 minutes. GPU node look up is slower than for regular nodes.
 
 ## Cost notes
 
@@ -405,13 +410,14 @@ export ENABLE_QUOTA_AUTO_REQUEST=false
 export GCS_FORCE_DESTROY=true
 
 # Provision GPU node pools (L4 + RTX PRO 6000) and the Kueue GPU queue.
-# Default is off. See "GPU Support" above for the manual GPU quota request
+# Default is ON (opt-out) — set ENABLE_GPU=false to skip all GPU pools.
+# See "GPU Support" above for the manual GPU quota request
 # step that MUST precede setting this to true — terraform apply fails on
 # the first GPU pool create if the regional NVIDIA_*_GPUS quota is 0.
 # Setting this on an existing deployment is supported: re-run install.sh
 # with ENABLE_GPU=true and the same env vars as your prior install; the
 # next IM revision adds the GPU pools without touching anything else.
-export ENABLE_GPU=true
+export ENABLE_GPU=false
 ```
 
 ### Path 2 — edit inputs in the IM Console (no script)

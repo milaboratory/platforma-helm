@@ -85,6 +85,11 @@ Other regions (eu-west-1, eu-west-2, ap-south-1, ca-central-1) have partial or n
 | gpu-48g  | g6e.2xlarge  | 1× L40S    | 48 GB  | 8    | 64 GB  | $2.36   | Large language models, structure prediction |
 | gpu-96g  | g6e.12xlarge | 4× L40S    | 192 GB | 48   | 384 GB |  $10.59 | Multi-GPU, large model complexes |
 
+**Ensure cluster routes GPU tasks properly:**
+
+Add block 'GPU Detection' and run it with default settings. First run may
+require up to 10-15 minutes. GPU node look up is slower than for regular nodes.
+
 ## 1. Deploy CloudFormation stack
 
 ### Step 1. Create stack
@@ -265,6 +270,11 @@ The username is `platforma`. The stack generates the password once and reuses it
 
 ALB provisioning and DNS propagation take 1-3 minutes after the stack completes. If the connection fails right away,
 wait and retry.
+
+### Ensure cluster routes GPU tasks properly
+
+Add block 'GPU Detection' and run it with default settings. First run may
+require up to 10-15 minutes. GPU node look up is slower than for regular nodes.
 
 ---
 

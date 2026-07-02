@@ -158,11 +158,42 @@ If you don't have a domain yet, see [How to register a domain in AWS](domain-gui
 
 | Parameter        | Default    | Description                                                                                                                                                                         |
 |------------------|------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Auth method      | `htpasswd` | `htpasswd` for file-based auth, `ldap` for LDAP                                                                                                                                     |
+| Auth method      | `htpasswd` | `htpasswd` for file-based auth, `ldap` for LDAP, `sso` for OIDC single sign-on                                                                                                      |
 | Htpasswd content | *(empty)*  | Pre-generated htpasswd string. When empty, the stack generates a random password and stores it in SSM Parameter Store (see Step 2). Generate manually with `htpasswd -nB username`. |
+| Sso issuer       | *(empty)*  | OIDC issuer URL, e.g. `https://idp.example.com/oidc`. Required when Auth method is `sso`. Must be `https`.                                                                          |
+| Sso client id    | *(empty)*  | Public OAuth client ID registered at the IdP as a native/public app. Required when Auth method is `sso`.                                                                           |
+
+The three methods are mutually exclusive — supplying another method's fields alongside the selected one is rejected at stack-create.
 
 For LDAP, fill in the LDAP parameters (server URL, bind DN, search rules). See the parameter descriptions in the
 CloudFormation Console for details.
+
+#### SSO (OIDC)
+
+SSO uses a **public/native OAuth client** — no client secret is stored anywhere.
+
+You need first to create/register new SSO application in your OIDC provider service. Choose PKCE flow for this new application you create for Platforma.
+
+CloudFormation does NOT configure SSO integration for you. It only configures Platforma Backend to integrate with existing SSO infrastructure your company already has. If you don't have SSO - configure it first to use this feature.
+
+`AuthMethod` offers two SSO presets. Pick the one matching your IdP and fill the
+parameters in the matching console group:
+
+| AuthMethod | Required parameters                | Predefined / derived                                  |
+|------------|------------------------------------|-------------------------------------------------------|
+| `google`   | `GoogleClientId`, `GoogleClientSecret` | issuer `https://accounts.google.com`, scopes, prompt  |
+| `entra`    | `EntraIssuer` or `EntraTenantId`, plus `EntraClientId` | issuer URL preferred; tenant GUID auto-derives `https://login.microsoftonline.com/{tenant}/v2.0` |
+
+A `*ConfigRequired` rule fails stack-create if a method's required parameters are missing.
+Discovery is fetched from `{issuer}/.well-known/openid-configuration` at runtime.
+
+The advanced backend flags not exposed here (`subject-token-source`, `jwt-algorithm`,
+`redirect-port`) fall back to backend defaults. To override them, use the chart's `auth.sso.*`
+block or `app.extraArgs` via the [advanced-installation](advanced-installation.md) path.
+
+> **Switching an existing instance's auth method (e.g. LDAP→SSO) is a manual operation** — see the
+> [LDAP→SSO migration runbook](../../ldap-to-sso-migration.md). It is not automated by this installer and
+> carries identity-remap, lockout, and session-loss risks.
 
 ### Cluster sizing
 

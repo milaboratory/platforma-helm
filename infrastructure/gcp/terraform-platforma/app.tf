@@ -128,10 +128,49 @@ locals {
     }
   }
 
+  # Google: issuer/scopes/prompt/accessType are predefined; operator supplies the client ID and secret.
+  # accessType=offline is required for Google to return a refresh token (backend rejects login without one).
+  _auth_google = {
+    sso = {
+      issuer     = "https://accounts.google.com"
+      clientId   = var.google_client_id
+      scopes     = "openid profile email"
+      prompt     = "consent"
+      accessType = "offline"
+      clientSecret = {
+        secretName = "platforma-sso-client-secret"
+      }
+    }
+  }
+
+  # Entra: issuer is derived from the tenant ID.
+  _auth_entra = {
+    sso = {
+      issuer   = "https://login.microsoftonline.com/${var.entra_tenant_id}/v2.0"
+      clientId = var.entra_client_id
+    }
+  }
+
+  # Custom OIDC: empty optional fields are skipped by the chart (backend defaults apply).
+  _auth_oidc = {
+    sso = {
+      issuer      = var.oidc_issuer
+      clientId    = var.oidc_client_id
+      scopes      = var.oidc_scopes
+      resource    = var.oidc_resource
+      prompt      = var.oidc_prompt
+      userIdClaim = var.oidc_user_id_claim
+      groupsClaim = var.oidc_groups_claim
+    }
+  }
+
   auth_helm_value = merge(
     (var.auth_method == "ldap") ? local._auth_ldap : {},
     (var.auth_method == "htpasswd" && var.htpasswd_content != "") ? local._auth_htpasswd_content : {},
     (var.auth_method == "htpasswd" && var.htpasswd_content == "") ? local._auth_htpasswd_auto : {},
+    (var.auth_method == "google") ? local._auth_google : {},
+    (var.auth_method == "entra") ? local._auth_entra : {},
+    (var.auth_method == "oidc") ? local._auth_oidc : {},
   )
 }
 
@@ -272,6 +311,23 @@ resource "kubernetes_secret" "ldap_search_password" {
 
   data = {
     password = var.ldap_search_password
+  }
+
+  type = "Opaque"
+}
+
+# SSO client secret (Google requires one even for PKCE). The chart references it
+# via auth.sso.clientSecret.secretName.
+resource "kubernetes_secret" "sso_client_secret" {
+  count = (var.auth_method == "google" && var.google_client_secret != "") ? 1 : 0
+
+  metadata {
+    name      = "platforma-sso-client-secret"
+    namespace = kubernetes_namespace.platforma.metadata[0].name
+  }
+
+  data = {
+    "client-secret" = var.google_client_secret
   }
 
   type = "Opaque"
@@ -540,6 +596,26 @@ resource "helm_release" "platforma" {
     kubernetes_secret.license,
     kubernetes_secret.htpasswd_provided,
     kubernetes_secret.ldap_search_password,
+    kubernetes_secret.sso_client_secret,
     kubernetes_secret.master_secret,
   ]
+
+  lifecycle {
+    precondition {
+      condition     = var.auth_method != "google" || var.google_client_id != ""
+      error_message = "google_client_id is required when auth_method is 'google'."
+    }
+    precondition {
+      condition     = var.auth_method != "google" || var.google_client_secret != ""
+      error_message = "google_client_secret is required when auth_method is 'google'."
+    }
+    precondition {
+      condition     = var.auth_method != "entra" || (var.entra_tenant_id != "" && var.entra_client_id != "")
+      error_message = "entra_tenant_id and entra_client_id are both required when auth_method is 'entra'."
+    }
+    precondition {
+      condition     = var.auth_method != "oidc" || (var.oidc_issuer != "" && var.oidc_client_id != "")
+      error_message = "oidc_issuer and oidc_client_id are both required when auth_method is 'oidc'."
+    }
+  }
 }

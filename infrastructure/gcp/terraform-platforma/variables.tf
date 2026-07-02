@@ -267,12 +267,12 @@ variable "admin_username" {
 
 variable "auth_method" {
   type        = string
-  description = "Authentication method: 'htpasswd' (local) or 'ldap' (corporate directory)."
+  description = "Authentication method: 'htpasswd' (local), 'ldap' (corporate directory), or SSO via 'google', 'entra', or 'oidc'."
   default     = "htpasswd"
 
   validation {
-    condition     = contains(["htpasswd", "ldap"], var.auth_method)
-    error_message = "auth_method must be one of: htpasswd, ldap."
+    condition     = contains(["htpasswd", "ldap", "google", "entra", "oidc"], var.auth_method)
+    error_message = "auth_method must be one of: htpasswd, ldap, google, entra, oidc."
   }
 }
 
@@ -318,6 +318,84 @@ variable "ldap_search_password" {
   description = "Password for ldap_search_user."
   default     = ""
   sensitive   = true
+}
+
+# --- Google Workspace SSO (auth_method=google) ---
+# Issuer, scopes and prompt are predefined; operator supplies the client ID and secret.
+variable "google_client_id" {
+  type        = string
+  description = "Google OAuth client ID (required when auth_method=google)."
+  default     = ""
+}
+
+# Google's token endpoint requires a client secret even for the PKCE flow.
+variable "google_client_secret" {
+  type        = string
+  description = "Google OAuth client secret (required when auth_method=google)."
+  default     = ""
+  sensitive   = true
+}
+
+# --- Microsoft Entra ID SSO (auth_method=entra) ---
+# Issuer is derived as https://login.microsoftonline.com/{tenant}/v2.0.
+variable "entra_tenant_id" {
+  type        = string
+  description = "Entra directory (tenant) ID (required when auth_method=entra)."
+  default     = ""
+}
+
+variable "entra_client_id" {
+  type        = string
+  description = "Entra application (client) ID (required when auth_method=entra)."
+  default     = ""
+}
+
+# --- Custom OIDC SSO (auth_method=oidc) ---
+variable "oidc_issuer" {
+  type        = string
+  description = "OIDC issuer URL (required when auth_method=oidc)."
+  default     = ""
+
+  validation {
+    condition     = var.oidc_issuer == "" || can(regex("^https://\\S+$", var.oidc_issuer))
+    error_message = "oidc_issuer must be a valid https:// URL."
+  }
+}
+
+variable "oidc_client_id" {
+  type        = string
+  description = "Public OAuth client ID (required when auth_method=oidc)."
+  default     = ""
+}
+
+variable "oidc_scopes" {
+  type        = string
+  description = "Space-separated OIDC scopes (must contain 'openid'). Empty = backend default."
+  default     = ""
+}
+
+variable "oidc_resource" {
+  type        = string
+  description = "Optional 'resource'/audience parameter (RFC 8707)."
+  default     = ""
+}
+
+variable "oidc_prompt" {
+  type        = string
+  description = "Optional OIDC 'prompt' parameter (none|login|consent|select_account)."
+  default     = ""
+}
+
+variable "oidc_user_id_claim" {
+  type        = string
+  description = "Optional JWT claim carrying the stable user id (backend default 'sub')."
+  default     = ""
+}
+
+variable "oidc_groups_claim" {
+  type        = string
+  description = "Optional JWT claim carrying group memberships."
+  default     = ""
 }
 
 # -----------------------------------------------------------------------------

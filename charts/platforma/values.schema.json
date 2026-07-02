@@ -187,6 +187,10 @@
               "type": "string",
               "enum": ["", "none", "login", "consent", "select_account"]
             },
+            "accessType": {
+              "type": "string",
+              "enum": ["", "online", "offline"]
+            },
             "userIdClaim": {
               "type": "string"
             },
@@ -196,8 +200,12 @@
             "clientSecret": {
               "type": "object",
               "properties": {
-                "secretName": { "type": "string" },
-                "secretKey": { "type": "string" }
+                "secretName": {
+                  "type": "string"
+                },
+                "secretKey": {
+                  "type": "string"
+                }
               },
               "additionalProperties": false
             }

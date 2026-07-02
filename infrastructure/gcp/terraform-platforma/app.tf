@@ -75,6 +75,15 @@ locals {
   # Image override → split repo:tag or just repo (let chart fill tag from appVersion)
   image_override_parts = var.platforma_image_override != "" ? split(":", var.platforma_image_override) : []
 
+  # Block software images default to containers.pl-open.science/milaboratories/pl-containers
+  # (served from quay.io). Rewrite that prefix to the per-install GAR pull-through cache the
+  # infra module creates (terraform-infra/gar.tf), so the cluster pulls from a same-region
+  # mirror. Mirrors the AWS ecr_registry local (aws/terraform/platforma/data.tf). The repo id
+  # must match terraform-infra: ${resource_name_prefix}-containers.
+  image_cache_registry         = "${var.region}-docker.pkg.dev/${var.project_id}/${var.resource_name_prefix}-containers"
+  default_docker_registry      = "${local.image_cache_registry}/milaboratories/pl-containers"
+  artifact_registry_login_host = "${var.region}-docker.pkg.dev"
+
   # Auth Helm values — branches on auth_method:
   #   ldap                                → ldap.* block
   #   htpasswd + htpasswd_content         → reference user-supplied secret
@@ -500,6 +509,16 @@ resource "helm_release" "platforma" {
           serviceAppProtocols = {
             grpc = "kubernetes.io/h2c"
           }
+
+          # Pull block software images through the GAR quay.io mirror (the infra
+          # module's pull-through cache) instead of from quay.io directly. The
+          # --google-artifact-registry flag lets Google Batch job VMs docker-login
+          # to GAR with an SA token; it is a no-op on the GKE/Kueue path (kubelet
+          # pulls with the node SA) and harmless when Batch is disabled.
+          extraArgs = [
+            "--default-docker-registry=${local.default_docker_registry}",
+            "--google-artifact-registry=${local.artifact_registry_login_host}",
+          ]
         }
       }
     ))

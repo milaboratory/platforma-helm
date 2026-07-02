@@ -214,6 +214,47 @@ change rolls the `platforma-htpasswd-provided` secret. Non-interactive form
 (password on the command line, lands in shell history): `htpasswd -cbB
 ./htpasswd alice 'S3cret!'`.
 
+### SSO (OIDC) authentication
+
+PKCE auth-code flow. Most IdPs use a public/native client with no secret; Google
+requires a client secret even for PKCE. Three presets via `auth_method`:
+
+```hcl
+# Google Workspace — issuer, scopes and prompt are predefined.
+auth_method          = "google"
+google_client_id     = "12345-abc.apps.googleusercontent.com"
+google_client_secret = "GOCSPX-..."
+```
+
+```hcl
+# Microsoft Entra ID — issuer derived from the tenant.
+auth_method     = "entra"
+entra_tenant_id = "00000000-0000-0000-0000-000000000000"
+entra_client_id = "11111111-2222-3333-4444-555555555555"
+```
+
+```hcl
+# Any OIDC provider — full control. Optional fields default to backend values.
+auth_method        = "oidc"
+oidc_issuer        = "https://idp.example.com/oidc"
+oidc_client_id     = "<client-id>"
+oidc_scopes        = "openid profile email"   # optional
+oidc_resource      = ""                        # optional
+oidc_prompt        = ""                        # optional
+oidc_user_id_claim = ""                        # optional
+oidc_groups_claim  = ""                        # optional
+```
+
+The installer rejects a method whose required inputs are missing (and a
+non-`https` OIDC issuer). Advanced backend flags not exposed as tfvars
+(`subject-token-source`, `jwt-algorithm`, `redirect-port`) default to backend
+values. Override them through the chart's `auth.sso.*` block or `app.extraArgs`.
+
+> **Switching an existing instance's auth method (e.g. LDAP→SSO) is a manual
+> operation** — see the [LDAP→SSO migration runbook](../ldap-to-sso-migration.md).
+> It is not automated by this installer and carries identity-remap, lockout, and
+> session-loss risks.
+
 ### Master secret
 
 The chart requires a root key — the **master secret** — for security layer

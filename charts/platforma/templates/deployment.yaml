@@ -273,6 +273,9 @@ spec:
             {{- if .Values.auth.sso.prompt }}
             - "--sso-idp-prompt={{ .Values.auth.sso.prompt }}"
             {{- end }}
+            {{- if .Values.auth.sso.accessType }}
+            - "--sso-idp-access-type={{ .Values.auth.sso.accessType }}"
+            {{- end }}
             {{- if .Values.auth.sso.userIdClaim }}
             - "--sso-idp-user-id-claim={{ .Values.auth.sso.userIdClaim }}"
             {{- end }}

@@ -287,6 +287,26 @@ Two methods supported (mirrors the AWS CloudFormation runbook):
     `platforma-htpasswd-provided` secret updates on the next revision.
 - **LDAP** (`auth_method=ldap`) — corporate directory integration. Supports
   direct-bind (template) or search-bind (rules + service-account creds).
+- **SSO** — OIDC single sign-on (PKCE auth-code flow). Most IdPs use a
+  public/native client with no secret; Google requires a client secret even for
+  PKCE. Three presets, selected by `auth_method`:
+
+  | `auth_method` | Required inputs / tfvars            | Predefined / derived |
+  |---|---|---|
+  | `google` | `google_client_id`, `google_client_secret` | issuer `https://accounts.google.com`, scopes, prompt |
+  | `entra`  | `entra_tenant_id`, `entra_client_id` | issuer `https://login.microsoftonline.com/{tenant}/v2.0` |
+  | `oidc`   | `oidc_issuer` (`https`), `oidc_client_id` | optional `oidc_scopes`, `oidc_resource`, `oidc_prompt`, `oidc_user_id_claim`, `oidc_groups_claim` |
+
+  The installer rejects a method whose required inputs are missing (and a
+  non-`https` OIDC issuer) before deploying. Advanced backend flags not exposed
+  here (`subject-token-source`, `jwt-algorithm`, `redirect-port`) default to
+  backend values; override them via the chart's `auth.sso.*` block or
+  `app.extraArgs` advanced path.
+
+  > **Switching an existing instance's auth method (e.g. LDAP→SSO) is a manual
+  > operation** — see the [LDAP→SSO migration runbook](../ldap-to-sso-migration.md).
+  > It is not automated by this installer and carries identity-remap, lockout, and
+  > session-loss risks.
 
 ## Data libraries
 
@@ -331,7 +351,9 @@ PVC) survives across updates.
   re-deploy. The chart's `appVersion` flows to the running pod, which rolls
   with ~15-30 sec of gRPC blip. Desktop App reconnects automatically.
 - **Add / remove / edit data libraries**: bump the list, re-deploy.
-- **Switch auth** (htpasswd ↔ LDAP): change vars, re-deploy.
+- **Switch auth** (htpasswd ↔ LDAP): change vars, re-deploy. Switching an
+  existing instance to/from **SSO** re-homes user identities — follow the
+  [LDAP→SSO migration runbook](../ldap-to-sso-migration.md), not a plain re-deploy.
 - **Resize**: change `deployment_size`, re-deploy. The installer auto-submits
   the new quota requests; node pools resize on next scheduling.
 - **Recreation-required changes** (`region`, `cluster_name`, `zone_suffix`,

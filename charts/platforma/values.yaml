@@ -163,7 +163,7 @@ auth:
         certKey: "tls.crt"
         keyKey: "tls.key"
 
-  # -- SSO / OIDC authentication (public/native OAuth client, no client secret)
+  # -- SSO / OIDC authentication.
   # Set issuer to enable. Backend defaults apply to any field left empty;
   # advanced flags are available via app.extraArgs.
   sso:
@@ -177,14 +177,19 @@ auth:
     resource: ""
     # -- OIDC 'prompt' parameter. One of: none, login, consent, select_account. Empty = backend default.
     prompt: ""
+    # -- OIDC 'access_type' parameter. One of: online, offline. Google requires 'offline'
+    # to issue a refresh token; other IdPs ignore it. Empty = backend default.
+    accessType: ""
     # -- JWT claim carrying the stable user id. Empty = backend default ('sub').
     userIdClaim: ""
     # -- JWT claim carrying group memberships. Empty = backend default ('groups').
     groupsClaim: ""
+    # -- OAuth client secret, referenced from an existing secret. Some IdPs (e.g.
+    # Google) require one. The installers create this secret and set secretName.
     clientSecret:
-      # -- Name of existing K8s Secret containing the IdP client secret
+      # -- Name of the existing secret holding the client secret. Empty = not set.
       secretName: ""
-      # -- Key within the secret
+      # -- Key within the secret. Defaults to 'client-secret'.
       secretKey: "client-secret"
 
 # =============================================================================

@@ -67,6 +67,20 @@ output "filestore_share_name" {
 }
 
 # -----------------------------------------------------------------------------
+# Container image cache (quay.io pull-through mirror)
+# -----------------------------------------------------------------------------
+
+output "image_cache_registry" {
+  description = "Docker endpoint of the quay.io pull-through cache mirror (pl-containers remote repo)."
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.pl_containers.repository_id}"
+}
+
+output "default_docker_registry" {
+  description = "Value for the backend --default-docker-registry flag: cache mirror plus the milaboratories/pl-containers path quay.io serves."
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.pl_containers.repository_id}/milaboratories/pl-containers"
+}
+
+# -----------------------------------------------------------------------------
 # IAM
 # -----------------------------------------------------------------------------
 

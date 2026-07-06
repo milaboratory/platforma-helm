@@ -253,7 +253,8 @@ resource "aws_eks_node_group" "batch" {
 # -----------------------------------------------------------------------------
 # GPU node groups (optional). Six VRAM tiers, scale-from-zero, no cost when idle.
 # gpu-3g/6g/12g are fractional L4 (g6f), gpu-24g a full L4 (g6), gpu-48g/96g
-# L40S (g6e); the "96g" tier is 4× L40S = 192 GiB, hence the 192 label.
+# L40S (g6e); the "96g" tier is 4× L40S
+# "96g" doesn't provide bigger GPU only bigger RAM and CPU.
 #
 # Two taints: nvidia.com/gpu keeps non-GPU pods off; nvidia.com/gpu-not-ready is
 # removed by the NVIDIA device plugin once drivers are up, preventing pods from
@@ -266,7 +267,7 @@ locals {
     "gpu-12g" = { instance_type = "g6f.4xlarge", gpu_memory_gib = "12" }
     "gpu-24g" = { instance_type = "g6.2xlarge", gpu_memory_gib = "24" }
     "gpu-48g" = { instance_type = "g6e.2xlarge", gpu_memory_gib = "48" }
-    "gpu-96g" = { instance_type = "g6e.12xlarge", gpu_memory_gib = "192" }
+    "gpu-96g" = { instance_type = "g6e.12xlarge", gpu_memory_gib = "48" }
   }
 
   gpu_max_size = {

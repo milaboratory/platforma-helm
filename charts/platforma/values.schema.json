@@ -523,6 +523,12 @@
             },
             "gpuMemory": {
               "type": "string"
+            },
+            "gpuCpu": {
+              "type": ["integer", "string"]
+            },
+            "gpuRam": {
+              "type": "string"
             }
           },
           "additionalProperties": false

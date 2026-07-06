@@ -76,14 +76,14 @@ Other regions (eu-west-1, eu-west-2, ap-south-1, ca-central-1) have partial or n
 
 **GPU node groups (6 tiers, all scale from zero):**
 
-| Tier     | Instance     | GPU        | VRAM   | vCPU | RAM    | $/hr    | Use case                                    |
-|----------|--------------|------------|--------|------|--------|---------|---------------------------------------------|
-| gpu-3g   | g6f.xlarge   | partial L4 | 3 GB   | 4    | 16 GB  | $0.24   | Small inference, embedding lookups          |
-| gpu-6g   | g6f.2xlarge  | partial L4 | 6 GB   | 8    | 32 GB  | $0.49   | Small/medium inference, light ML            |
-| gpu-12g  | g6f.4xlarge  | partial L4 | 12 GB  | 16   | 64 GB  | $0.98   | Medium inference, smaller training jobs     |
-| gpu-24g  | g6.2xlarge   | 1× L4      | 24 GB  | 8    | 32 GB  | $0.98   | UMAP, sequence search, standard ML          |
-| gpu-48g  | g6e.2xlarge  | 1× L40S    | 48 GB  | 8    | 64 GB  | $2.36   | Large language models, structure prediction |
-| gpu-96g  | g6e.12xlarge | 4× L40S    | 192 GB | 48   | 384 GB |  $10.59 | Multi-GPU, large model complexes |
+| Tier     | Instance     | GPU        | VRAM     | vCPU | RAM    | $/hr    | Use case                                    |
+|----------|--------------|------------|----------|------|--------|---------|---------------------------------------------|
+| gpu-3g   | g6f.xlarge   | partial L4 | 3 GB     | 4    | 16 GB  | $0.24   | Small inference, embedding lookups          |
+| gpu-6g   | g6f.2xlarge  | partial L4 | 6 GB     | 8    | 32 GB  | $0.49   | Small/medium inference, light ML            |
+| gpu-12g  | g6f.4xlarge  | partial L4 | 12 GB    | 16   | 64 GB  | $0.98   | Medium inference, smaller training jobs     |
+| gpu-24g  | g6.2xlarge   | 1× L4      | 24 GB    | 8    | 32 GB  | $0.98   | UMAP, sequence search, standard ML          |
+| gpu-48g  | g6e.2xlarge  | 1× L40S    | 48 GB    | 8    | 64 GB  | $2.36   | Large language models, structure prediction |
+| gpu-96g  | g6e.12xlarge | 4× L40S    | 4× 48 GB | 48   | 384 GB |  $10.59 | Multi-GPU, large model complexes |
 
 **Ensure cluster routes GPU tasks properly:**
 
@@ -203,12 +203,12 @@ block or `app.extraArgs` via the [advanced-installation](advanced-installation.m
 3. In **Deployment size (controls parallelism)** select the maximum available size from the table below. Request an increase if
    needed. The stack checks the quota during deployment and fails with an error if it is too low.
 
-| Size     | Recommended vCPU quota | Max single-job    | Approximate parallelism<br>(samples in parallel) | GPU nodes                                 |
-|----------|------------------------|-------------------|--------------------------------------------------|-------------------------------------------|
+| Size     | Recommended vCPU quota | Max single-job    | Approximate parallelism<br>(samples in parallel) | GPU nodes                        |
+|----------|------------------------|-------------------|--------------------------------------------------|----------------------------------|
 | `small`  | ~400                   | 62 vCPU / 484 GiB | ~4 large or ~16 small jobs                       | ~1 medium (48GiB) to ~2 small (3GiB) jobs |
-| `medium` | ~700                   | 62 vCPU / 484 GiB | ~8 large or ~32 small jobs                       | ~1 big (192Gib) to ~4 small jobs          |
-| `large`  | ~1400                  | 62 vCPU / 484 GiB | ~16 large or ~64 small jobs                      | ~2 big to ~8 small jobs                   |
-| `xlarge` | ~2700                  | 62 vCPU / 484 GiB | ~32 large or ~128 small jobs                     | ~4 big to ~16 small jobs                  |
+| `medium` | ~700                   | 62 vCPU / 484 GiB | ~8 large or ~32 small jobs                       | ~1 big to ~4 small jobs          |
+| `large`  | ~1400                  | 62 vCPU / 484 GiB | ~16 large or ~64 small jobs                      | ~2 big to ~8 small jobs          |
+| `xlarge` | ~2700                  | 62 vCPU / 484 GiB | ~32 large or ~128 small jobs                     | ~4 big to ~16 small jobs         |
 
 
 | Parameter       | Default | Description                                                                                                                                                                                                                                                                                                            |

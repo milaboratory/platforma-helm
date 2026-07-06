@@ -563,7 +563,7 @@ Parameters:
       Larger sizes allow more jobs to run simultaneously.
       GPU nodes (g6f/g6/g6e) scale from 0 — no cost when idle. Disable entirely with EnableGpu=false.
       6 GPU tiers: 3GB (g6f.xl, $0.24/hr), 6GB (g6f.2xl, $0.49/hr), 12GB (g6f.4xl, $0.98/hr),
-      24GB (g6, $0.98/hr), 48GB (g6e, $2.36/hr), 192GB (g6e 4×GPU, $10.59/hr).
+      24GB (g6, $0.98/hr), 48GB (g6e, $2.36/hr), 48GB (g6e 4×GPU, $10.59/hr).
       small:  ~4 large CPU jobs or 16 small; GPU: 2/2/1/1/1/1 nodes (3g/6g/12g/24g/48g/96g).
       medium: ~8 large CPU jobs or 32 small; GPU: 4/3/2/2/2/1 nodes.
       large:  ~16 large CPU jobs or 64 small; GPU: 8/6/4/4/4/2 nodes.
@@ -2111,7 +2111,7 @@ Resources:
   # gpu-12g:  g6f.4xlarge  (partial L4,  12 GB VRAM, 16 vCPU,  64 GiB RAM, $0.98/hr)
   # gpu-24g:  g6.2xlarge   (1× L4,       24 GB VRAM,  8 vCPU,  32 GiB RAM, $0.98/hr)
   # gpu-48g:  g6e.2xlarge  (1× L40S,     48 GB VRAM,  8 vCPU,  32 GiB RAM, $2.36/hr)
-  # gpu-96g:  g6e.12xlarge (4× L40S,    192 GB VRAM, 48 vCPU, 192 GiB RAM, $10.59/hr)
+  # gpu-96g:  g6e.12xlarge (4× L40S,    4x48 GB VRAM, 48 vCPU, 384 GiB RAM, $10.59/hr)
   #
   # Available in: us-east-1, us-east-2, us-west-2, eu-central-1, eu-north-1, ap-northeast-1
 
@@ -2475,7 +2475,7 @@ Resources:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
       Labels:
-        platforma.bio/gpu-memory-gib: "192"
+        platforma.bio/gpu-memory-gib: "48"
       Taints:
         - Key: nvidia.com/gpu
           Value: present
@@ -2485,7 +2485,7 @@ Resources:
           Effect: NO_SCHEDULE
       Tags:
         nodegroup-type: gpu-96g
-        k8s.io/cluster-autoscaler/node-template/label/platforma.bio/gpu-memory-gib: "192"
+        k8s.io/cluster-autoscaler/node-template/label/platforma.bio/gpu-memory-gib: "48"
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
@@ -3479,10 +3479,14 @@ Resources:
                     maxJobResources:
                       cpu: 62
                       memory: 484Gi
-                      # gpuMemory mirrors the largest VRAM provisioned by the
-                      # CF GPU node groups (gpu-96g → g6e.12xlarge, 192 GiB
-                      # VRAM via 8 x L4). Only consumed when GPU_ENABLED=true.
-                      gpuMemory: 192Gi
+                      # gpuMemory/gpuCpu/gpuRam mirror the largest GPU node group
+                      # provisioned by the CF stack (gpu-96g → g6e.12xlarge:
+                      # 48 vCPU / 384 GiB RAM / 48 GiB VRAM via 4 x L40S only one is assignable).
+                      # GPU jobs are ceiled to these instead of cpu/memory;
+                      # CPU/RAM use the node's allocatable. Consumed when GPU_ENABLED=true.
+                      gpuMemory: 48Gi
+                      gpuCpu: 46
+                      gpuRam: 384Gi
                     mode: dedicated
                     pools:
                       ui:

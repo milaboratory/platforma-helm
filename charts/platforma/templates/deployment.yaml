@@ -283,6 +283,9 @@ spec:
             - "--sso-idp-groups-claim={{ .Values.auth.sso.groupsClaim }}"
             {{- end }}
             {{- end }}
+            {{- if not .Values.auth.showUserList }}
+            - "--no-show-user-list"
+            {{- end }}
             {{- if .Values.masterSecret.secretName }}
             - "--master-secret-file={{ include "platforma.path.secrets" . }}/master-secret/{{ .Values.masterSecret.secretKey }}"
             {{- end }}

@@ -970,11 +970,12 @@ detect_existing_quota_prefs() {
 #   ENABLE_DEMO                 tfvar (set via prompt_var with default 'true')
 #   LDAP_START_TLS              tfvar (set via prompt_var when AUTH_METHOD=ldap)
 #   ENABLE_GPU                  tfvar (hidden — unset = false; opt-in via env)
+#   SHOW_USER_LIST              tfvar (hidden — unset = true; opt-out via env)
 # -----------------------------------------------------------------------------
 
 normalize_boolean_inputs() {
   local var val
-  for var in ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS ENABLE_GPU ACCEPT_QUOTA_WARNINGS ASSUME_YES; do
+  for var in ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS ENABLE_GPU SHOW_USER_LIST ACCEPT_QUOTA_WARNINGS ASSUME_YES; do
     val="${!var:-}"
     [[ -z "${val}" ]] && continue
     case "${val,,}" in
@@ -1457,6 +1458,14 @@ build_tfvars_json_full() {
     doc="$(echo "${doc}" | jq --arg v "${RESOURCE_NAME_PREFIX}" '. + {resource_name_prefix: $v}')"
   fi
 
+  # Hidden override: disable user listing on multitenant instances. Set
+  # SHOW_USER_LIST=false so users of one tenant cannot enumerate users of
+  # another (AuthAPI.ListUsers returns an empty list and the userListing
+  # capability is not advertised). Default true — user listing stays on.
+  if [[ -n "${SHOW_USER_LIST:-}" ]]; then
+    doc="$(echo "${doc}" | jq --argjson v "${SHOW_USER_LIST}" '. + {show_user_list: $v}')"
+  fi
+
   # Hidden override: provision GPU support (L4 + RTX PRO 6000 node pools +
   # Kueue GPU pool). Set ENABLE_GPU=true to enable. Default false — GPU path
   # stays dormant. Opt-in via env var only because the NVIDIA_*_GPUS quotas
@@ -1619,7 +1628,7 @@ build_tfvars_json_platforma() {
         license_key, platforma_chart_version, helm_chart_repository,
         platforma_image_override, deploy_platforma,
         master_secret_secret_id,
-        admin_username, auth_method, htpasswd_content,
+        admin_username, auth_method, show_user_list, htpasswd_content,
         google_client_id, google_client_secret,
         entra_tenant_id, entra_client_id,
         oidc_issuer, oidc_client_id,

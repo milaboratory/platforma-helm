@@ -165,6 +165,7 @@ locals {
   }
 
   auth_helm_value = merge(
+    { showUserList = var.show_user_list },
     (var.auth_method == "ldap") ? local._auth_ldap : {},
     (var.auth_method == "htpasswd" && var.htpasswd_content != "") ? local._auth_htpasswd_content : {},
     (var.auth_method == "htpasswd" && var.htpasswd_content == "") ? local._auth_htpasswd_auto : {},

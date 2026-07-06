@@ -41,6 +41,7 @@ Metadata:
           default: Authentication (required when deploying Platforma)
         Parameters:
           - AuthMethod
+          - ShowUserList
       - Label:
           default: 'htpasswd (AuthMethod=htpasswd) — static file-based users, no external IdP'
         Parameters:
@@ -129,6 +130,8 @@ Metadata:
         default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
       AuthMethod:
         default: 'Authentication method (htpasswd, ldap, google, or entra)'
+      ShowUserList:
+        default: 'Allow clients to list users (set false for multitenant instances)'
       GoogleClientId:
         default: 'Google OAuth client ID (required when AuthMethod=google)'
       GoogleClientSecret:
@@ -266,6 +269,17 @@ Parameters:
       ldap: provide LdapServer and related parameters.
       google: provide GoogleClientId (issuer/scopes are predefined).
       entra: provide EntraIssuer (preferred) or EntraTenantId (legacy) and EntraClientId.
+
+  ShowUserList:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Allow clients to list the users known to the server (used by the
+      "pick a user" project-sharing affordance). Default: true.
+      Set to 'false' on multitenant instances so users of one tenant cannot
+      enumerate users of another: AuthAPI.ListUsers returns an empty list and
+      the userListing capability is not advertised.
 
   HtpasswdContent:
     Type: String
@@ -2935,6 +2949,8 @@ Resources:
             Value: !Ref EnableGpu
           - Name: AUTH_METHOD
             Value: !Ref AuthMethod
+          - Name: SHOW_USER_LIST
+            Value: !Ref ShowUserList
           - Name: HTPASSWD_CONTENT
             Value: !Ref HtpasswdContent
           - Name: LDAP_SERVER
@@ -3491,6 +3507,7 @@ Resources:
                     --version $PLATFORMA_VERSION \
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
+                    --set auth.showUserList=${SHOW_USER_LIST:-true} \
                     --atomic --timeout 15m
             post_build:
               commands:

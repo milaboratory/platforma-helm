@@ -66,6 +66,9 @@
     "auth": {
       "type": "object",
       "properties": {
+        "showUserList": {
+          "type": "boolean"
+        },
         "htpasswd": {
           "type": "object",
           "properties": {

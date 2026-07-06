@@ -283,6 +283,18 @@ variable "htpasswd_content" {
   sensitive   = true
 }
 
+variable "show_user_list" {
+  type        = bool
+  description = <<-EOT
+    Allow clients to list the users known to the server (used by the
+    "pick a user" project-sharing affordance). Set to false on multitenant
+    instances so users of one tenant cannot enumerate users of another:
+    AuthAPI.ListUsers returns an empty list and the userListing capability
+    is not advertised.
+  EOT
+  default     = true
+}
+
 variable "ldap_server" {
   type        = string
   description = "LDAP server URL (e.g. ldaps://ldap.example.com:636)."

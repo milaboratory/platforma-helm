@@ -1491,10 +1491,14 @@ build_tfvars_json_full() {
       discover_stderr="$(mktemp)"
       for sku in nvidia-l4 nvidia-rtx-pro-6000; do
         info "Discovering ${sku} zones in region ${REGION}…"
-        local discover_stdout discover_rc zones_csv
-        discover_stdout="$(printf '{"project":"%s","region":"%s","sku":"%s"}' "${PROJECT_ID}" "${REGION}" "${sku}" | "${gcptest}" discover 2>"${discover_stderr}")"
-        discover_rc=$?
-        if [[ ${discover_rc} -ne 0 ]]; then
+        local discover_stdout zones_csv
+        # Use `if ! var="$(...)"` rather than a bare assignment: under `set -e` a
+        # failing command substitution in a plain assignment aborts the script
+        # immediately, so `$?` capture and the error report below never run and
+        # discover's stderr is swallowed — the script dies silently. The `if`
+        # condition suspends errexit so we can surface the real error.
+        if ! discover_stdout="$(printf '{"project":"%s","region":"%s","sku":"%s"}' "${PROJECT_ID}" "${REGION}" "${sku}" | "${gcptest}" discover 2>"${discover_stderr}")"; then
+          red "GPU zone discovery failed for ${sku} in region ${REGION}:"
           red "$(cat "${discover_stderr}")"
           rm -f "${discover_stderr}"
           exit 1

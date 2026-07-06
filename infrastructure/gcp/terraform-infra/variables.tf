@@ -136,7 +136,7 @@ variable "ui_pool_max_nodes" {
 }
 
 variable "batch_pool_max_nodes_overrides" {
-  type        = map(number)
+  type = map(number)
   description = <<-EOT
     DEPRECATED — no-op since the Node Auto-Provisioning migration. Batch
     capacity is now governed by a cluster-wide envelope (batch_capacity in
@@ -145,7 +145,7 @@ variable "batch_pool_max_nodes_overrides" {
     var.kueue_batch_queue_memory instead. Variable kept for tfvars
     backwards-compatibility; will be removed in a future release.
   EOT
-  default     = {}
+  default = {}
 }
 
 variable "batch_pool_disk_size_gb" {
@@ -292,74 +292,6 @@ variable "enable_google_batch" {
     in-cluster pods via Kueue/AppWrapper and does not need the Batch API.
     Set to true only for developer/preview installs that exercise the Google
     Batch runner backend.
-  EOT
-  default     = false
-}
-
-variable "gpu_l4_node_locations" {
-  type        = list(string)
-  description = <<-EOT
-    List of zones the L4 GPU node pools (g2-standard-*) may create nodes in.
-
-    Normally populated by install.sh at deploy time — it calls gcptest.sh
-    discover for nvidia-l4 in var.region and embeds the resulting zone list
-    here automatically. Operators do not set this env-var-style.
-
-    When null (operator running terraform directly without install.sh), the
-    L4 pools fall back to [local.zone] (single-zone, no capacity diversity).
-  EOT
-  default     = null
-}
-
-variable "gpu_rtx_pro_6000_node_locations" {
-  type        = list(string)
-  description = <<-EOT
-    List of zones the RTX PRO 6000 GPU node pools (g4-standard-*) may create
-    nodes in. Same install.sh-driven discovery as gpu_l4_node_locations.
-  EOT
-  default     = null
-}
-
-variable "enable_gpu" {
-  type        = bool
-  description = <<-EOT
-    Provision GPU support on the cluster.
-
-    When true:
-      - terraform-infra/gke.tf creates static node pools for both GPU SKUs:
-          * L4 (24 GiB VRAM): 5 pools g2-standard-{4,8,12,16,32}, each 1× L4
-          * RTX PRO 6000 (96 GiB VRAM): 4 pools g4-standard-{6,12,24,48},
-            each 1× nvidia-rtx-pro-6000
-        Each pool carries node labels role=gpu + platforma.bio/gpu-memory-gib
-        (24 or 96), taint nvidia.com/gpu=present:NoSchedule, and autoscales
-        0..N (sized via gpu_l4_max_nodes_per_shape /
-        gpu_rtx_pro_6000_max_nodes_per_shape in presets.tf).
-      - terraform-platforma enables kueue.pools.gpu in the Helm chart
-        (nvidia-device-plugin DaemonSet, GPU ResourceFlavor + ClusterQueue,
-        --runner-gpu-available flag). The GPU ClusterQueue admission cap is
-        sized from gpu_capacity in presets.tf (override via
-        var.kueue_gpu_queue_*).
-
-    Pod routing is by node label: the job template emits nodeAffinity on
-    platforma.bio/gpu-memory-gib and the GKE Cluster Autoscaler pre-creation-
-    matches that against each pool's template node labels (the same
-    mechanism AWS Cluster Autoscaler uses with node-template tags). Pods
-    requesting ≤ 24 GiB land on L4; > 24 GiB land on RTX PRO 6000; the L4
-    preferred-Lt clause + CA's least-waste expander keep small jobs on L4.
-
-    GPU pools span the zones in var.region where each SKU's full machine
-    ladder is offered — discovered by install.sh via gcptest.sh discover
-    and embedded in var.gpu_l4_node_locations / var.gpu_rtx_pro_6000_node_locations
-    automatically. If no zone in the region has the full ladder for a
-    SKU, install.sh aborts with a clear error pointing at the missing
-    shapes per zone. System and UI pools stay in the cluster's primary
-    zone (local.zone).
-
-    Default false — nothing GPU-related is created or wired.
-
-    NVIDIA_L4_GPUS and NVIDIA_RTX_PRO_6000_GPUS regional quotas are required
-    for the pools to actually provision nodes; quotas.tf does not yet
-    auto-request these — operators must arrange the quotas separately.
   EOT
   default     = false
 }

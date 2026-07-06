@@ -164,40 +164,8 @@ variable "kueue_batch_queue_memory" {
   default     = null
 }
 
-variable "enable_gpu" {
-  type        = bool
-  description = <<-EOT
-    Pass-through of the infra module's enable_gpu. When true, this module
-    flips kueue.pools.gpu.enabled in the chart and sizes the GPU
-    ClusterQueue admission quota from gpu_capacity in presets.tf.
-
-    Must match the infra module's value — install.sh threads the same tfvar
-    through both modules. See terraform-infra/variables.tf for the full
-    description.
-  EOT
-  default     = false
-}
-
-variable "kueue_gpu_queue_cpu" {
-  type        = number
-  description = "Override GPU ClusterQueue CPU quota. null = computed from gpu_capacity preset (small = 8 L4 × 32 vCPU + 4 RTX PRO 6000 × 48 vCPU = 448)."
-  default     = null
-}
-
-variable "kueue_gpu_queue_memory" {
-  type        = string
-  description = "Override GPU ClusterQueue memory quota. null = computed from gpu_capacity preset (small = 8 L4 × 128 GiB + 4 RTX PRO 6000 × 192 GiB = 1792Gi)."
-  default     = null
-}
-
-variable "kueue_gpu_queue_count" {
-  type        = number
-  description = "Override GPU ClusterQueue nvidia.com/gpu count quota. null = gpu_capacity preset (small = 8 L4 + 4 RTX PRO 6000 = 12). Must be ≤ the SUM of the GCE NVIDIA_L4_GPUS and NVIDIA_RTX_PRO_6000_GPUS regional quotas, or scale-up will block at the GCE layer."
-  default     = null
-}
-
 variable "batch_pool_max_nodes_overrides" {
-  type        = map(number)
+  type = map(number)
   description = <<-EOT
     DEPRECATED — no-op since the Node Auto-Provisioning migration. Batch
     capacity is now governed by a cluster-wide envelope (batch_capacity in
@@ -206,7 +174,7 @@ variable "batch_pool_max_nodes_overrides" {
     Variable kept for tfvars backwards-compatibility; will be removed in
     a future release.
   EOT
-  default     = {}
+  default = {}
 }
 
 variable "ui_pool_max_nodes" {
@@ -267,12 +235,12 @@ variable "admin_username" {
 
 variable "auth_method" {
   type        = string
-  description = "Authentication method: 'htpasswd' (local), 'ldap' (corporate directory), or SSO via 'google', 'entra', or 'oidc'."
+  description = "Authentication method: 'htpasswd' (local) or 'ldap' (corporate directory)."
   default     = "htpasswd"
 
   validation {
-    condition     = contains(["htpasswd", "ldap", "google", "entra", "oidc"], var.auth_method)
-    error_message = "auth_method must be one of: htpasswd, ldap, google, entra, oidc."
+    condition     = contains(["htpasswd", "ldap"], var.auth_method)
+    error_message = "auth_method must be one of: htpasswd, ldap."
   }
 }
 
@@ -330,84 +298,6 @@ variable "ldap_search_password" {
   description = "Password for ldap_search_user."
   default     = ""
   sensitive   = true
-}
-
-# --- Google Workspace SSO (auth_method=google) ---
-# Issuer, scopes and prompt are predefined; operator supplies the client ID and secret.
-variable "google_client_id" {
-  type        = string
-  description = "Google OAuth client ID (required when auth_method=google)."
-  default     = ""
-}
-
-# Google's token endpoint requires a client secret even for the PKCE flow.
-variable "google_client_secret" {
-  type        = string
-  description = "Google OAuth client secret (required when auth_method=google)."
-  default     = ""
-  sensitive   = true
-}
-
-# --- Microsoft Entra ID SSO (auth_method=entra) ---
-# Issuer is derived as https://login.microsoftonline.com/{tenant}/v2.0.
-variable "entra_tenant_id" {
-  type        = string
-  description = "Entra directory (tenant) ID (required when auth_method=entra)."
-  default     = ""
-}
-
-variable "entra_client_id" {
-  type        = string
-  description = "Entra application (client) ID (required when auth_method=entra)."
-  default     = ""
-}
-
-# --- Custom OIDC SSO (auth_method=oidc) ---
-variable "oidc_issuer" {
-  type        = string
-  description = "OIDC issuer URL (required when auth_method=oidc)."
-  default     = ""
-
-  validation {
-    condition     = var.oidc_issuer == "" || can(regex("^https://\\S+$", var.oidc_issuer))
-    error_message = "oidc_issuer must be a valid https:// URL."
-  }
-}
-
-variable "oidc_client_id" {
-  type        = string
-  description = "Public OAuth client ID (required when auth_method=oidc)."
-  default     = ""
-}
-
-variable "oidc_scopes" {
-  type        = string
-  description = "Space-separated OIDC scopes (must contain 'openid'). Empty = backend default."
-  default     = ""
-}
-
-variable "oidc_resource" {
-  type        = string
-  description = "Optional 'resource'/audience parameter (RFC 8707)."
-  default     = ""
-}
-
-variable "oidc_prompt" {
-  type        = string
-  description = "Optional OIDC 'prompt' parameter (none|login|consent|select_account)."
-  default     = ""
-}
-
-variable "oidc_user_id_claim" {
-  type        = string
-  description = "Optional JWT claim carrying the stable user id (backend default 'sub')."
-  default     = ""
-}
-
-variable "oidc_groups_claim" {
-  type        = string
-  description = "Optional JWT claim carrying group memberships."
-  default     = ""
 }
 
 # -----------------------------------------------------------------------------

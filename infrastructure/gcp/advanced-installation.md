@@ -214,47 +214,6 @@ change rolls the `platforma-htpasswd-provided` secret. Non-interactive form
 (password on the command line, lands in shell history): `htpasswd -cbB
 ./htpasswd alice 'S3cret!'`.
 
-### SSO (OIDC) authentication
-
-PKCE auth-code flow. Most IdPs use a public/native client with no secret; Google
-requires a client secret even for PKCE. Three presets via `auth_method`:
-
-```hcl
-# Google Workspace — issuer, scopes and prompt are predefined.
-auth_method          = "google"
-google_client_id     = "12345-abc.apps.googleusercontent.com"
-google_client_secret = "GOCSPX-..."
-```
-
-```hcl
-# Microsoft Entra ID — issuer derived from the tenant.
-auth_method     = "entra"
-entra_tenant_id = "53dff85f-903c-48f0-908b-00aa35e40dad"
-entra_client_id = "2f2c6eed-cddc-4375-96f6-92ccebe29648"
-```
-
-```hcl
-# Any OIDC provider — full control. Optional fields default to backend values.
-auth_method        = "oidc"
-oidc_issuer        = "https://idp.example.com/oidc"
-oidc_client_id     = "ld69k866zvhnhz3xr1xwd"
-oidc_scopes        = "openid profile email"   # optional
-oidc_resource      = ""                        # optional
-oidc_prompt        = ""                        # optional
-oidc_user_id_claim = ""                        # optional
-oidc_groups_claim  = ""                        # optional
-```
-
-The installer rejects a method whose required inputs are missing (and a
-non-`https` OIDC issuer). Advanced backend flags not exposed as tfvars
-(`subject-token-source`, `jwt-algorithm`, `redirect-port`) default to backend
-values. Override them through the chart's `auth.sso.*` block or `app.extraArgs`.
-
-> **Switching an existing instance's auth method (e.g. LDAP→SSO) is a manual
-> operation** — see the [LDAP→SSO migration runbook](../ldap-to-sso-migration.md).
-> It is not automated by this installer and carries identity-remap, lockout, and
-> session-loss risks.
-
 ### Master secret
 
 The chart requires a root key — the **master secret** — for security layer
@@ -407,40 +366,6 @@ Or disable auto-request entirely and manage quotas yourself:
 ```hcl
 enable_quota_auto_request = false
 ```
-
-### GPU pools
-
-GPU pools (L4 + RTX PRO 6000) are opt-in and gated on `enable_gpu`:
-
-```hcl
-enable_gpu = true
-
-# Optional — override the per-SKU zone lists. The Cloud Shell installer
-# auto-discovers these via `gcptest.sh`; in the local Terraform path you
-# either set them explicitly or run gcptest.sh yourself and copy the lists.
-# L4 is multi-zone (the full machine ladder is available in most us-central1
-# and europe-west zones); RTX PRO 6000 has narrower availability.
-gpu_l4_node_locations            = ["us-central1-a", "us-central1-b", "us-central1-c"]
-gpu_rtx_pro_6000_node_locations  = ["us-central1-b"]
-
-# Optional — override the Kueue GPU ClusterQueue admission caps. By default
-# these scale with `deployment_size` (see README's "GPU Kueue queue" table).
-# kueue_gpu_queue_count   = 12     # max concurrent GPU jobs
-# kueue_gpu_queue_cpu     = 448    # sized to fit gpu_count × largest single-GPU shape
-# kueue_gpu_queue_memory  = "1792Gi"
-```
-
-**GPU quotas are not auto-submitted.** Request `NVIDIA L4 GPUs` and/or
-`NVIDIA RTX PRO 6000 GPUs` in the regional Cloud Quotas Console before
-running `tofu apply` with `enable_gpu = true` — the first GPU pool create
-fails immediately if the regional quota is 0. See the
-[GPU Support section in the runbook](README.md#gpu-support-opt-in) for the
-SKU → quota mapping and per-preset values.
-
-To enable GPU on an existing GPU-less deployment: add `enable_gpu = true`
-(and any zone overrides) to `terraform.tfvars`, then `tofu plan && apply`.
-The plan adds the GPU pools and Kueue GPU flavor without touching the
-existing CPU pools or batch queue.
 
 ## Updates
 

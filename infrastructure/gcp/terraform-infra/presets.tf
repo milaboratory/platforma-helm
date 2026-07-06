@@ -110,72 +110,50 @@ locals {
       # batch nodes use 200 GiB root disks (var.batch_pool_disk_size_gb)
       # instead of the previous static pools' 100 GiB. Headroom included
       # for system + UI pools sharing the same regional SSD quota.
-      #
-      # gpu_l4_max_nodes_per_shape: each of the 5 g2-standard-* pools
-      # autoscales 0..N. Total L4 ceiling = 5 × N. With N=8 a `small`
-      # cluster could in theory create 40 L4 nodes; in practice the GCE
-      # NVIDIA_L4_GPUS regional quota is the binding constraint (must be
-      # arranged separately). Sized as a per-shape ceiling so any one shape
-      # alone can absorb a wave of small or mixed-RAM jobs.
-      #
-      # gpu_rtx_pro_6000_max_nodes_per_shape: same model for the 4
-      # g4-standard-* pools (each 1× RTX PRO 6000). Sized lower than L4
-      # since RTX PRO 6000 is a smaller GCE inventory tier and a higher
-      # per-node cost — most workloads should land on L4 unless they need
-      # >24 GiB VRAM or Blackwell-class FP8/FP4. Bound by NVIDIA_RTX_PRO_6000_GPUS
-      # regional quota (must be arranged separately like L4).
-      ui_max_nodes                         = 4
-      filestore_capacity_gb                = 1024
-      cpus_global_quota                    = 512
-      n2d_cpus_quota                       = 512
-      n2_cpus_quota                        = 512
-      pd_ssd_quota_gb                      = 4096
-      filestore_zonal_quota_gb             = 1024
-      instances_quota                      = 32
-      in_use_addresses_quota               = 16
-      gpu_l4_max_nodes_per_shape           = 8
-      gpu_rtx_pro_6000_max_nodes_per_shape = 4
+      ui_max_nodes             = 4
+      filestore_capacity_gb    = 1024
+      cpus_global_quota        = 512
+      n2d_cpus_quota           = 512
+      n2_cpus_quota            = 512
+      pd_ssd_quota_gb          = 4096
+      filestore_zonal_quota_gb = 1024
+      instances_quota          = 32
+      in_use_addresses_quota   = 16
     }
     medium = {
-      ui_max_nodes                         = 8
-      filestore_capacity_gb                = 2048
-      cpus_global_quota                    = 1024
-      n2d_cpus_quota                       = 1024
-      n2_cpus_quota                        = 1024
-      pd_ssd_quota_gb                      = 8192
-      filestore_zonal_quota_gb             = 2048
-      instances_quota                      = 48
-      in_use_addresses_quota               = 16
-      gpu_l4_max_nodes_per_shape           = 16
-      gpu_rtx_pro_6000_max_nodes_per_shape = 8
+      ui_max_nodes             = 8
+      filestore_capacity_gb    = 2048
+      cpus_global_quota        = 1024
+      n2d_cpus_quota           = 1024
+      n2_cpus_quota            = 1024
+      pd_ssd_quota_gb          = 8192
+      filestore_zonal_quota_gb = 2048
+      instances_quota          = 48
+      in_use_addresses_quota   = 16
     }
     large = {
-      ui_max_nodes                         = 16
-      filestore_capacity_gb                = 4096
-      cpus_global_quota                    = 2048
-      n2d_cpus_quota                       = 2048
-      n2_cpus_quota                        = 2048
-      pd_ssd_quota_gb                      = 16384
-      filestore_zonal_quota_gb             = 4096
-      instances_quota                      = 64
-      in_use_addresses_quota               = 24
-      gpu_l4_max_nodes_per_shape           = 32
-      gpu_rtx_pro_6000_max_nodes_per_shape = 16
+      ui_max_nodes             = 16
+      filestore_capacity_gb    = 4096
+      cpus_global_quota        = 2048
+      n2d_cpus_quota           = 2048
+      n2_cpus_quota            = 2048
+      pd_ssd_quota_gb          = 16384
+      filestore_zonal_quota_gb = 4096
+      instances_quota          = 64
+      in_use_addresses_quota   = 24
     }
     xlarge = {
       # Heavy production. Quota requests at this size typically need human
       # review (24-72h).
-      ui_max_nodes                         = 16
-      filestore_capacity_gb                = 8192
-      cpus_global_quota                    = 4096
-      n2d_cpus_quota                       = 4096
-      n2_cpus_quota                        = 4096
-      pd_ssd_quota_gb                      = 32768
-      filestore_zonal_quota_gb             = 8192
-      instances_quota                      = 128
-      in_use_addresses_quota               = 32
-      gpu_l4_max_nodes_per_shape           = 64
-      gpu_rtx_pro_6000_max_nodes_per_shape = 32
+      ui_max_nodes             = 16
+      filestore_capacity_gb    = 8192
+      cpus_global_quota        = 4096
+      n2d_cpus_quota           = 4096
+      n2_cpus_quota            = 4096
+      pd_ssd_quota_gb          = 32768
+      filestore_zonal_quota_gb = 8192
+      instances_quota          = 128
+      in_use_addresses_quota   = 32
     }
   }
 
@@ -202,30 +180,4 @@ locals {
   # Kueue ClusterQueue total = batch capacity envelope — the admission cap.
   effective_kueue_batch_queue_cpu    = coalesce(var.kueue_batch_queue_cpu, local.total_batch_cpu)
   effective_kueue_batch_queue_memory = coalesce(var.kueue_batch_queue_memory, "${local.total_batch_memory_gi}Gi")
-
-  # GPU L4 per-shape autoscaling ceiling. Each of the 5 g2-standard-*
-  # static pools in gke.tf autoscales 0..effective_gpu_l4_max_nodes_per_shape.
-  effective_gpu_l4_max_nodes_per_shape = local.preset.gpu_l4_max_nodes_per_shape
-
-  # GPU RTX PRO 6000 per-shape autoscaling ceiling. Each of the 4 g4-standard-*
-  # static pools in gke.tf autoscales 0..effective_gpu_rtx_pro_6000_max_nodes_per_shape.
-  # Sized lower than L4 by default because RTX PRO 6000 is a smaller GCE
-  # inventory tier and a higher per-node cost; operator can raise per-cluster.
-  effective_gpu_rtx_pro_6000_max_nodes_per_shape = local.preset.gpu_rtx_pro_6000_max_nodes_per_shape
-
-  # GPU node-locations — per-SKU zone list populated by install.sh at deploy
-  # time via gcptest.sh discover (in this directory; runs locally where
-  # gcloud is available). install.sh fills var.gpu_*_node_locations with the
-  # zones in var.region where each SKU's full machine-type ladder exists.
-  #
-  # Multi-zone gives GPU scale-ups capacity diversity: GCE inventory varies
-  # independently per zone, so spreading maximises the chance any one
-  # ProvisioningRequest finds stock.
-  #
-  # Fallback to [local.zone] is for the bare `terraform apply` path (no
-  # install.sh) — single-zone behavior, no capacity diversity. install.sh
-  # always populates the vars when ENABLE_GPU=true, so end-users get
-  # multi-zone by default without any extra config.
-  effective_gpu_l4_node_locations           = coalesce(var.gpu_l4_node_locations, [local.zone])
-  effective_gpu_rtx_pro_6000_node_locations = coalesce(var.gpu_rtx_pro_6000_node_locations, [local.zone])
 }

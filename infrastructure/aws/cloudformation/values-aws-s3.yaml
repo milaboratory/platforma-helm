@@ -67,16 +67,12 @@ kueue:
   # overhead minus 1 GiB safety margin for customer-installed DaemonSets.
   # Matches GCP per-job ceiling on n2d-highmem-64 so deployment_size means the
   # same workload capacity on both clouds. Reduce further if you run heavier DS.
-  # gpuMemory/gpuCpu/gpuRam mirror the largest GPU node group provisioned by the CF
-  # stack (gpu-96g → g6e.12xlarge: 48 vCPU / 384 GiB RAM / 48 GiB VRAM via 4 x L40S).
-  # GPU jobs are ceiled to these instead of cpu/memory; CPU/RAM use the node's
-  # allocatable (headroom for kubelet + DaemonSets), matching the batch convention.
+  # gpuMemory mirrors the largest VRAM available across the GPU node groups
+  # provisioned by the CF stack (gpu-96g → g6e.12xlarge, 192 GiB VRAM via 8 x L4).
   maxJobResources:
     cpu: 62
     memory: 484Gi
-    gpuMemory: 48Gi
-    gpuCpu: 46
-    gpuRam: 384Gi
+    gpuMemory: 192Gi
   mode: dedicated
   # Node pools — controls where jobs run.
   # Must match your EKS node group labels and taints.

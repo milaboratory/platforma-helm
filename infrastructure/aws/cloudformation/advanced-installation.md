@@ -802,33 +802,6 @@ kubectl get clusterqueues
 kubectl get localqueues -n $PLATFORMA_NAMESPACE
 ```
 
-### SSO (OIDC) instead of htpasswd
-
-SSO is a **public/native OAuth client** — no client secret. Replace the two `auth.htpasswd.*` lines
-above with the `auth.sso.*` block. Minimal install needs only the issuer and client id:
-
-```bash
-  --set auth.sso.issuer=https://idp.example.com/oidc \
-  --set auth.sso.clientId=ld69k866zvhnhz3xr1xwd \
-```
-
-All other OIDC settings default to backend values. To override, add any of `auth.sso.scopes`,
-`auth.sso.resource`, `auth.sso.userIdClaim`, `auth.sso.groupsClaim`, and the advanced flags
-(`prompt`, `subject-token-source`, `jwt-algorithm`, `redirect-port`) via `app.extraArgs`:
-
-```yaml
-app:
-  extraArgs:
-    - "--sso-idp-scopes=openid profile email"
-    - "--sso-idp-resource=https://my-app.example.com/api/"
-    - "--sso-idp-user-id-claim=email"
-    - "--sso-idp-groups-claim=groups"
-```
-
-> **Switching an existing instance's auth method (e.g. LDAP→SSO) is a manual operation** — see the
-> [LDAP→SSO migration runbook](../../ldap-to-sso-migration.md). It is not automated by this installer and
-> carries identity-remap, lockout, and session-loss risks.
-
 ---
 
 ## Step 11: Connect from Desktop App

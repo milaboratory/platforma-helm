@@ -2136,6 +2136,154 @@ Resources:
               - Key: platforma
                 Value: !Ref ClusterName
 
+  # GPU node groups scale from zero, so their instance type is only launched at
+  # autoscale time. A managed node group hands its ASG every subnet it is given;
+  # if a subnet's AZ does not offer the node group's instance type, the ASG's
+  # launch attempt in that AZ fails ("Unsupported ... not supported in your
+  # requested Availability Zone") and the scale-up stalls. GPU instance types
+  # (g6f/g6/g6e) are offered in only a subset of a region's AZs, and the subset
+  # differs per type, so the correct subnet list cannot be hardcoded per region.
+  #
+  # GpuSubnetResolver queries EC2 at deploy time for the AZs that actually offer
+  # each GPU instance type and returns, per tier, only the subnets in those AZs.
+  # Each GPU node group consumes its own filtered list via
+  # !Split [",", !GetAtt GpuSubnetResolver.<Tier>], keeping the template region-
+  # and AZ-agnostic. If a type is offered in none of the cluster's AZs the
+  # resolver falls back to all subnets (no worse than the pre-resolver behaviour:
+  # that tier only fails at scale-up time, and only if actually requested) rather
+  # than blocking the whole stack.
+  GpuSubnetResolverRole:
+    Type: AWS::IAM::Role
+    Condition: GpuEnabled
+    Properties:
+      RoleName: !Sub '${ClusterName}-${AWS::Region}-gpu-subnet-resolver'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DescribeEc2
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Neither action supports resource-level permissions; both are
+              # read-only region-scoped describes.
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeInstanceTypeOfferings
+                Resource: '*'
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+
+  GpuSubnetResolverFunction:
+    Type: AWS::Lambda::Function
+    Condition: GpuEnabled
+    Properties:
+      FunctionName: !Sub '${ClusterName}-gpu-subnet-resolver'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt GpuSubnetResolverRole.Arn
+      Timeout: 30
+      Tags:
+        - Key: platforma
+          Value: !Ref ClusterName
+      Code:
+        ZipFile: |
+          import boto3, json, urllib.request
+          def handler(event, context):
+            pid = 'gpu-subnet-resolver'
+            try:
+              if event['RequestType'] == 'Delete':
+                send(event, 'SUCCESS', {}, pid)
+                return
+              props = event['ResourceProperties']
+              subnet_ids = props['SubnetIds']
+              tiers = props['InstanceTypes']  # {tier: instance_type}
+              ec2 = boto3.client('ec2')
+              # subnet -> AZ lookup; stable output order is enforced later by
+              # iterating subnet_ids in the keep list-comprehension.
+              az_by_subnet = {}
+              for s in ec2.describe_subnets(SubnetIds=subnet_ids)['Subnets']:
+                az_by_subnet[s['SubnetId']] = s['AvailabilityZone']
+              offered = {}  # instance_type -> set(AZ), cached across tiers
+              data = {}
+              for tier, itype in tiers.items():
+                if itype not in offered:
+                  azs = set()
+                  pager = ec2.get_paginator('describe_instance_type_offerings')
+                  for page in pager.paginate(
+                      LocationType='availability-zone',
+                      Filters=[{'Name': 'instance-type', 'Values': [itype]}]):
+                    for o in page['InstanceTypeOfferings']:
+                      azs.add(o['Location'])
+                  offered[itype] = azs
+                keep = [sid for sid in subnet_ids
+                        if az_by_subnet.get(sid) in offered[itype]]
+                if not keep:
+                  print(f'WARNING: {itype} ({tier}) offered in none of '
+                        f'{sorted(az_by_subnet.values())}; falling back to all '
+                        f'subnets')
+                  keep = list(subnet_ids)
+                data[tier] = ','.join(keep)
+              print('resolved subnets: ' + json.dumps(data))
+              send(event, 'SUCCESS', data, pid)
+            except Exception as e:
+              print(f'ERROR: {e}')
+              # Guard the last-resort send: if the PUT to the CloudFormation
+              # ResponseURL fails, log it rather than dying with an uncaught
+              # exception (which would leave the stack waiting on the resource
+              # timeout instead of failing fast).
+              try:
+                send(event, 'FAILED', {'Error': str(e)}, pid)
+              except Exception as send_err:
+                print(f'ERROR sending FAILED response: {send_err}')
+          def send(event, status, data, physical_id):
+            body = json.dumps({
+              'Status': status,
+              'Reason': 'See CloudWatch Logs',
+              'PhysicalResourceId': physical_id,
+              'StackId': event['StackId'],
+              'RequestId': event['RequestId'],
+              'LogicalResourceId': event['LogicalResourceId'],
+              'Data': data,
+            })
+            req = urllib.request.Request(
+              event['ResponseURL'], data=body.encode(), method='PUT',
+              headers={'Content-Type': ''})
+            urllib.request.urlopen(req)
+
+  GpuSubnetResolver:
+    Type: AWS::CloudFormation::CustomResource
+    Condition: GpuEnabled
+    Properties:
+      ServiceToken: !GetAtt GpuSubnetResolverFunction.Arn
+      # CF re-invokes this resource whenever any property changes, so subnet
+      # changes re-resolve automatically. A plain stack update also re-runs it,
+      # which is how to pick up AZ-offering changes (EC2 does not notify on them).
+      SubnetIds: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      # Keys become GpuSubnetResolver attributes referenced via !GetAtt; keep
+      # them dot-free so the short !GetAtt form resolves. Values must match each
+      # tier's InstanceTypes below.
+      InstanceTypes:
+        Gpu3g: g6f.xlarge
+        Gpu6g: g6f.2xlarge
+        Gpu12g: g6f.4xlarge
+        Gpu24g: g6.2xlarge
+        Gpu48g: g6e.2xlarge
+        Gpu96g: g6e.12xlarge
+
   Gpu3gNodeGroup:
     Type: AWS::EKS::Nodegroup
     Condition: GpuEnabled
@@ -2152,12 +2300,7 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu3g]
-      Subnets: !If
-        - CreateNewVpc
-        - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu3g]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2191,12 +2334,7 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu6g]
-      Subnets: !If
-        - CreateNewVpc
-        - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu6g]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2230,12 +2368,7 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu12g]
-      Subnets: !If
-        - CreateNewVpc
-        - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu12g]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2269,12 +2402,7 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu24g]
-      Subnets: !If
-        - CreateNewVpc
-        - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu24g]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2308,12 +2436,7 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu48g]
-      Subnets: !If
-        - CreateNewVpc
-        - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu48g]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2347,12 +2470,7 @@ Resources:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu96g]
-      Subnets: !If
-        - CreateNewVpc
-        - - !Ref PrivateSubnet1
-          - !Ref PrivateSubnet2
-          - !Ref PrivateSubnet3
-        - !Ref PrivateSubnetIds
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu96g]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber

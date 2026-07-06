@@ -54,31 +54,23 @@ spec:
   {{- if .Values.kueue.provisioningRequest.enabled }}
   admissionChecksStrategy:
     admissionChecks:
-      # Scope ProvisioningRequest check to the CPU-only batch flavor.
-      # GPU jobs skip ProvReq because best-effort-atomic-scale-up's strict
-      # capacity planner often refuses GPU scale-ups that a plain MIG resize
-      # would satisfy (per (machine-type, zone) inventory variance), and
-      # atomic reservation is unnecessary for single-pod GPU blocks. Keep
-      # ProvReq on the CPU flavor where multi-pod batch atomicity helps.
       - name: {{ include "platforma.kueue.admissionCheckName" . }}
-        onFlavors:
-          - {{ include "platforma.kueue.clusterResourceName" . }}-batch-flavor
   {{- end }}
   preemption:
     reclaimWithinCohort: Never   # Jobs not retryable, never preempt
     withinClusterQueue: Never    # No preemption within batch queue
   resourceGroups:
 {{- if .Values.kueue.pools.gpu.enabled }}
-    # Flavor declaration order matters: Kueue tries flavors top-down and
-    # assigns the first one whose quota fits the workload. batch-flavor
-    # is listed FIRST so CPU-only jobs land there and go through the
-    # ProvisioningRequest AdmissionCheck (admissionChecksStrategy above).
-    # If gpu-flavor came first, CPU-only jobs requesting < gpu.cpu/memory
-    # would silently be assigned to gpu-flavor and bypass ProvReq (the
-    # check is scoped onFlavors=[batch-flavor]), so multi-pod batch
-    # atomicity would only hold while gpu-flavor was fully saturated.
     - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
       flavors:
+        - name: {{ include "platforma.kueue.clusterResourceName" . }}-gpu-flavor
+          resources:
+            - name: cpu
+              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.cpu | quote }}
+            - name: memory
+              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.memory | quote }}
+            - name: "nvidia.com/gpu"
+              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.gpu | quote }}
         - name: {{ include "platforma.kueue.clusterResourceName" . }}-batch-flavor
           resources:
             - name: cpu
@@ -89,14 +81,6 @@ spec:
               borrowingLimit: {{ .Values.kueue.dedicated.resources.ui.memory | quote }}
             - name: "nvidia.com/gpu"
               nominalQuota: "0"
-        - name: {{ include "platforma.kueue.clusterResourceName" . }}-gpu-flavor
-          resources:
-            - name: cpu
-              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.cpu | quote }}
-            - name: memory
-              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.memory | quote }}
-            - name: "nvidia.com/gpu"
-              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.gpu | quote }}
 {{- else }}
     - coveredResources: ["cpu", "memory"]
       flavors:

@@ -131,97 +131,6 @@ If your project already has user-managed quota preferences, the installer
 detects them, skips re-requesting (the API rejects duplicate creates), and
 warns when an existing value is below the chosen preset's requirement.
 
-## GPU Support (Opt-Out)
-
-GPU node pools are provisioned **by default** (`ENABLE_GPU=true`) — set
-`ENABLE_GPU=false` to opt out and skip all GPU pools. Two SKUs are supported,
-each with its own ladder of machine shapes:
-
-| SKU | Shapes | Architecture | VRAM | Typical use |
-|---|---|---|---|---|
-| **L4** | `g2-standard-4` / `8` / `12` / `16` / `32` | Ada Lovelace | 24 GiB | inference, smaller training, image/video |
-| **RTX PRO 6000** | `g4-standard-6` / `12` / `24` / `48` | Blackwell | 96 GiB | larger training, big-VRAM batch jobs |
-
-Each shape gets its own GKE node pool — one job per node (`nvidia.com/gpu: 1`
-enforces exclusive access). The K8s scheduler + Cluster Autoscaler pick the
-cheapest pool whose node has enough VRAM for the requested job, via Kueue
-ResourceFlavor matching on the `platforma.bio/gpu-memory-gib` label. **LATEST**
-GPU drivers are installed automatically by GKE.
-
-### Zones
-
-Both SKUs use the same multi-zone discovery mechanism. The installer calls
-`gcptest.sh` for each SKU and embeds the resulting list as
-`gpu_l4_node_locations` / `gpu_rtx_pro_6000_node_locations` — every zone in
-the chosen `REGION` where the **full machine-type ladder** for that SKU is
-available. Cluster Autoscaler picks the zone with available capacity at
-scale-up, so single-zone stockouts don't block scheduling.
-
-In practice the two SKUs differ by **GCP availability**, not by chart
-design. L4 typically has 2-3 zones with the full ladder in most regions
-(us-central1 a/b/c, europe-west1/4 b/c/d, etc.). RTX PRO 6000 is narrower —
-in `us-central1` only `us-central1-b` carries the full G4 ladder today, so
-the discovery result is a single zone. In regions without any RTX-carrying
-zone, discovery aborts the install with a clear error and no RTX pools are
-created (in that case, request RTX in a different region or skip the RTX
-quota request entirely — L4-only deployments are fine).
-
-### GCP GPU quotas (manual)
-
-Unlike the CPU/RAM quotas (auto-submitted by the installer via the Cloud
-Quotas API), **GPU quotas must be requested manually** before turning on
-`ENABLE_GPU=true`. The installer doesn't auto-request them because:
-
-- The Cloud Quotas API workflow for GPUs needs human review on most projects.
-- GPU prices warrant explicit operator opt-in.
-
-The two SKUs map to these regional quotas (request in the same region you're
-deploying to):
-
-| SKU | Quota name in Cloud Quotas Console | Suggested initial value |
-|---|---|---|
-| L4 | `NVIDIA L4 GPUs` (per-region) | 8 (matches `small` preset) |
-| RTX PRO 6000 | `NVIDIA RTX PRO 6000 GPUs` (per-region) | 4 (matches `small` preset) |
-
-Request via Console — Cloud Quotas → "All quotas" → filter by name → "Edit
-Quota" → set new value → submit justification. Typical turnaround is hours
-to a few days depending on GCP region and quota size.
-
-If you only need one SKU, request just that quota — the installer detects
-which SKUs the region carries and skips pools it can't provision. To enable
-GPU on an existing deployment that was originally installed without GPU,
-request the quotas first, then re-run `install.sh` with `ENABLE_GPU=true`
-exported (and the existing env vars from your prior install — see "Updates"
-below). The TF module flips `enable_gpu = true` and the GPU pools come up
-on the next IM revision without touching the existing CPU pools.
-
-### GPU Kueue queue
-
-A separate `gpu` Kueue flavor is created in the batch ClusterQueue with its
-own quota envelope. The envelope mirrors the per-SKU regional GPU quota — so
-the GCE quota (not Kueue admission) is the binding constraint on concurrent
-GPU work. Per-preset GPU quotas:
-
-| Preset | GPU count | GPU vCPU | GPU memory (GiB) |
-|---|---:|---:|---:|
-| `small`  | 12 |  448 |  1792 |
-| `medium` | 24 |  896 |  3584 |
-| `large`  | 48 | 1792 |  7168 |
-| `xlarge` | 96 | 3584 | 14336 |
-
-GPU jobs **bypass the ProvisioningRequest AdmissionCheck** (ProvReq is scoped
-to the batch flavor only). GPU scale-ups go through the standard scheduler →
-Cluster Autoscaler path: `best-effort-atomic-scale-up`'s strict capacity
-planner often refuses GPU scale-ups that a plain MIG resize would satisfy
-(per `(machine-type, zone)` inventory variance), and atomic reservation is
-unnecessary for single-pod GPU blocks anyway. ProvReq remains on the CPU
-batch flavor where multi-pod atomicity is a real benefit.
-
-### Ensure cluster routes GPU tasks properly
-
-Add block 'GPU Detection' and run it with default settings. First run may 
-require up to 10-15 minutes. GPU node look up is slower than for regular nodes.
-
 ## Cost notes
 
 Rough idle cost (no jobs running, Tier-1 small):
@@ -287,26 +196,6 @@ Two methods supported (mirrors the AWS CloudFormation runbook):
     `platforma-htpasswd-provided` secret updates on the next revision.
 - **LDAP** (`auth_method=ldap`) — corporate directory integration. Supports
   direct-bind (template) or search-bind (rules + service-account creds).
-- **SSO** — OIDC single sign-on (PKCE auth-code flow). Most IdPs use a
-  public/native client with no secret; Google requires a client secret even for
-  PKCE. Three presets, selected by `auth_method`:
-
-  | `auth_method` | Required inputs / tfvars            | Predefined / derived |
-  |---|---|---|
-  | `google` | `google_client_id`, `google_client_secret` | issuer `https://accounts.google.com`, scopes, prompt |
-  | `entra`  | `entra_tenant_id`, `entra_client_id` | issuer `https://login.microsoftonline.com/{tenant}/v2.0` |
-  | `oidc`   | `oidc_issuer` (`https`), `oidc_client_id` | optional `oidc_scopes`, `oidc_resource`, `oidc_prompt`, `oidc_user_id_claim`, `oidc_groups_claim` |
-
-  The installer rejects a method whose required inputs are missing (and a
-  non-`https` OIDC issuer) before deploying. Advanced backend flags not exposed
-  here (`subject-token-source`, `jwt-algorithm`, `redirect-port`) default to
-  backend values; override them via the chart's `auth.sso.*` block or
-  `app.extraArgs` advanced path.
-
-  > **Switching an existing instance's auth method (e.g. LDAP→SSO) is a manual
-  > operation** — see the [LDAP→SSO migration runbook](../ldap-to-sso-migration.md).
-  > It is not automated by this installer and carries identity-remap, lockout, and
-  > session-loss risks.
 
 ## Data libraries
 
@@ -351,9 +240,7 @@ PVC) survives across updates.
   re-deploy. The chart's `appVersion` flows to the running pod, which rolls
   with ~15-30 sec of gRPC blip. Desktop App reconnects automatically.
 - **Add / remove / edit data libraries**: bump the list, re-deploy.
-- **Switch auth** (htpasswd ↔ LDAP): change vars, re-deploy. Switching an
-  existing instance to/from **SSO** re-homes user identities — follow the
-  [LDAP→SSO migration runbook](../ldap-to-sso-migration.md), not a plain re-deploy.
+- **Switch auth** (htpasswd ↔ LDAP): change vars, re-deploy.
 - **Resize**: change `deployment_size`, re-deploy. The installer auto-submits
   the new quota requests; node pools resize on next scheduling.
 - **Recreation-required changes** (`region`, `cluster_name`, `zone_suffix`,
@@ -430,16 +317,6 @@ export ENABLE_QUOTA_AUTO_REQUEST=false
 # the CloudFormation runbook). Set to true on dev/test deployments where
 # bucket contents are disposable so teardown completes in one shot.
 export GCS_FORCE_DESTROY=true
-
-# Provision GPU node pools (L4 + RTX PRO 6000) and the Kueue GPU queue.
-# Default is ON (opt-out) — set ENABLE_GPU=false to skip all GPU pools.
-# See "GPU Support" above for the manual GPU quota request
-# step that MUST precede setting this to true — terraform apply fails on
-# the first GPU pool create if the regional NVIDIA_*_GPUS quota is 0.
-# Setting this on an existing deployment is supported: re-run install.sh
-# with ENABLE_GPU=true and the same env vars as your prior install; the
-# next IM revision adds the GPU pools without touching anything else.
-export ENABLE_GPU=false
 ```
 
 ### Path 2 — edit inputs in the IM Console (no script)

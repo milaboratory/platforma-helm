@@ -18,14 +18,10 @@ locals {
   max_job_cpu       = 62
   max_job_memory_gi = 484
 
-  # Per-job GPU ceilings. Mirror the largest GPU node group in infra/nodegroups.tf
-  # GPU jobs run on a separate node pool, so a job needing a GPU is ceiled to these
-  # instead of the batch max_job_cpu/max_job_memory_gi. CPU/RAM use the largest node's
-  # allocatable (headroom for kubelet + DaemonSets), matching the batch convention.
-  # Required when var.enable_gpu = true; unused otherwise.
-  max_job_gpu_memory_gi = 48
-  max_job_gpu_cpu       = 46
-  max_job_gpu_ram_gi    = 384
+  # Per-job GPU memory ceiling. Mirrors the largest VRAM available across the
+  # GPU node groups in infra/nodegroups.tf (gpu-96g → g6e.12xlarge, 192 GiB
+  # VRAM via 8 x L4). Required when var.enable_gpu = true; unused otherwise.
+  max_job_gpu_memory_gi = 192
 
   gpu_queue_gpu       = 8
   gpu_queue_cpu       = 32

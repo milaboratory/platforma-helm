@@ -44,7 +44,9 @@ granting it the ability to:
 | `roles/iam.serviceAccountTokenCreator` | Grant `roles/iam.serviceAccountTokenCreator` to the runtime SAs on themselves (needed for GCS signBlob during URL signing) |
 | `roles/resourcemanager.projectIamAdmin` | Add IAM bindings at the project level (Workload Identity bindings, runtime-SA project roles) |
 | `roles/cloudquotas.admin` | Submit `QuotaPreference` requests for the deployment-size preset |
-| `roles/artifactregistry.admin` | Create the quay.io pull-through cache repository (`<prefix>-containers`) and grant the runtime SAs `artifactregistry.reader` on it |
+
+That's 12 predefined roles. Together they cover everything the Terraform
+module creates — no more, no less.
 
 ## Apply the fine-grained role set
 
@@ -73,8 +75,7 @@ for role in \
   roles/iam.serviceAccountAdmin \
   roles/iam.serviceAccountTokenCreator \
   roles/resourcemanager.projectIamAdmin \
-  roles/cloudquotas.admin \
-  roles/artifactregistry.admin
+  roles/cloudquotas.admin
 do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member="serviceAccount:${SA_EMAIL}" \

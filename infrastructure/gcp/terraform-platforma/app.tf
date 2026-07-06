@@ -75,15 +75,6 @@ locals {
   # Image override → split repo:tag or just repo (let chart fill tag from appVersion)
   image_override_parts = var.platforma_image_override != "" ? split(":", var.platforma_image_override) : []
 
-  # Block software images default to containers.pl-open.science/milaboratories/pl-containers
-  # (served from quay.io). Rewrite that prefix to the per-install GAR pull-through cache the
-  # infra module creates (terraform-infra/gar.tf), so the cluster pulls from a same-region
-  # mirror. Mirrors the AWS ecr_registry local (aws/terraform/platforma/data.tf). The repo id
-  # must match terraform-infra: ${resource_name_prefix}-containers.
-  image_cache_registry         = "${var.region}-docker.pkg.dev/${var.project_id}/${var.resource_name_prefix}-containers"
-  default_docker_registry      = "${local.image_cache_registry}/milaboratories/pl-containers"
-  artifact_registry_login_host = "${var.region}-docker.pkg.dev"
-
   # Auth Helm values — branches on auth_method:
   #   ldap                                → ldap.* block
   #   htpasswd + htpasswd_content         → reference user-supplied secret
@@ -128,50 +119,11 @@ locals {
     }
   }
 
-  # Google: issuer/scopes/prompt/accessType are predefined; operator supplies the client ID and secret.
-  # accessType=offline is required for Google to return a refresh token (backend rejects login without one).
-  _auth_google = {
-    sso = {
-      issuer     = "https://accounts.google.com"
-      clientId   = var.google_client_id
-      scopes     = "openid profile email"
-      prompt     = "consent"
-      accessType = "offline"
-      clientSecret = {
-        secretName = "platforma-sso-client-secret"
-      }
-    }
-  }
-
-  # Entra: issuer is derived from the tenant ID.
-  _auth_entra = {
-    sso = {
-      issuer   = "https://login.microsoftonline.com/${var.entra_tenant_id}/v2.0"
-      clientId = var.entra_client_id
-    }
-  }
-
-  # Custom OIDC: empty optional fields are skipped by the chart (backend defaults apply).
-  _auth_oidc = {
-    sso = {
-      issuer      = var.oidc_issuer
-      clientId    = var.oidc_client_id
-      scopes      = var.oidc_scopes
-      resource    = var.oidc_resource
-      prompt      = var.oidc_prompt
-      userIdClaim = var.oidc_user_id_claim
-      groupsClaim = var.oidc_groups_claim
-    }
-  }
-
   auth_helm_value = merge(
     { showUserList = var.show_user_list },
     (var.auth_method == "ldap") ? local._auth_ldap : {},
     (var.auth_method == "htpasswd" && var.htpasswd_content != "") ? local._auth_htpasswd_content : {},
     (var.auth_method == "htpasswd" && var.htpasswd_content == "") ? local._auth_htpasswd_auto : {},
-    (var.auth_method == "google") ? local._auth_google : {},
-    (var.auth_method == "entra") ? local._auth_entra : {},
-    (var.auth_method == "oidc") ? local._auth_oidc : {},
   )
 }
 
@@ -312,23 +264,6 @@ resource "kubernetes_secret" "ldap_search_password" {
 
   data = {
     password = var.ldap_search_password
-  }
-
-  type = "Opaque"
-}
-
-# SSO client secret (Google requires one even for PKCE). The chart references it
-# via auth.sso.clientSecret.secretName.
-resource "kubernetes_secret" "sso_client_secret" {
-  count = (var.auth_method == "google" && var.google_client_secret != "") ? 1 : 0
-
-  metadata {
-    name      = "platforma-sso-client-secret"
-    namespace = kubernetes_namespace.platforma.metadata[0].name
-  }
-
-  data = {
-    "client-secret" = var.google_client_secret
   }
 
   type = "Opaque"
@@ -494,13 +429,7 @@ resource "helm_release" "platforma" {
             # to the largest VRAM available on a single GPU node (chart fails
             # to render otherwise).
             gpu = {
-              enabled = var.enable_gpu
-              tolerations = [{
-                key      = "nvidia.com/gpu"
-                operator = "Equal"
-                value    = "present"
-                effect   = "NoSchedule"
-              }]
+              enabled = false
             }
           }
           dedicated = {
@@ -512,16 +441,6 @@ resource "helm_release" "platforma" {
               batch = {
                 cpu    = local.effective_kueue_batch_queue_cpu
                 memory = local.effective_kueue_batch_queue_memory
-              }
-              # GPU ClusterQueue admission cap. Sized from gpu_capacity in
-              # presets.tf so the GCE NVIDIA_L4_GPUS regional quota is the
-              # binding constraint (not Kueue admission). The "gpu" field
-              # name maps to "nvidia.com/gpu" inside the chart template
-              # (helm/charts/platforma/templates/kueue-clusterqueues.yaml).
-              gpu = {
-                cpu    = local.effective_kueue_gpu_queue_cpu
-                memory = local.effective_kueue_gpu_queue_memory
-                gpu    = local.effective_kueue_gpu_queue_count
               }
             }
           }
@@ -566,16 +485,6 @@ resource "helm_release" "platforma" {
           serviceAppProtocols = {
             grpc = "kubernetes.io/h2c"
           }
-
-          # Pull block software images through the GAR quay.io mirror (the infra
-          # module's pull-through cache) instead of from quay.io directly. The
-          # --google-artifact-registry flag lets Google Batch job VMs docker-login
-          # to GAR with an SA token; it is a no-op on the GKE/Kueue path (kubelet
-          # pulls with the node SA) and harmless when Batch is disabled.
-          extraArgs = [
-            "--default-docker-registry=${local.default_docker_registry}",
-            "--google-artifact-registry=${local.artifact_registry_login_host}",
-          ]
         }
       }
     ))
@@ -597,26 +506,6 @@ resource "helm_release" "platforma" {
     kubernetes_secret.license,
     kubernetes_secret.htpasswd_provided,
     kubernetes_secret.ldap_search_password,
-    kubernetes_secret.sso_client_secret,
     kubernetes_secret.master_secret,
   ]
-
-  lifecycle {
-    precondition {
-      condition     = var.auth_method != "google" || var.google_client_id != ""
-      error_message = "google_client_id is required when auth_method is 'google'."
-    }
-    precondition {
-      condition     = var.auth_method != "google" || var.google_client_secret != ""
-      error_message = "google_client_secret is required when auth_method is 'google'."
-    }
-    precondition {
-      condition     = var.auth_method != "entra" || (var.entra_tenant_id != "" && var.entra_client_id != "")
-      error_message = "entra_tenant_id and entra_client_id are both required when auth_method is 'entra'."
-    }
-    precondition {
-      condition     = var.auth_method != "oidc" || (var.oidc_issuer != "" && var.oidc_client_id != "")
-      error_message = "oidc_issuer and oidc_client_id are both required when auth_method is 'oidc'."
-    }
-  }
 }

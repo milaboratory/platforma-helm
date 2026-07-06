@@ -13,7 +13,6 @@ locals {
     "storage.googleapis.com",
     "config.googleapis.com",
     "cloudquotas.googleapis.com",
-    "artifactregistry.googleapis.com",
   ]
 }
 

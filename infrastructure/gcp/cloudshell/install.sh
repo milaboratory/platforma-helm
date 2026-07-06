@@ -613,50 +613,8 @@ except Exception:
   echo
 }
 
-verify_sso_config() {
-  case "${AUTH_METHOD:-}" in
-    google)
-      bold "SSO config precheck (Google)"
-      if [[ -z "${GOOGLE_CLIENT_ID:-}" ]]; then
-        red "✗ GOOGLE_CLIENT_ID is empty — google client id is required."; exit 1
-      fi
-      if [[ -z "${GOOGLE_CLIENT_SECRET:-}" ]]; then
-        red "✗ GOOGLE_CLIENT_SECRET is empty — google client secret is required."; exit 1
-      fi
-      green "  ✓ Google SSO config OK (client_id=${GOOGLE_CLIENT_ID})"
-      echo
-      ;;
-    entra)
-      bold "SSO config precheck (Entra)"
-      if [[ -z "${ENTRA_TENANT_ID:-}" ]]; then
-        red "✗ ENTRA_TENANT_ID is empty — entra tenant id is required."; exit 1
-      fi
-      if [[ -z "${ENTRA_CLIENT_ID:-}" ]]; then
-        red "✗ ENTRA_CLIENT_ID is empty — entra client id is required."; exit 1
-      fi
-      green "  ✓ Entra SSO config OK (tenant=${ENTRA_TENANT_ID}, client_id=${ENTRA_CLIENT_ID})"
-      echo
-      ;;
-    oidc)
-      bold "SSO config precheck (OIDC)"
-      local issuer="${OIDC_ISSUER:-}"
-      if [[ -z "${issuer}" ]]; then
-        red "✗ OIDC_ISSUER is empty."; exit 1
-      fi
-      if [[ ! "${issuer}" =~ ^https:// ]]; then
-        red "✗ OIDC_ISSUER='${issuer}' — oidc issuer must be an https URL."; exit 1
-      fi
-      if [[ -z "${OIDC_CLIENT_ID:-}" ]]; then
-        red "✗ OIDC_CLIENT_ID is empty — oidc client id is required."; exit 1
-      fi
-      green "  ✓ OIDC config OK (issuer=${issuer}, client_id=${OIDC_CLIENT_ID})"
-      echo
-      ;;
-  esac
-}
-
 # -----------------------------------------------------------------------------
-# Auth: htpasswd (auto-gen / user-supplied content), LDAP, or SSO
+# Auth: htpasswd (auto-gen / user-supplied content) or LDAP
 # -----------------------------------------------------------------------------
 
 collect_auth_inputs() {
@@ -672,15 +630,9 @@ collect_auth_inputs() {
     ldap      — corporate directory integration (Active Directory, OpenLDAP,
                 etc.). Use this in production when access should be governed
                 by your central directory.
-    google    — Google Workspace SSO. Needs a Google OAuth client ID and client
-                secret (issuer and scopes are predefined).
-    entra     — Microsoft Entra ID SSO. Needs the tenant ID and an application
-                (client) ID.
-    oidc      — any OpenID Connect provider. Requires an issuer URL (https://)
-                and a public OAuth client ID.
 
 EOF
-  prompt_var AUTH_METHOD "Auth method (htpasswd|ldap|google|entra|oidc)" "htpasswd"
+  prompt_var AUTH_METHOD "Auth method (htpasswd|ldap)" "htpasswd"
 
   case "${AUTH_METHOD}" in
     htpasswd)
@@ -724,25 +676,8 @@ EOF
         prompt_secret_var LDAP_SEARCH_PASSWORD "Search service account password"
       fi
       ;;
-    google)
-      prompt_var GOOGLE_CLIENT_ID "Google OAuth client ID (e.g. 12345-abc.apps.googleusercontent.com)"
-      prompt_secret_var GOOGLE_CLIENT_SECRET "Google OAuth client secret"
-      ;;
-    entra)
-      prompt_var ENTRA_TENANT_ID "Entra directory (tenant) ID"
-      prompt_var ENTRA_CLIENT_ID "Entra application (client) ID"
-      ;;
-    oidc)
-      prompt_var OIDC_ISSUER    "OIDC issuer URL (must start with https://)"
-      prompt_var OIDC_CLIENT_ID "Public OAuth client ID"
-      prompt_var OIDC_SCOPES        "OIDC scopes (space-separated, empty = default)" ""
-      prompt_var OIDC_RESOURCE      "OIDC resource/audience (optional)" ""
-      prompt_var OIDC_PROMPT        "OIDC prompt (none|login|consent|select_account, optional)" ""
-      prompt_var OIDC_USER_ID_CLAIM "JWT user id claim (optional, default 'sub')" ""
-      prompt_var OIDC_GROUPS_CLAIM  "JWT groups claim (optional)" ""
-      ;;
     *)
-      red "Invalid auth_method '${AUTH_METHOD}' — must be htpasswd, ldap, google, entra or oidc."; exit 1
+      red "Invalid auth_method '${AUTH_METHOD}' — must be htpasswd or ldap."; exit 1
       ;;
   esac
   echo
@@ -943,9 +878,7 @@ detect_existing_quota_prefs() {
 
   if (( has_warning > 0 )); then
     echo
-    if [[ "${ACCEPT_QUOTA_WARNINGS:-false}" == "true" ]]; then
-      warn "ACCEPT_QUOTA_WARNINGS=true — proceeding despite quotas below preset requirements (non-interactive)."
-    elif ! prompt_yn "Existing quotas are below preset requirements. Continue anyway?"; then
+    if ! prompt_yn "Existing quotas are below preset requirements. Continue anyway?"; then
       red "Aborted."; exit 1
     fi
   fi
@@ -1386,39 +1319,6 @@ build_tfvars_json_full() {
     fi
   fi
 
-  # Auth: SSO paths (issuer/scopes are derived in Terraform for google/entra)
-  if [[ "${AUTH_METHOD}" == "google" ]]; then
-    doc="$(echo "${doc}" | jq \
-      --arg client_id     "${GOOGLE_CLIENT_ID}" \
-      --arg client_secret "${GOOGLE_CLIENT_SECRET}" \
-      '. + {google_client_id: $client_id, google_client_secret: $client_secret}')"
-  fi
-  if [[ "${AUTH_METHOD}" == "entra" ]]; then
-    doc="$(echo "${doc}" | jq \
-      --arg tenant    "${ENTRA_TENANT_ID}" \
-      --arg client_id "${ENTRA_CLIENT_ID}" \
-      '. + {entra_tenant_id: $tenant, entra_client_id: $client_id}')"
-  fi
-  if [[ "${AUTH_METHOD}" == "oidc" ]]; then
-    doc="$(echo "${doc}" | jq \
-      --arg issuer       "${OIDC_ISSUER}" \
-      --arg client_id    "${OIDC_CLIENT_ID}" \
-      --arg scopes       "${OIDC_SCOPES:-}" \
-      --arg resource     "${OIDC_RESOURCE:-}" \
-      --arg prompt       "${OIDC_PROMPT:-}" \
-      --arg user_claim   "${OIDC_USER_ID_CLAIM:-}" \
-      --arg groups_claim "${OIDC_GROUPS_CLAIM:-}" \
-      '. + {
-         oidc_issuer:        $issuer,
-         oidc_client_id:     $client_id,
-         oidc_scopes:        $scopes,
-         oidc_resource:      $resource,
-         oidc_prompt:        $prompt,
-         oidc_user_id_claim: $user_claim,
-         oidc_groups_claim:  $groups_claim
-       }')"
-  fi
-
   # enable_quota_auto_request — opt out of QuotaPreference creation entirely.
   # Set ENABLE_QUOTA_AUTO_REQUEST=false on long-lived projects whose quotas
   # are already above what the deployment_size preset requests; GCP rejects
@@ -1595,7 +1495,6 @@ build_tfvars_json_infra() {
     ingress_enabled, domain_name, dns_zone_name, dns_zone_project,
     enable_google_batch,
     enable_quota_auto_request, contact_email, skip_quota_requests,
-    enable_gpu, gpu_l4_node_locations, gpu_rtx_pro_6000_node_locations,
     kueue_max_job_cpu, kueue_max_job_memory,
     kueue_batch_queue_cpu, kueue_batch_queue_memory
   } | with_entries(select(.value != null))' "${full}" > "${out}"
@@ -1622,8 +1521,6 @@ build_tfvars_json_platforma() {
         ingress_enabled, domain_name,
         kueue_max_job_cpu, kueue_max_job_memory,
         kueue_batch_queue_cpu, kueue_batch_queue_memory,
-        enable_gpu,
-        kueue_gpu_queue_cpu, kueue_gpu_queue_memory, kueue_gpu_queue_count,
         batch_pool_max_nodes_overrides, ui_pool_max_nodes, workspace_capacity_gb,
         license_key, platforma_chart_version, helm_chart_repository,
         platforma_image_override, deploy_platforma,
@@ -1707,7 +1604,7 @@ submit_deployment() {
 
   info "Inputs (with secrets redacted):"
   jq 'to_entries
-      | map(if (.key | test("license_key|password|secret|htpasswd_content")) then .value = "***" else . end)
+      | map(if (.key | test("license_key|password|secret_key|htpasswd_content")) then .value = "***" else . end)
       | from_entries' "${work_dir}/inputs.auto.tfvars.json" | sed 's/^/    /'
 
   # Detect a previous deployment in a state that 'apply' can't recover from
@@ -1913,7 +1810,6 @@ main() {
   normalize_boolean_inputs
   verify_dns_delegation
   verify_ldap_config
-  verify_sso_config
   detect_existing_quota_prefs
   detect_quota_decrease_collisions
   ensure_im_service_account
@@ -1938,9 +1834,7 @@ main() {
   Source:          ${REPO_ROOT} @ ${source_ref}
 
 EOF
-  if [[ "${ASSUME_YES:-false}" == "true" ]]; then
-    warn "ASSUME_YES=true — proceeding with deployment non-interactively."
-  elif ! prompt_yn "Proceed?"; then
+  if ! prompt_yn "Proceed?"; then
     echo "Aborted."; exit 0
   fi
   echo
@@ -1960,8 +1854,4 @@ EOF
   print_outputs "${platforma_deployment}"
 }
 
-# Guard so tests can `source` this script to call individual functions
-# (e.g. build_tfvars_json_platforma) without running the full interactive flow.
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  main "$@"
-fi
+main "$@"

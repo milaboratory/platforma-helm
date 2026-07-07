@@ -2,19 +2,7 @@
 set -e
 set -u
 
-# Prepend GPU driver paths (set by the chart when the job runs on a GPU node).
-# Done at runtime, not via k8s env, because k8s env can't reference $(PATH) /
-# $(LD_LIBRARY_PATH) from the container image — setting them statically would
-# wipe image-provided entries (e.g. conda's /opt/conda/bin).
-if [ -n "${PL_GPU_BIN_PATH:-}" ]; then
-  export PATH="${PL_GPU_BIN_PATH}:${PATH}"
-fi
-if [ -n "${PL_GPU_LIB_PATH:-}" ]; then
-  export LD_LIBRARY_PATH="${PL_GPU_LIB_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-fi
-
-# Prepend PL_JOB_PATH to PATH if set. Applied after PL_GPU_BIN_PATH so
-# runenv-provided entries (e.g. a conda env's bin) win over GPU paths.
+# Prepend PL_JOB_PATH to PATH if set
 if [ -n "${PL_JOB_PATH:-}" ]; then
   export PATH="${PL_JOB_PATH}:${PATH}"
 fi

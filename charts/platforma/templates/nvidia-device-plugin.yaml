@@ -1,17 +1,9 @@
-{{- if and .Values.kueue.pools.gpu.enabled (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources }}
+{{- if .Values.kueue.pools.gpu.enabled }}
 # =============================================================================
 # NVIDIA Device Plugin DaemonSet
 # =============================================================================
 # Exposes nvidia.com/gpu resources on GPU nodes so the K8s scheduler can
 # assign GPU workloads. Only runs on nodes with NVIDIA GPUs.
-#
-# Gated on the same condition as the cluster-scoped Kueue resources
-# (ClusterQueues, ResourceFlavors): this DaemonSet and its cluster-scoped RBAC
-# are cluster-wide infrastructure, deployed once by the install that owns the
-# Kueue cohort (dedicated mode + createClusterResources). Shared-mode and
-# secondary installs still set kueue.pools.gpu.enabled=true to route GPU jobs
-# and enable the runner GPU flag, but must NOT re-deploy these cluster-scoped
-# objects — two releases doing so collide on the identical resource names.
 # Based on: https://github.com/NVIDIA/k8s-device-plugin v0.17.0
 #
 # Startup taint protocol:

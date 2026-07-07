@@ -160,6 +160,75 @@ resource "google_secret_manager_secret_version" "admin_password" {
 }
 
 # =============================================================================
+# Master secret — root key for Platforma's security layer (JWT signing,
+# resource signing, OIDC session encryption). REQUIRED by chart >= 4.x:
+# templates/_validate-secrets.tpl fails the render if the Secret referenced by
+# masterSecret.secretName is absent. It does NOT encrypt the main
+# bioinformatics DB, so introducing it onto an existing install only
+# invalidates sessions + signatures (users re-login) — see core/pl
+# cmd/platforma/main.go SyncMasterSecretHash (warning, not fatal).
+#
+# Self-contained generate path (mirrors admin_password above): random_id
+# produces 32 raw bytes, exposed base64-encoded via .b64_std — exactly the
+# format the backend expects (base64, >= 32 raw bytes decoded). The value is
+# persisted in Terraform state and reused across applies, so it is stable;
+# `terraform destroy` (or tainting random_id) rotates it. Stored in Secret
+# Manager for retrieval, same as admin_password.
+# =============================================================================
+resource "random_id" "master_secret" {
+  byte_length = 32
+}
+
+locals {
+  master_secret_value = random_id.master_secret.b64_std
+}
+
+resource "google_secret_manager_secret" "master_secret" {
+  secret_id = "${var.cluster_name}-platforma-master-secret"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.enabled]
+}
+
+resource "google_secret_manager_secret_version" "master_secret" {
+  secret      = google_secret_manager_secret.master_secret.id
+  secret_data = local.master_secret_value
+}
+
+resource "kubernetes_secret" "master_secret" {
+  metadata {
+    name      = "platforma-master-secret"
+    namespace = kubernetes_namespace.platforma.metadata[0].name
+  }
+
+  data = {
+    "master-secret" = local.master_secret_value
+  }
+
+  type = "Opaque"
+
+  # Guard against a hand-edited / rotated value that the backend would reject
+  # at pod startup (~15 min into a Helm install, after image pull + PVC bind).
+  # We do NOT base64decode() here — OpenTofu requires the decoded result to be
+  # valid UTF-8, which random 32-byte secrets almost never are; instead we
+  # check the base64 alphabet and compute the decoded length arithmetically.
+  lifecycle {
+    precondition {
+      condition = (
+        can(regex("^[A-Za-z0-9+/]*={0,2}$", local.master_secret_value))
+        && floor(length(local.master_secret_value) * 3 / 4)
+        -length(regexall("=", local.master_secret_value)) >= 32
+      )
+      error_message = "Platforma master secret must be base64-encoded with at least 32 raw bytes after decoding."
+    }
+  }
+}
+
+# =============================================================================
 # Auth: htpasswd-content secret (when user supplied bcrypted content) or
 # LDAP search-password secret (when ldap with search bind). The auto-gen
 # htpasswd path uses random_password.admin + Secret Manager (above); the
@@ -289,6 +358,11 @@ resource "helm_release" "platforma" {
           secretKey  = "MI_LICENSE"
         }
 
+        masterSecret = {
+          secretName = kubernetes_secret.master_secret.metadata[0].name
+          secretKey  = "master-secret"
+        }
+
         serviceAccount = {
           create = true
           annotations = {
@@ -415,6 +489,7 @@ resource "helm_release" "platforma" {
     google_storage_bucket_iam_member.server_bucket_admin,
     google_storage_bucket_iam_member.jobs_bucket_admin,
     kubernetes_secret.license,
+    kubernetes_secret.master_secret,
     kubernetes_secret.htpasswd_provided,
     kubernetes_secret.ldap_search_password,
   ]

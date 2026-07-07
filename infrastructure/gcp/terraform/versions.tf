@@ -24,9 +24,16 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 2.35"
     }
+    # Pinned below 2.4: alekc/kubectl 2.4.0 introduced eager plan-time
+    # provider-config validation that rejects this module's provider pattern
+    # (host = google_container_cluster.primary.endpoint — an unknown value at
+    # plan time on a fresh apply). This monolithic module intentionally keeps
+    # the managed-resource provider wiring, so it must stay on 2.1–2.3. The
+    # split infra/platforma modules solve this differently (data-source host)
+    # and are free to use ~> 2.4. Do NOT widen this ceiling here.
     kubectl = {
       source  = "alekc/kubectl"
-      version = "~> 2.1"
+      version = ">= 2.1, < 2.4"
     }
     http = {
       source  = "hashicorp/http"

@@ -20,11 +20,7 @@
         },
         "pullPolicy": {
           "type": "string",
-          "enum": [
-            "Always",
-            "IfNotPresent",
-            "Never"
-          ]
+          "enum": ["Always", "IfNotPresent", "Never"]
         }
       },
       "additionalProperties": false
@@ -38,18 +34,21 @@
             "type": "string"
           }
         },
-        "required": [
-          "name"
-        ]
+        "required": ["name"]
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "checkSecrets": {
+          "type": "boolean"
+        }
       }
     },
     "environment": {
       "type": "string",
-      "enum": [
-        "",
-        "aws",
-        "gcp"
-      ]
+      "enum": ["", "aws", "gcp"]
     },
     "license": {
       "type": "object",
@@ -61,15 +60,15 @@
           "type": "string"
         }
       },
-      "required": [
-        "secretName",
-        "secretKey"
-      ],
+      "required": ["secretName", "secretKey"],
       "additionalProperties": false
     },
     "auth": {
       "type": "object",
       "properties": {
+        "showUserList": {
+          "type": "boolean"
+        },
         "htpasswd": {
           "type": "object",
           "properties": {
@@ -85,10 +84,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "username",
-                  "password"
-                ]
+                "required": ["username", "password"]
               }
             },
             "secretName": {
@@ -174,6 +170,62 @@
             }
           },
           "additionalProperties": false
+        },
+        "sso": {
+          "type": "object",
+          "properties": {
+            "issuer": {
+              "type": "string"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "scopes": {
+              "type": "string"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string",
+              "enum": ["", "none", "login", "consent", "select_account"]
+            },
+            "accessType": {
+              "type": "string",
+              "enum": ["", "online", "offline"]
+            },
+            "userIdClaim": {
+              "type": "string"
+            },
+            "groupsClaim": {
+              "type": "string"
+            },
+            "clientSecret": {
+              "type": "object",
+              "properties": {
+                "secretName": {
+                  "type": "string"
+                },
+                "secretKey": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "masterSecret": {
+      "type": "object",
+      "properties": {
+        "secretName": {
+          "type": "string"
+        },
+        "secretKey": {
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -305,11 +357,7 @@
           "properties": {
             "type": {
               "type": "string",
-              "enum": [
-                "",
-                "s3",
-                "gcs"
-              ]
+              "enum": ["", "s3", "gcs"]
             },
             "s3": {
               "type": "object",
@@ -384,11 +432,7 @@
           },
           "type": {
             "type": "string",
-            "enum": [
-              "pvc",
-              "s3",
-              "gcs"
-            ]
+            "enum": ["pvc", "s3", "gcs"]
           },
           "pvc": {
             "type": "object",
@@ -397,9 +441,7 @@
                 "type": "string"
               }
             },
-            "required": [
-              "existingClaim"
-            ]
+            "required": ["existingClaim"]
           },
           "s3": {
             "type": "object",
@@ -439,9 +481,7 @@
                 "type": "boolean"
               }
             },
-            "required": [
-              "bucket"
-            ]
+            "required": ["bucket"]
           },
           "gcs": {
             "type": "object",
@@ -459,15 +499,10 @@
                 "type": "string"
               }
             },
-            "required": [
-              "bucket"
-            ]
+            "required": ["bucket"]
           }
         },
-        "required": [
-          "name",
-          "type"
-        ]
+        "required": ["name", "type"]
       }
     },
     "kueue": {
@@ -475,21 +510,24 @@
       "properties": {
         "mode": {
           "type": "string",
-          "enum": [
-            "dedicated",
-            "shared"
-          ]
+          "enum": ["dedicated", "shared"]
         },
         "maxJobResources": {
           "type": "object",
           "properties": {
             "cpu": {
-              "type": [
-                "integer",
-                "string"
-              ]
+              "type": ["integer", "string"]
             },
             "memory": {
+              "type": "string"
+            },
+            "gpuMemory": {
+              "type": "string"
+            },
+            "gpuCpu": {
+              "type": ["integer", "string"]
+            },
+            "gpuRam": {
               "type": "string"
             }
           },
@@ -551,10 +589,7 @@
                   "type": "object",
                   "properties": {
                     "cpu": {
-                      "type": [
-                        "integer",
-                        "string"
-                      ]
+                      "type": ["integer", "string"]
                     },
                     "memory": {
                       "type": "string"
@@ -565,10 +600,7 @@
                   "type": "object",
                   "properties": {
                     "cpu": {
-                      "type": [
-                        "integer",
-                        "string"
-                      ]
+                      "type": ["integer", "string"]
                     },
                     "memory": {
                       "type": "string"
@@ -579,16 +611,10 @@
                   "type": "object",
                   "properties": {
                     "gpu": {
-                      "type": [
-                        "integer",
-                        "string"
-                      ]
+                      "type": ["integer", "string"]
                     },
                     "cpu": {
-                      "type": [
-                        "integer",
-                        "string"
-                      ]
+                      "type": ["integer", "string"]
                     },
                     "memory": {
                       "type": "string"
@@ -773,11 +799,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "name",
-                  "secretName",
-                  "secretKey"
-                ]
+                "required": ["name", "secretName", "secretKey"]
               }
             },
             "configMapVariables": {
@@ -795,11 +817,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "name",
-                  "configMapName",
-                  "configMapKey"
-                ]
+                "required": ["name", "configMapName", "configMapKey"]
               }
             }
           },

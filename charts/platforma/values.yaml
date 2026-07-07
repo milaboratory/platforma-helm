@@ -24,7 +24,7 @@ fullnameOverride: ""
 # -- Container image
 image:
   repository: quay.io/milaboratories/platforma
-  tag: ""  # Defaults to Chart.appVersion
+  tag: "" # Defaults to Chart.appVersion
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -56,6 +56,28 @@ license:
   secretKey: "MI_LICENSE"
 
 # =============================================================================
+# MASTER SECRET
+# =============================================================================
+# The master secret is the root key for two independent platform features:
+#   (a) encryption of sensitive data persisted in the platform DB
+#   (b) signing/validation of user sessions and resource signatures
+#
+# Rotating it invalidates all DB-encrypted secrets, all sessions, and all
+# resource signatures.
+#
+# Required for Platforma security layer. Affects authentication and data
+# encryption in DB.
+#
+# Create the secret before installing:
+#   kubectl create secret generic platforma-master-secret \
+#     --from-literal=master-secret="$(openssl rand -base64 32)"
+masterSecret:
+  # -- Name of existing K8s Secret containing the master secret
+  secretName: "platforma-master-secret"
+  # -- Key within the secret
+  secretKey: "master-secret"
+
+# =============================================================================
 # AUTHENTICATION
 # =============================================================================
 # Authentication is mandatory — users cannot log in without it.
@@ -65,6 +87,13 @@ license:
 # Helm fails if neither is configured.
 
 auth:
+  # -- Allow clients to list the users known to the server (used by the
+  # "pick a user" project-sharing affordance). Set to false on multitenant
+  # instances so users of one tenant cannot enumerate users of another:
+  # AuthAPI.ListUsers then returns an empty list and the userListing capability
+  # is not advertised.
+  showUserList: true
+
   # -- htpasswd file-based authentication
   # Two options:
   #   1. Inline credentials (simplest) — set credentials list below
@@ -129,7 +158,7 @@ auth:
       # -- Skip server certificate verification (not recommended for production)
       insecureSkipVerify: false
       # -- CA certificate: safe way to trust self-signed certificate of LDAP server.
-      # If your LDAP server uses self-signed certificate, or all traffic to LDAP server is 
+      # If your LDAP server uses self-signed certificate, or all traffic to LDAP server is
       # intercepted by some network proxy (like ZScaler), provide this certificate's CA here
       # instead of using `insecureSkipVerify: true`
       caSecretRef:
@@ -140,6 +169,35 @@ auth:
         name: ""
         certKey: "tls.crt"
         keyKey: "tls.key"
+
+  # -- SSO / OIDC authentication.
+  # Set issuer to enable. Backend defaults apply to any field left empty;
+  # advanced flags are available via app.extraArgs.
+  sso:
+    # -- OIDC issuer URL (set to enable SSO). Must be https.
+    issuer: ""
+    # -- Public OAuth client ID registered at the IdP (required when issuer set)
+    clientId: ""
+    # -- Space-separated OIDC scopes (must contain 'openid'). Empty = backend default.
+    scopes: ""
+    # -- Optional 'resource'/audience param (RFC 8707). Required by some IdPs.
+    resource: ""
+    # -- OIDC 'prompt' parameter. One of: none, login, consent, select_account. Empty = backend default.
+    prompt: ""
+    # -- OIDC 'access_type' parameter. One of: online, offline. Google requires 'offline'
+    # to issue a refresh token; other IdPs ignore it. Empty = backend default.
+    accessType: ""
+    # -- JWT claim carrying the stable user id. Empty = backend default ('sub').
+    userIdClaim: ""
+    # -- JWT claim carrying group memberships. Empty = backend default ('groups').
+    groupsClaim: ""
+    # -- OAuth client secret, referenced from an existing secret. Some IdPs (e.g.
+    # Google) require one. The installers create this secret and set secretName.
+    clientSecret:
+      # -- Name of the existing secret holding the client secret. Empty = not set.
+      secretName: ""
+      # -- Key within the secret. Defaults to 'client-secret'.
+      secretKey: "client-secret"
 
 # =============================================================================
 # STORAGE
@@ -217,10 +275,10 @@ storage:
       bucket: ""
       region: ""
       prefix: ""
-      endpoint: ""            # Custom S3-compatible endpoint (leave empty for AWS S3)
-      externalEndpoint: ""    # S3 URL for Desktop App if it differs from backend's (S3-compatible only)
-      noDataIntegrity: false  # Disable SHA256 integrity checks (Ceph, old MinIO)
-      secretRef:              # Only needed for non-IRSA setups or S3-compatible storage
+      endpoint: "" # Custom S3-compatible endpoint (leave empty for AWS S3)
+      externalEndpoint: "" # S3 URL for Desktop App if it differs from backend's (S3-compatible only)
+      noDataIntegrity: false # Disable SHA256 integrity checks (Ceph, old MinIO)
+      secretRef: # Only needed for non-IRSA setups or S3-compatible storage
         name: ""
         accessKeyField: "access-key"
         secretKeyField: "secret-key"
@@ -229,7 +287,7 @@ storage:
       bucket: ""
       projectId: ""
       prefix: ""
-      serviceAccount: ""  # GCP service account for Workload Identity
+      serviceAccount: "" # GCP service account for Workload Identity
 
 # -- External read-only data sources (data library)
 # Makes external datasets available to workflows. Each source appears
@@ -272,13 +330,21 @@ dataSources: []
 
 kueue:
   # -- Mode: dedicated (chart creates all resources) or shared (uses existing queues)
-  mode: dedicated  # dedicated | shared
+  mode: dedicated # dedicated | shared
 
   # -- Maximum resources a single job can request
   # Jobs requesting more than this are rejected. Increase if you have large-memory nodes.
+  # gpuMemory/gpuCpu/gpuRam are required when kueue.pools.gpu.enabled=true (chart fails to
+  # render otherwise); they are ignored when GPU is disabled.
+  # GPU jobs run on a separate node pool, so a job needing a GPU is ceiled to gpuCpu/gpuRam/
+  # gpuMemory instead of cpu/memory. Set each to the largest single GPU node's *allocatable*
+  # (capacity minus kubelet + DaemonSet overhead) so a clamped request actually schedules.
   maxJobResources:
     cpu: 64
     memory: 256Gi
+    gpuMemory: 48Gi
+    gpuCpu: 48
+    gpuRam: 64Gi
 
   # -- Node pool topology — controls where jobs run
   # Set nodeSelector/tolerations to match your node groups.
@@ -362,8 +428,8 @@ kueue:
   shared:
     # -- ClusterQueue names (chart creates LocalQueues pointing at these)
     clusterQueues:
-      ui: ""       # ClusterQueue for UI tasks
-      batch: ""    # ClusterQueue for batch tasks
+      ui: "" # ClusterQueue for UI tasks
+      batch: "" # ClusterQueue for batch tasks
     # -- WorkloadPriorityClass names (must already exist in cluster)
     workloadPriorityClasses:
       uiTasks: ""
@@ -385,7 +451,7 @@ ingress:
   host: ""
   tls:
     enabled: false
-    secretName: ""  # Leave empty when the ingress controller manages TLS (e.g., ALB with ACM)
+    secretName: "" # Leave empty when the ingress controller manages TLS (e.g., ALB with ACM)
   annotations: {}
 
 # -- Additional ingress (e.g., internal network, second region)
@@ -476,11 +542,11 @@ app:
     persistence:
       enabled: true
       size: 20Gi
-      storageClass: ""      # "" = cluster default
-      existingClaim: ""     # Use pre-created PVC instead of creating one
+      storageClass: "" # "" = cluster default
+      existingClaim: "" # Use pre-created PVC instead of creating one
       rotation:
-        size: 1Gi           # Rotate when a log file reaches this size
-        count: 100          # Number of rotated files to keep
+        size: 1Gi # Rotate when a log file reaches this size
+        count: 100 # Number of rotated files to keep
 
   # -- Monitoring
   # Platforma exposes Prometheus metrics. To enable scraping:
@@ -494,7 +560,6 @@ app:
     gkeMonitoring:
       enabled: false
       interval: 30s
-
 
 # =============================================================================
 # SERVICE ACCOUNTS
@@ -538,3 +603,15 @@ jobs:
   # -- Secret mounted into every job pod
   # Contains credentials jobs need at runtime (license key, etc.).
   secretName: "platforma-license"
+
+# =============================================================================
+# CHART-LEVEL VALIDATION. You usually don't need to change it.
+# =============================================================================
+# Toggles for the pre-flight checks the chart runs at render time.
+validation:
+  # -- Verify that every Secret the chart references actually exists in the
+  # target namespace (and contains the expected keys) before installing.
+  # You can disable it if you don't have access to secrets, but you are sure
+  # Service Account of final workload has this access.
+  # See templates/_validate-secrets.tpl for the full list of checks.
+  checkSecrets: true

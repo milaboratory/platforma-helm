@@ -5,13 +5,23 @@
 {{- if ne (include "platforma.workspaceConfigured" .) "true" }}
 {{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.fsxLustre.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
 {{- end }}
+{{- $hasAuthToken := false -}}
+{{- range .Values.app.extraArgs -}}
+  {{- if or (eq . "--auth-token") (hasPrefix "--auth-token=" .) -}}
+    {{- $hasAuthToken = true -}}
+  {{- end -}}
+{{- end -}}
 {{- if not (or (include "platforma.htpasswdSecretName" .)
-               (has "--no-auth" .Values.app.extraArgs)
-               .Values.auth.ldap.server ) }}
-{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n\nTo disable auth for development, add to app.extraArgs:\n  - \"--no-auth\"" }}
+               .Values.auth.ldap.server
+               .Values.auth.sso.issuer
+               $hasAuthToken ) }}
+{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n  auth.sso.issuer              # SSO / OIDC auth\n\nFor development/testing, pass a static token via app.extraArgs:\n  - \"--auth-token=<token>\"" }}
 {{- end }}
 {{- if and .Values.auth.htpasswd.secretName (gt (len .Values.auth.htpasswd.credentials) 0) }}
 {{- fail "ERROR: Set either auth.htpasswd.secretName or auth.htpasswd.credentials, not both." }}
+{{- end }}
+{{- if not .Values.masterSecret.secretName }}
+{{- fail "ERROR: masterSecret.secretName is required for Platforma security layer.\n\nCreate the secret first:\n  kubectl create secret generic platforma-master-secret \\\n    --from-literal=master-secret=\"$(openssl rand -base64 32)\"\n\nThen set in values.yaml:\n  masterSecret:\n    secretName: platforma-master-secret" }}
 {{- end }}
 {{- /* Validate main storage type vs environment */ -}}
 {{- $mainType := include "platforma.mainStorageType" . -}}
@@ -39,6 +49,10 @@
 {{- if and (eq $mainType "gcs") (not .Values.storage.main.gcs.serviceAccount) }}
 {{- fail "ERROR: storage.main.gcs.serviceAccount is required when using GCS storage (Workload Identity)." }}
 {{- end }}
+{{- /* Verify that every Secret the chart references actually exists in the
+       target namespace and contains the expected keys. No-op during
+       `helm template` / client-side dry-run. */ -}}
+{{- include "platforma.validateSecrets" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -161,7 +175,7 @@ spec:
             - "--primary-storage-s3-external-endpoint={{ .Values.storage.main.s3.externalEndpoint }}"
             {{- end }}
             {{- if .Values.storage.main.s3.noDataIntegrity }}
-            - "--primary-storage-s3-no-data-integrity=true"
+            - "--primary-storage-s3-no-data-integrity"
             {{- end }}
             {{- else if eq $mainType "gcs" }}
             - "--primary-storage-gcs=gs://{{ .Values.storage.main.gcs.bucket }}{{ if .Values.storage.main.gcs.prefix }}/{{ .Values.storage.main.gcs.prefix }}{{ end }}"
@@ -185,9 +199,25 @@ spec:
             {{- end }}
             {{- end }}
             - "--runner-enable-docker"
-            # GPU availability (K8s never auto-probes; explicit on/off based on the GPU pool)
+            # GPU availability (K8s never auto-probes; explicit on/off based on the GPU pool).
+            # When GPU is enabled, --runner-max-gpu-memory-request is required by the
+            # backend and forbidden otherwise — gate the flag on the same condition.
             {{- if .Values.kueue.pools.gpu.enabled }}
             - "--runner-gpu-available=enabled"
+            {{- if not (and .Values.kueue.maxJobResources .Values.kueue.maxJobResources.gpuMemory) }}
+            {{- fail "ERROR: kueue.maxJobResources.gpuMemory is required when kueue.pools.gpu.enabled=true.\nSet it to the largest VRAM available on a single GPU node in your cluster (e.g. 24Gi, 80Gi)." }}
+            {{- end }}
+            - "--runner-max-gpu-memory-request={{ .Values.kueue.maxJobResources.gpuMemory }}"
+            # GPU jobs run on a separate node pool; ceiling their CPU/RAM to the largest GPU
+            # node's allocatable so oversized requests land there instead of staying Pending.
+            {{- if not .Values.kueue.maxJobResources.gpuCpu }}
+            {{- fail "ERROR: kueue.maxJobResources.gpuCpu is required when kueue.pools.gpu.enabled=true.\nSet it to the allocatable CPU cores of the largest GPU node in your cluster." }}
+            {{- end }}
+            {{- if not .Values.kueue.maxJobResources.gpuRam }}
+            {{- fail "ERROR: kueue.maxJobResources.gpuRam is required when kueue.pools.gpu.enabled=true.\nSet it to the allocatable RAM of the largest GPU node in your cluster (e.g. 128Gi, 192Gi)." }}
+            {{- end }}
+            - "--k8s-gpu-max-cpu-request={{ .Values.kueue.maxJobResources.gpuCpu }}"
+            - "--k8s-gpu-max-ram-request={{ .Values.kueue.maxJobResources.gpuRam }}"
             {{- else }}
             - "--runner-gpu-available=disabled"
             {{- end }}
@@ -238,6 +268,40 @@ spec:
             - "--auth-ldap-client-cert=/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.certKey }},/etc/platforma/secrets/ldap-client/{{ .Values.auth.ldap.tls.clientCertSecretRef.keyKey }}"
             {{- end }}
             {{- end }}
+            {{- if .Values.auth.sso.issuer }}
+            {{- if not .Values.auth.sso.clientId }}
+            {{- fail "auth.sso.clientId is required when auth.sso.issuer is set" }}
+            {{- end }}
+            - "--sso-idp-issuer={{ .Values.auth.sso.issuer }}"
+            - "--sso-idp-client-id={{ .Values.auth.sso.clientId }}"
+            {{- if .Values.auth.sso.scopes }}
+            - "--sso-idp-scopes={{ .Values.auth.sso.scopes }}"
+            {{- end }}
+            {{- if .Values.auth.sso.resource }}
+            - "--sso-idp-resource={{ .Values.auth.sso.resource }}"
+            {{- end }}
+            {{- if .Values.auth.sso.prompt }}
+            - "--sso-idp-prompt={{ .Values.auth.sso.prompt }}"
+            {{- end }}
+            {{- if .Values.auth.sso.accessType }}
+            - "--sso-idp-access-type={{ .Values.auth.sso.accessType }}"
+            {{- end }}
+            {{- if .Values.auth.sso.userIdClaim }}
+            - "--sso-idp-user-id-claim={{ .Values.auth.sso.userIdClaim }}"
+            {{- end }}
+            {{- if .Values.auth.sso.groupsClaim }}
+            - "--sso-idp-groups-claim={{ .Values.auth.sso.groupsClaim }}"
+            {{- end }}
+            {{- end }}
+            {{- if not .Values.auth.showUserList }}
+            - "--no-show-user-list"
+            {{- end }}
+            {{- if .Values.masterSecret.secretName }}
+            - "--master-secret-file={{ include "platforma.path.secrets" . }}/master-secret/{{ .Values.masterSecret.secretKey }}"
+            {{- end }}
+            {{- if .Values.auth.sso.clientSecret.secretName }}
+            - "--sso-idp-client-secret-file={{ include "platforma.path.secrets" . }}/sso-client-secret/{{ .Values.auth.sso.clientSecret.secretKey }}"
+            {{- end }}
             # Disable default host data library (exposes entire pod filesystem)
             - "--no-host-data-library"
             # Data library sources
@@ -284,9 +348,6 @@ spec:
             {{- else }}
             - "--debug-ip=127.0.0.1"
             {{- end }}
-            # Keeps user sessions valid across pod restarts.
-            # To force-logout all users: add "--auth-sessions-gen=2" to app.extraArgs
-            - "--auth-sessions-gen=1"
             # Extra arguments
             {{- range .Values.app.extraArgs }}
             - {{ . | quote }}
@@ -431,6 +492,16 @@ spec:
               mountPath: {{ include "platforma.path.secrets" . }}/ldap-client
               readOnly: true
             {{- end }}
+            {{- if .Values.masterSecret.secretName }}
+            - name: master-secret
+              mountPath: {{ include "platforma.path.secrets" . }}/master-secret
+              readOnly: true
+            {{- end }}
+            {{- if .Values.auth.sso.clientSecret.secretName }}
+            - name: sso-client-secret
+              mountPath: {{ include "platforma.path.secrets" . }}/sso-client-secret
+              readOnly: true
+            {{- end }}
             {{- range .Values.dataSources }}
             {{- if eq .type "pvc" }}
             - name: datasource-{{ .name }}
@@ -481,6 +552,22 @@ spec:
         - name: ldap-client
           secret:
             secretName: {{ .Values.auth.ldap.tls.clientCertSecretRef.name }}
+        {{- end }}
+        {{- if .Values.masterSecret.secretName }}
+        - name: master-secret
+          secret:
+            secretName: {{ .Values.masterSecret.secretName }}
+            items:
+              - key: {{ .Values.masterSecret.secretKey }}
+                path: {{ .Values.masterSecret.secretKey }}
+        {{- end }}
+        {{- if .Values.auth.sso.clientSecret.secretName }}
+        - name: sso-client-secret
+          secret:
+            secretName: {{ .Values.auth.sso.clientSecret.secretName }}
+            items:
+              - key: {{ .Values.auth.sso.clientSecret.secretKey }}
+                path: {{ .Values.auth.sso.clientSecret.secretKey }}
         {{- end }}
         {{- range .Values.dataSources }}
         {{- if eq .type "pvc" }}

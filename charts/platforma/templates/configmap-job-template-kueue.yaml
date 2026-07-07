@@ -22,6 +22,7 @@ data:
       name: << .JobID >>
       labels:
         platforma.bio/job-id: << .JobID >>
+        platforma.bio/resource-id: << .ResourceID >>
         app.kubernetes.io/managed-by: platforma
         app.kubernetes.io/instance: {{ .Release.Name }}
         # Queue label for Kueue - maps Platforma queue to Kueue LocalQueue
@@ -52,6 +53,7 @@ data:
               name: << .JobID >>
               labels:
                 platforma.bio/job-id: << .JobID >>
+                platforma.bio/resource-id: << .ResourceID >>
                 app.kubernetes.io/managed-by: platforma
             spec:
               backoffLimit: 0  # AppWrapper handles retries
@@ -62,6 +64,7 @@ data:
                     cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
                   labels:
                     platforma.bio/job-id: << .JobID >>
+                    platforma.bio/resource-id: << .ResourceID >>
                     app.kubernetes.io/managed-by: platforma
                 spec:
                   serviceAccountName: {{ include "platforma.jobServiceAccountName" . }}
@@ -160,6 +163,14 @@ data:
                           value: "all"
                         - name: NVIDIA_DRIVER_CAPABILITIES
                           value: "compute,utility"
+                        # These are marker vars consumed by job_script.sh,
+                        # which prepends them to PATH/LD_LIBRARY_PATH at
+                        # container start — preserving image-provided
+                        # entries that a static k8s env value would wipe.
+                        - name: PL_GPU_BIN_PATH
+                          value: "/usr/local/nvidia/bin"
+                        - name: PL_GPU_LIB_PATH
+                          value: "/usr/local/nvidia/lib64:/usr/local/nvidia/lib"
                         - name: PLATFORMA_GPU_MEMORY
                           value: "<< .Resources.GPUMemory >>"
                         <<- end >>

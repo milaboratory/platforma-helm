@@ -73,7 +73,7 @@ next step.
 ## About deployment sizes
 
 Pick a size that matches your team's parallelism needs. All sizes share the
-same **per-job cap of 62 vCPU / 500 GiB RAM** — the preset only controls
+same **per-job cap of 62 vCPU / 484 GiB RAM** — the preset only controls
 how many such jobs can run **in parallel**.
 
 | Preset | Parallel jobs | UI nodes max | Filestore (GiB) |

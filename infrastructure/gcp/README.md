@@ -43,12 +43,11 @@ All three share the same Terraform module under [`terraform/`](terraform/).
                       │  ┌─UI pool──────┐      │                             │
                       │  │ scale 0-N    │      │ ──Filestore CSI──▶ Filestore (Zonal SSD)
                       │  └──────────────┘      │                             │
-                      │  ┌─batch pools (5) ─┐  │                             │
-                      │  │ 16c64g  32c128g  │  │                             │
-                      │  │ 64c256g 32c256g  │  │                             │
-                      │  │ 64c512g          │  │                             │
-                      │  │ scale 0-N each   │  │                             │
-                      │  └──────────────────┘  │                             │
+                      │  ┌─batch (ComputeClass)┐│                            │
+                      │  │ platforma-batch      ││                            │
+                      │  │ n2d→n2→std fallback   ││                            │
+                      │  │ auto-created, 0-N     ││                            │
+                      │  └──────────────────────┘│                            │
                       └────────────┬───────────┘                             │
                                    │ private IPs only                        │
                                    ▼                                         │
@@ -75,44 +74,51 @@ All three share the same Terraform module under [`terraform/`](terraform/).
 
 ## Deployment sizes
 
-`deployment_size` controls per-batch-pool max-node counts, Kueue batch queue
-quotas, Filestore default capacity, and the values the installer requests via
-the Cloud Quotas API. **All sizes share the same per-job cap of 62 vCPU /
-500 GiB RAM** — the preset controls per-pool parallelism.
+`deployment_size` controls the batch capacity envelope (Kueue batch queue
+quota), UI pool max size, Filestore default capacity, and the values the
+installer requests via the Cloud Quotas API. **All sizes share the same
+per-job cap of 62 vCPU / 484 GiB RAM** — the preset controls total concurrent
+batch parallelism.
 
-The batch tier is split into **5 pool shapes** (mirrors AWS's 5 batch node
-groups). All pools share the same K8s label (`role=batch`) and taint
-(`dedicated=batch:NoSchedule`); the GKE Cluster Autoscaler picks the
-smallest-fitting pool per pending pod. Small jobs land on small nodes, big
-jobs on big nodes — bin-packing efficiency without manual placement.
+Batch runs on a single GKE **ComputeClass** (`platforma-batch`) that provisions
+nodes on demand across multiple instance families and **falls back across
+families on capacity stockout** — if the primary AMD family (`n2d`) is out of
+capacity in the zone, GKE tries Intel (`n2`) and then standard shapes instead
+of leaving jobs pending. Nodes carry the `role=batch` label and
+`dedicated=batch:NoSchedule` taint, scale to zero when idle, and are created
+without cluster-wide Node Auto-Provisioning (the ComputeClass's own
+`nodePoolAutoCreation`). Total concurrent batch work is capped by the Kueue
+ClusterQueue admission quota below.
 
-Per-pool max-node counts per preset:
+Machine-type priority list (fallback order, all on-demand):
 
-| Preset | 16c-64g | 32c-128g | 64c-256g | 32c-256g | 64c-512g | Total batch | UI nodes max |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `small`  |  4 | 2 | 1 | 2 | 1 | 10 |  4 |
-| `medium` |  8 | 4 | 2 | 4 | 2 | 20 |  8 |
-| `large`  | 16 | 8 | 4 | 8 | 4 | 40 | 16 |
-| `xlarge` | 32 |16 | 8 |16 | 8 | 80 | 16 |
+| Priority | Machine type | vCPU / Mem | Family | Role |
+|---|---|---|---|---|
+| 1 | `n2d-highmem-16`  | 16 / 128 GiB | N2D (AMD) | size tier |
+| 2 | `n2d-highmem-32`  | 32 / 256 GiB | N2D (AMD) | size tier |
+| 3 | `n2d-highmem-48`  | 48 / 384 GiB | N2D (AMD) | size tier |
+| 4 | `n2d-highmem-64`  | 64 / 512 GiB | N2D (AMD) | primary (max 62/484 job) |
+| 5 | `n2-highmem-64`   | 64 / 512 GiB | N2 (Intel) | stockout fallback |
+| 6 | `n2d-standard-128`| 128 / 512 GiB | N2D (AMD) | last resort |
+| 7 | `n2-standard-128` | 128 / 512 GiB | N2 (Intel) | last resort |
 
-Pool shape mapping:
+Batch capacity envelope + UI nodes per preset:
 
-| Shape    | GCP machine type   | vCPU / Mem      | AWS counterpart |
-|---|---|---|---|
-| 16c-64g  | `n2d-standard-16`  | 16 / 64 GiB     | m7i.4xlarge |
-| 32c-128g | `n2d-standard-32`  | 32 / 128 GiB    | m7i.8xlarge |
-| 64c-256g | `n2d-standard-64`  | 64 / 256 GiB    | m7i.16xlarge |
-| 32c-256g | `n2d-highmem-32`   | 32 / 256 GiB    | r7i.8xlarge |
-| 64c-512g | `n2d-highmem-64`   | 64 / 512 GiB    | r7i.16xlarge |
+| Preset | Batch vCPU | Batch Mem (GiB) | UI nodes max |
+|---|---:|---:|---:|
+| `small`  |  320 |  1645 |  4 |
+| `medium` |  640 |  3290 |  8 |
+| `large`  | 1280 |  6580 | 16 |
+| `xlarge` | 2560 | 13160 | 16 |
 
 Other preset values:
 
-| Preset | Filestore (GiB) | CPUs (global) | N2D CPUs (region) | PD SSD GB (region) | Filestore Zonal GiB (region) | Instances (region) | In-use IPs (region) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `small`  | 1024 |  512 |  512 |  2048 | 1024 |  32 | 16 |
-| `medium` | 2048 | 1024 | 1024 |  4096 | 2048 |  48 | 16 |
-| `large`  | 4096 | 2048 | 2048 |  8192 | 4096 |  64 | 24 |
-| `xlarge` | 8192 | 4096 | 4096 | 16384 | 8192 | 128 | 32 |
+| Preset | Filestore (GiB) | CPUs (global) | N2D CPUs (region) | N2 CPUs (region) | PD SSD GB (region) | Filestore Zonal GiB (region) | Instances (region) | In-use IPs (region) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `small`  | 1024 |  512 |  512 |  512 |  4096 | 1024 |  32 | 16 |
+| `medium` | 2048 | 1024 | 1024 | 1024 |  8192 | 2048 |  48 | 16 |
+| `large`  | 4096 | 2048 | 2048 | 2048 | 16384 | 4096 |  64 | 24 |
+| `xlarge` | 8192 | 4096 | 4096 | 4096 | 32768 | 8192 | 128 | 32 |
 
 Larger sizes request larger GCP quotas. The installer auto-submits these via
 the Cloud Quotas API on first run; **small/medium** typically auto-approve

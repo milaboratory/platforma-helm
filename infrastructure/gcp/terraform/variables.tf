@@ -20,6 +20,30 @@ variable "zone_suffix" {
   }
 }
 
+variable "batch_fallback_zone_suffixes" {
+  type        = list(string)
+  description = <<-EOT
+    Extra zone suffixes the platforma-batch ComputeClass may provision batch
+    nodes in when the primary zone (zone_suffix) is capacity-exhausted
+    (ZONE_RESOURCE_POOL_EXHAUSTED). This adds a ZONE fallback dimension on top
+    of the ComputeClass's existing machine-family fallback (n2d -> n2 ->
+    standard): the primary zone is always tier 1 (preferred, keeps batch NFS
+    traffic in-zone with the ZONAL Filestore), and these zones form tier 2, used
+    only on stockout. activeMigration migrates batch back to the primary zone
+    when its capacity returns. Set to [] to disable cross-zone fallback (batch
+    stays single-zone — original behaviour). Default (c, d) targets the default
+    europe-west1 region (zones b/c/d); on other regions set suffixes that
+    actually exist there. Cross-zone batch nodes incur cross-zone egress on
+    Filestore I/O (~$0.01/GB each way).
+  EOT
+  default     = ["c", "d"]
+
+  validation {
+    condition     = alltrue([for s in var.batch_fallback_zone_suffixes : can(regex("^[a-d]$", s))])
+    error_message = "batch_fallback_zone_suffixes entries must each be one of: a, b, c, d."
+  }
+}
+
 variable "cluster_name" {
   type        = string
   description = "GKE cluster name. Lowercase alphanumeric + hyphens, 1-25 chars."
@@ -33,7 +57,7 @@ variable "cluster_name" {
 
 variable "deployment_size" {
   type        = string
-  description = "Cluster sizing profile. Controls node pool maxes, Kueue batch queue quotas, Filestore default capacity, and quota auto-request amounts. All sizes share the same per-job cap (62 vCPU / 500 GiB). small=4 parallel jobs, medium=8, large=16, xlarge=32. Mirrors AWS CloudFormation parallelism."
+  description = "Cluster sizing profile. Controls the batch capacity envelope (Kueue batch queue quota), UI pool max, Filestore default capacity, and quota auto-request amounts. All sizes share the same per-job cap (62 vCPU / 484 GiB). small=4 parallel jobs, medium=8, large=16, xlarge=32. Mirrors AWS CloudFormation parallelism."
   default     = "small"
 
   validation {
@@ -122,53 +146,11 @@ variable "ui_pool_max_nodes" {
   default     = null
 }
 
-variable "batch_pool_max_nodes_overrides" {
-  type        = map(number)
-  description = <<-EOT
-    Per-batch-pool max-nodes override map. Keys are batch pool shape IDs:
-      "16c-64g", "32c-128g", "64c-256g", "32c-256g", "64c-512g"
-    Values are the autoscaler max-node count for that pool. Empty map (default)
-    uses the deployment_size preset values (see presets.tf batch_pool_max_nodes
-    per preset). Override only the pools you want to change; others fall back
-    to preset.
-
-    Examples:
-      batch_pool_max_nodes_overrides = { "64c-512g" = 4 }
-        # Keep small preset defaults except allow up to 4 huge-memory nodes.
-
-      batch_pool_max_nodes_overrides = {
-        "16c-64g"  = 0
-        "32c-128g" = 0
-        "32c-256g" = 0
-      }
-        # Disable smaller pools entirely (only run on 64c-256g + 64c-512g).
-
-    Pool shapes mirror AWS CloudFormation's batch node groups:
-      16c-64g  → n2d-standard-16 (16 vCPU / 64 GiB,  AWS m7i.4xlarge)
-      32c-128g → n2d-standard-32 (32 vCPU / 128 GiB, AWS m7i.8xlarge)
-      64c-256g → n2d-standard-64 (64 vCPU / 256 GiB, AWS m7i.16xlarge)
-      32c-256g → n2d-highmem-32  (32 vCPU / 256 GiB, AWS r7i.8xlarge)
-      64c-512g → n2d-highmem-64  (64 vCPU / 512 GiB, AWS r7i.16xlarge)
-    All pools share the same K8s label (role=batch) and taint
-    (dedicated=batch:NoSchedule); the GKE autoscaler picks the smallest-
-    fitting pool per pending pod.
-  EOT
-  default     = {}
-
-  validation {
-    condition = alltrue([
-      for k, _ in var.batch_pool_max_nodes_overrides :
-      contains(["16c-64g", "32c-128g", "64c-256g", "32c-256g", "64c-512g"], k)
-    ])
-    error_message = "batch_pool_max_nodes_overrides keys must be one of: 16c-64g, 32c-128g, 64c-256g, 32c-256g, 64c-512g."
-  }
-}
-
-variable "batch_pool_disk_size_gb" {
-  type        = number
-  description = "Boot disk size for batch nodes. Counts against Persistent Disk SSD quota."
-  default     = 100
-}
+# NOTE: batch_pool_max_nodes_overrides and batch_pool_disk_size_gb were removed
+# when batch moved from static per-shape node pools to the platforma-batch
+# ComputeClass (computeclass.tf). Batch node count is now governed by the Kueue
+# ClusterQueue admission quota (deployment_size preset → batch_capacity in
+# presets.tf), and the batch boot disk is fixed at 200 GiB in the ComputeClass.
 
 variable "kueue_max_job_cpu" {
   type        = number
@@ -178,7 +160,7 @@ variable "kueue_max_job_cpu" {
 
 variable "kueue_max_job_memory" {
   type        = string
-  description = "Override max memory per single job. null = 500Gi (fixed across all presets)."
+  description = "Override max memory per single job. null = 484Gi (fixed across all presets; fits n2d-highmem-64 allocatable)."
   default     = null
 }
 
@@ -190,7 +172,7 @@ variable "kueue_batch_queue_cpu" {
 
 variable "kueue_batch_queue_memory" {
   type        = string
-  description = "Override batch ClusterQueue memory quota. null = preset.parallel_jobs * 500Gi."
+  description = "Override batch ClusterQueue memory quota (total across parallel jobs). null = deployment_size batch_capacity memory envelope (presets.tf)."
   default     = null
 }
 

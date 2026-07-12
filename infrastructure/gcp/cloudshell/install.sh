@@ -1171,6 +1171,20 @@ build_tfvars_json() {
     doc="$(echo "${doc}" | jq --argjson v "${GCS_FORCE_DESTROY}" '. + {gcs_force_destroy: $v}')"
   fi
 
+  # batch_fallback_zone_suffixes — cross-ZONE capacity fallback for batch
+  # (platforma-batch ComputeClass). Comma-separated zone suffixes, e.g.
+  # BATCH_FALLBACK_ZONES="c,d". Leave UNSET to keep the Terraform default
+  # ([c, d], suits the default europe-west1 region). Set to "" to DISABLE
+  # cross-zone fallback (batch stays in the primary ZONE_SUFFIX). On regions
+  # other than europe-west1 set suffixes that actually exist there. The +x test
+  # distinguishes "unset" (omit key, use TF default) from "set to empty"
+  # (emit [], disable) — a plain -n check could not express the disable case.
+  if [[ -n "${BATCH_FALLBACK_ZONES+x}" ]]; then
+    local zones_json
+    zones_json="$(printf '%s' "${BATCH_FALLBACK_ZONES}" | tr ',' '\n' | awk '{gsub(/[[:space:]]/,"")} NF' | jq -R . | jq -s .)"
+    doc="$(echo "${doc}" | jq --argjson v "${zones_json}" '. + {batch_fallback_zone_suffixes: $v}')"
+  fi
+
   # Platforma container image override — pin the binary to a specific tag,
   # e.g. a dev build from main pushed to the project's GAR for testing chart
   # changes against an unreleased platforma version.

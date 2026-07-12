@@ -401,8 +401,15 @@ resource "helm_release" "platforma" {
               }]
             }
             batch = {
+              # Batch pods select the custom ComputeClass (computeclass.tf),
+              # which provisions highmem nodes on demand and falls back across
+              # instance families on stockout (n2d → n2 → standard). This
+              # nodeSelector both ATTRACTS batch pods to ComputeClass nodes and
+              # TRIGGERS the class's node-pool auto-creation. The taint set on
+              # the class nodes plus this toleration isolates batch work from
+              # system/ui pods.
               nodeSelector = {
-                role = "batch"
+                "cloud.google.com/compute-class" = "platforma-batch"
               }
               tolerations = [{
                 key    = "dedicated"

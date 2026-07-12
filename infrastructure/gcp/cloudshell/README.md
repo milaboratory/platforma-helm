@@ -41,7 +41,7 @@ export LICENSE_KEY=E-XXXXX...
 maxes, Kueue batch queue quotas, Filestore default capacity, and the values
 the installer requests via `google_cloud_quotas_quota_preference`.
 
-All presets share the same per-job cap of **62 vCPU / 500 GiB RAM** — the
+All presets share the same per-job cap of **62 vCPU / 484 GiB RAM** — the
 preset only controls how many such jobs can run in parallel.
 
 | Preset | Parallel jobs | UI nodes max | Filestore (GiB) | CPUs (global) | N2D CPUs (region) | PD SSD GB (region) | Filestore Zonal GiB (region) | Instances (region) |

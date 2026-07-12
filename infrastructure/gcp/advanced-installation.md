@@ -213,29 +213,23 @@ The `deployment_size` preset sets sensible defaults. Override individually:
 ```hcl
 deployment_size = "large"
 
-# Per-batch-pool overrides — keys are pool shapes; only listed pools are
-# overridden, the rest fall back to preset defaults. Mirror AWS pool families:
-#   16c-64g  → n2d-standard-16  (small jobs)
-#   32c-128g → n2d-standard-32
-#   64c-256g → n2d-standard-64
-#   32c-256g → n2d-highmem-32   (memory-heavy)
-#   64c-512g → n2d-highmem-64   (largest pool)
-batch_pool_max_nodes_overrides = {
-  "16c-64g"  = 32   # double the preset (large default = 16) for small-job heavy load
-  "64c-512g" = 8    # double large-mem capacity
-}
+# Batch runs on the platforma-batch ComputeClass (no static pools). Total
+# concurrent batch capacity is governed by the Kueue ClusterQueue admission
+# quota, which defaults from deployment_size. Override the envelope directly:
+kueue_batch_queue_cpu    = 2560       # preset large = 1280 vCPU
+kueue_batch_queue_memory = "13160Gi"  # preset large = 6580Gi
 
 ui_pool_max_nodes      = 8       # preset large = 16
 workspace_capacity_gb  = 8192    # preset large = 4096
 
-# Kueue caps for very large jobs (default 62 CPU / 500Gi).
-# Note: per-job cap must fit within a SINGLE pool's allocatable resources,
-# not the sum across pools. The largest pool (64c-512g, n2d-highmem-64) has
-# ~62 vCPU / ~500 GiB allocatable after GKE daemonset overhead — that's the
-# upper bound. Raising this without also adding a larger machine-type pool
-# means jobs won't be schedulable.
+# Kueue caps for very large jobs (default 62 CPU / 484Gi).
+# Note: the per-job cap must fit on a SINGLE node of the largest machine type
+# in the ComputeClass priority list. n2d-highmem-64 has ~62 vCPU / ~484 GiB
+# allocatable after GKE daemonset overhead — that's the upper bound. Raising
+# this without adding a larger machine type to batch_machine_priorities
+# (presets.tf) means jobs won't be schedulable.
 kueue_max_job_cpu     = 62
-kueue_max_job_memory  = "500Gi"
+kueue_max_job_memory  = "484Gi"
 ```
 
 ### Skip quota auto-request

@@ -750,7 +750,8 @@ EOF
 
 declare -A PRESET_CPUS_GLOBAL=(    [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
 declare -A PRESET_N2D_CPUS=(       [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
-declare -A PRESET_PD_SSD_GB=(      [small]=2048 [medium]=4096 [large]=8192 [xlarge]=16384 )
+declare -A PRESET_N2_CPUS=(        [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
+declare -A PRESET_PD_SSD_GB=(      [small]=4096 [medium]=8192 [large]=16384 [xlarge]=32768 )
 declare -A PRESET_INSTANCES=(      [small]=32   [medium]=48   [large]=64   [xlarge]=128   )
 declare -A PRESET_FILESTORE_GB=(   [small]=1024 [medium]=2048 [large]=4096 [xlarge]=8192  )
 
@@ -758,6 +759,7 @@ declare -A PRESET_FILESTORE_GB=(   [small]=1024 [medium]=2048 [large]=4096 [xlar
 declare -A QUOTA_TO_PRESET_KEY=(
   ["CPUS-ALL-REGIONS-per-project"]="cpus_global"
   ["N2D-CPUS-per-project-region"]="n2d_cpus_region"
+  ["N2-CPUS-per-project-region"]="n2_cpus_region"
   ["SSD-TOTAL-GB-per-project-region"]="pd_ssd_region"
   ["INSTANCES-per-project-region"]="instances_region"
   ["EnterpriseStorageGibPerRegion"]="filestore_zonal_region"
@@ -769,6 +771,7 @@ required_for_preset_key() {
   case "${key}" in
     cpus_global)             echo "${PRESET_CPUS_GLOBAL[$DEPLOYMENT_SIZE]}"   ;;
     n2d_cpus_region)         echo "${PRESET_N2D_CPUS[$DEPLOYMENT_SIZE]}"      ;;
+    n2_cpus_region)          echo "${PRESET_N2_CPUS[$DEPLOYMENT_SIZE]}"       ;;
     pd_ssd_region)           echo "${PRESET_PD_SSD_GB[$DEPLOYMENT_SIZE]}"     ;;
     instances_region)        echo "${PRESET_INSTANCES[$DEPLOYMENT_SIZE]}"     ;;
     filestore_zonal_region)  echo "${PRESET_FILESTORE_GB[$DEPLOYMENT_SIZE]}"  ;;
@@ -890,7 +893,7 @@ normalize_boolean_inputs() {
 # required_for_preset_key() — otherwise the loop in
 # detect_quota_decrease_collisions() will silently skip it (empty
 # required => `continue`). The set below intentionally mirrors the keys
-# defined in required_for_preset_key (PRESET_CPUS_GLOBAL etc.) — 5 quotas,
+# defined in required_for_preset_key (PRESET_CPUS_GLOBAL etc.) — 6 quotas,
 # excluding in_use_addresses_region (no preset table in install.sh yet;
 # quotas.tf still requests it, but a collision on this one is rare and
 # the postcondition error message points the operator straight at the
@@ -898,6 +901,7 @@ normalize_boolean_inputs() {
 declare -A QUOTA_PRESET_TO_SERVICE=(
   [cpus_global]="compute.googleapis.com"
   [n2d_cpus_region]="compute.googleapis.com"
+  [n2_cpus_region]="compute.googleapis.com"
   [pd_ssd_region]="compute.googleapis.com"
   [instances_region]="compute.googleapis.com"
   [filestore_zonal_region]="file.googleapis.com"
@@ -905,6 +909,7 @@ declare -A QUOTA_PRESET_TO_SERVICE=(
 declare -A QUOTA_PRESET_TO_QUOTAID=(
   [cpus_global]="CPUS-ALL-REGIONS-per-project"
   [n2d_cpus_region]="N2D-CPUS-per-project-region"
+  [n2_cpus_region]="N2-CPUS-per-project-region"
   [pd_ssd_region]="SSD-TOTAL-GB-per-project-region"
   [instances_region]="INSTANCES-per-project-region"
   [filestore_zonal_region]="EnterpriseStorageGibPerRegion"
@@ -913,6 +918,7 @@ declare -A QUOTA_PRESET_TO_QUOTAID=(
 declare -A QUOTA_PRESET_TO_DIMREGION=(
   [cpus_global]=""
   [n2d_cpus_region]="1"
+  [n2_cpus_region]="1"
   [pd_ssd_region]="1"
   [instances_region]="1"
   [filestore_zonal_region]="1"

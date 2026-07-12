@@ -41,12 +41,15 @@ resource "google_container_cluster" "primary" {
   deletion_protection = false
 
   # OPTIMIZE_UTILIZATION makes the Cluster Autoscaler more aggressive about
-  # bin-packing — when a pending pod could fit on multiple node pools (we
-  # have 5 batch pool shapes sharing the same label/taint), it picks the
-  # smallest-fitting pool and prefers consolidating onto fewer nodes. This
-  # is the GKE-side counterpart of AWS Cluster Autoscaler's "least-waste"
-  # expander, and it's what makes the multi-pool batch layout actually save
-  # money (vs picking pools at random).
+  # bin-packing — it prefers consolidating pods onto fewer nodes and scales
+  # down idle nodes sooner. This applies to the pools the platforma-batch
+  # ComputeClass auto-creates (computeclass.tf) as well as the static system/UI
+  # pools. It's the GKE-side counterpart of AWS Cluster Autoscaler's
+  # "least-waste" expander, and it's what keeps the on-demand batch layout from
+  # leaving half-empty nodes running. NOTE: this only tunes the autoscaler; it
+  # does NOT enable cluster-wide Node Auto-Provisioning (no resource_limits /
+  # auto_provisioning_defaults here). Batch pool creation is driven by the
+  # ComputeClass's own nodePoolAutoCreation.
   cluster_autoscaling {
     autoscaling_profile = "OPTIMIZE_UTILIZATION"
   }
@@ -61,8 +64,8 @@ resource "google_container_cluster" "primary" {
   #
   # Why private nodes:
   #   - Each public-IP node consumes 1 IN_USE_ADDRESSES quota slot. With 30+
-  #     possible nodes (5 batch pools + UI + system), the default 8-IP regional
-  #     quota was a constant blocker on first installs.
+  #     possible nodes (ComputeClass-provisioned batch + UI + system), the
+  #     default 8-IP regional quota was a constant blocker on first installs.
   #   - Better security posture: nodes not directly reachable from the
   #     internet, only through the cluster's load balancers.
   #
@@ -170,61 +173,8 @@ resource "google_container_node_pool" "ui" {
   }
 }
 
-# Batch node pools — one resource per shape in local.batch_pool_specs.
-#
-# All pools share the same Kubernetes label (role=batch) and taint
-# (dedicated=batch:NoSchedule), so the scheduler treats them as a single
-# logical pool. The GKE Cluster Autoscaler picks the smallest-fitting pool
-# when a pending pod arrives, minimising waste — small jobs land on small
-# nodes, big jobs on big nodes. Mirrors AWS CloudFormation's 5-pool batch
-# layout (m7i.4xlarge / .8xlarge / .16xlarge + r7i.8xlarge / .16xlarge).
-#
-# Pool name: "batch-${shape}" e.g. batch-16c-64g. The shape is also exposed
-# as a label (platforma.bio/batch-pool=<shape>) for diagnostics — workloads
-# don't select on it, the autoscaler picks based on resource requests.
-resource "google_container_node_pool" "batch" {
-  for_each = local.batch_pool_specs
-
-  name     = "batch-${each.key}"
-  project  = var.project_id
-  location = local.zone
-  cluster  = google_container_cluster.primary.name
-
-  initial_node_count = 0
-
-  autoscaling {
-    min_node_count = 0
-    max_node_count = local.effective_batch_pool_max_nodes[each.key]
-  }
-
-  node_config {
-    machine_type = each.value.machine_type
-    disk_type    = "pd-balanced"
-    disk_size_gb = var.batch_pool_disk_size_gb
-
-    labels = {
-      role                       = "batch"
-      dedicated                  = "batch"
-      "platforma.bio/batch-pool" = each.key
-    }
-
-    taint {
-      key    = "dedicated"
-      value  = "batch"
-      effect = "NO_SCHEDULE"
-    }
-
-    oauth_scopes = [
-      "https://www.googleapis.com/auth/cloud-platform",
-    ]
-
-    workload_metadata_config {
-      mode = "GKE_METADATA"
-    }
-  }
-
-  management {
-    auto_repair  = true
-    auto_upgrade = true
-  }
-}
+# Batch node pools are NOT static here — they are provisioned on demand by the
+# platforma-batch ComputeClass (see computeclass.tf), which spreads batch nodes
+# across multiple instance families (n2d → n2 → standard) for capacity-stockout
+# fallback. The former static google_container_node_pool.batch (one per shape)
+# was removed; system and ui pools above stay static.

@@ -297,6 +297,21 @@ export ENABLE_QUOTA_AUTO_REQUEST=false
 export GCS_FORCE_DESTROY=true
 ```
 
+The following env var **does** change cluster shape:
+
+```bash
+# Batch cross-ZONE capacity fallback. Comma-separated zone suffixes the
+# platforma-batch ComputeClass may provision batch nodes in when the primary
+# zone (ZONE_SUFFIX) is stocked out — a zone fallback dimension on top of the
+# machine-family fallback (n2d -> n2 -> standard). The primary zone stays
+# preferred (keeps batch NFS traffic in-zone with the ZONAL Filestore); these
+# spill in only on stockout, and batch migrates back when the primary zone
+# recovers. Unset = default [c, d] (europe-west1 zones b/c/d). Set to "" to
+# keep batch single-zone. On other regions set suffixes that exist there.
+# Note: cross-zone batch nodes incur cross-zone egress on Filestore I/O.
+export BATCH_FALLBACK_ZONES="c,d"
+```
+
 ### Path 2 — edit inputs in the IM Console (no script)
 
 If you only need to change one or two inputs and don't want to set up env

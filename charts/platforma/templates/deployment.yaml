@@ -205,9 +205,19 @@ spec:
             {{- if .Values.kueue.pools.gpu.enabled }}
             - "--runner-gpu-available=enabled"
             {{- if not (and .Values.kueue.maxJobResources .Values.kueue.maxJobResources.gpuMemory) }}
-            {{- fail "ERROR: kueue.maxJobResources.gpuMemory is required when kueue.pools.gpu.enabled=true.\nSet it to the largest VRAM available on a single GPU node in your cluster (e.g. 24Gi, 80Gi, 192Gi)." }}
+            {{- fail "ERROR: kueue.maxJobResources.gpuMemory is required when kueue.pools.gpu.enabled=true.\nSet it to the largest VRAM available on a single GPU node in your cluster (e.g. 24Gi, 80Gi)." }}
             {{- end }}
             - "--runner-max-gpu-memory-request={{ .Values.kueue.maxJobResources.gpuMemory }}"
+            # GPU jobs run on a separate node pool; ceiling their CPU/RAM to the largest GPU
+            # node's allocatable so oversized requests land there instead of staying Pending.
+            {{- if not .Values.kueue.maxJobResources.gpuCpu }}
+            {{- fail "ERROR: kueue.maxJobResources.gpuCpu is required when kueue.pools.gpu.enabled=true.\nSet it to the allocatable CPU cores of the largest GPU node in your cluster." }}
+            {{- end }}
+            {{- if not .Values.kueue.maxJobResources.gpuRam }}
+            {{- fail "ERROR: kueue.maxJobResources.gpuRam is required when kueue.pools.gpu.enabled=true.\nSet it to the allocatable RAM of the largest GPU node in your cluster (e.g. 128Gi, 192Gi)." }}
+            {{- end }}
+            - "--k8s-gpu-max-cpu-request={{ .Values.kueue.maxJobResources.gpuCpu }}"
+            - "--k8s-gpu-max-ram-request={{ .Values.kueue.maxJobResources.gpuRam }}"
             {{- else }}
             - "--runner-gpu-available=disabled"
             {{- end }}
@@ -273,6 +283,9 @@ spec:
             {{- if .Values.auth.sso.prompt }}
             - "--sso-idp-prompt={{ .Values.auth.sso.prompt }}"
             {{- end }}
+            {{- if .Values.auth.sso.accessType }}
+            - "--sso-idp-access-type={{ .Values.auth.sso.accessType }}"
+            {{- end }}
             {{- if .Values.auth.sso.userIdClaim }}
             - "--sso-idp-user-id-claim={{ .Values.auth.sso.userIdClaim }}"
             {{- end }}
@@ -285,6 +298,9 @@ spec:
             {{- end }}
             {{- if .Values.masterSecret.secretName }}
             - "--master-secret-file={{ include "platforma.path.secrets" . }}/master-secret/{{ .Values.masterSecret.secretKey }}"
+            {{- end }}
+            {{- if .Values.auth.sso.clientSecret.secretName }}
+            - "--sso-idp-client-secret-file={{ include "platforma.path.secrets" . }}/sso-client-secret/{{ .Values.auth.sso.clientSecret.secretKey }}"
             {{- end }}
             # Disable default host data library (exposes entire pod filesystem)
             - "--no-host-data-library"
@@ -481,6 +497,11 @@ spec:
               mountPath: {{ include "platforma.path.secrets" . }}/master-secret
               readOnly: true
             {{- end }}
+            {{- if .Values.auth.sso.clientSecret.secretName }}
+            - name: sso-client-secret
+              mountPath: {{ include "platforma.path.secrets" . }}/sso-client-secret
+              readOnly: true
+            {{- end }}
             {{- range .Values.dataSources }}
             {{- if eq .type "pvc" }}
             - name: datasource-{{ .name }}
@@ -539,6 +560,14 @@ spec:
             items:
               - key: {{ .Values.masterSecret.secretKey }}
                 path: {{ .Values.masterSecret.secretKey }}
+        {{- end }}
+        {{- if .Values.auth.sso.clientSecret.secretName }}
+        - name: sso-client-secret
+          secret:
+            secretName: {{ .Values.auth.sso.clientSecret.secretName }}
+            items:
+              - key: {{ .Values.auth.sso.clientSecret.secretKey }}
+                path: {{ .Values.auth.sso.clientSecret.secretKey }}
         {{- end }}
         {{- range .Values.dataSources }}
         {{- if eq .type "pvc" }}

@@ -1,10 +1,10 @@
-# Upgrading an existing GCP (monolithic) deployment to Platforma 4.1.5
+# Upgrading an existing GCP (monolithic) deployment to Platforma 4.2.0
 
 This guide is for deployments that were installed with the **single/monolithic**
 GCP Terraform module (`infrastructure/gcp/terraform/`) via Google Cloud
 Infrastructure Manager (`cloudshell/install.sh`).
 
-It brings your running instance up to **chart 4.1.5** and fixes a provider
+It brings your running instance up to **chart 4.2.0** and fixes a provider
 issue that can break re-deploys. The upgrade is **in-place and
 non-destructive**: no node pools are deleted, no data is lost.
 
@@ -18,9 +18,13 @@ non-destructive**: no node pools are deleted, no data is lost.
 
 | Change | Why | Impact on you |
 |---|---|---|
-| Platforma chart **3.5.0 → 4.1.5** | Latest fixes and features | Platforma pod restarts once (rolling) |
-| A **master secret** is now created and injected | Chart 4.x requires it (signs sessions & resources) | **All users must log in again once.** No data loss. |
+| Platforma chart **→ 4.2.0** | Latest fixes and features | Platforma pod restarts once (rolling) |
+| A **master secret** is created and injected | Chart 4.x requires it (signs sessions & resources) | **All users must log in again once** — only if upgrading from 3.5.0. No data loss. |
 | `kubectl` Terraform provider pinned to **< 2.4** | Provider 2.4 breaks this module's plan on re-deploy | Removes a failure you may have already hit |
+
+> Coming from an earlier 4.1.x monolithic build (the master secret and provider
+> pin already applied)? This is a straight chart bump to 4.2.0 — the master
+> secret is unchanged, so **no re-login is required**.
 
 **What is NOT affected:**
 - Your projects, blocks, and all analysis data — the master secret does **not**
@@ -51,10 +55,10 @@ provide it.
 ```bash
 git clone https://github.com/milaboratory/platforma-helm.git
 cd platforma-helm
-git checkout chore/gcp-monolith-backport
+git checkout chore/gcp-monolith-4.2.0
 ```
 
-(Or, in an existing clone: `git fetch origin && git checkout chore/gcp-monolith-backport`.)
+(Or, in an existing clone: `git fetch origin && git checkout chore/gcp-monolith-4.2.0`.)
 
 ### 2. Re-run the installer with your original settings
 
@@ -70,7 +74,7 @@ Infrastructure Manager detects the existing deployment and applies an **update**
 
 1. Re-resolve providers (now pinned to a working `kubectl` version).
 2. Create the master-secret Secret (in the cluster and in Secret Manager).
-3. Upgrade the Helm release to chart 4.1.5 (rolling restart of the Platforma pod).
+3. Upgrade the Helm release to chart 4.2.0 (rolling restart of the Platforma pod).
 
 Expect the Helm step to take several minutes while the new image is pulled and
 the pod becomes ready.

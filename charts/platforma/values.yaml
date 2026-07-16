@@ -346,6 +346,12 @@ kueue:
     gpuCpu: 48
     gpuRam: 64Gi
 
+  # -- Enable OOM retries for K8s jobs.
+  # Off by default: an out-of-memory job fails immediately with its original error.
+  # When enabled, an OOM-killed job is re-run with doubled memory, capped at
+  # maxJobResources.memory / maxJobResources.gpuMemory.
+  oomRetry: false
+
   # -- Node pool topology — controls where jobs run
   # Set nodeSelector/tolerations to match your node groups.
   # In dedicated mode, these also configure Kueue ResourceFlavors.

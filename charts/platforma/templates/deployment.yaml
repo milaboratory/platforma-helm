@@ -221,6 +221,10 @@ spec:
             {{- else }}
             - "--runner-gpu-available=disabled"
             {{- end }}
+            # OOM retries are off by default; set kueue.oomRetry=true to enable them.
+            {{- if .Values.kueue.oomRetry }}
+            - "--k8s-oom-retry"
+            {{- end }}
             # Queue runners (hardcoded — 4 fixed queues, always K8s backend)
             - "--queue-runner=ui-tasks:k8s"
             - "--queue-runner=light:k8s"

@@ -1,0 +1,4 @@
+# Exported/derived Terraform state and preview artefacts. Never commit these:
+# they contain the deployment's real resource attributes, including secret
+# values that Terraform stores in plain text in state.
+.work/

@@ -337,6 +337,7 @@ to users.
 - [`domain-guide.md`](domain-guide.md) — Cloud DNS zone creation + delegation from external registrars (Route53, Cloudflare, GoDaddy, Namecheap).
 - [`permissions.md`](permissions.md) — fine-grained IAM role set replacing `roles/owner` on the deployer SA.
 - [`advanced-installation.md`](advanced-installation.md) — Tier-3 local-Terraform path with manual gcloud auth, custom backends, full customization.
+- [`migration.md`](migration.md) — moving a deployment from the original monolithic `terraform/` module onto the split `terraform-infra` + `terraform-platforma` pair, by partitioning the Terraform state rather than recreating resources. Driver in [`migration/`](migration/).
 
 ## Updates
 

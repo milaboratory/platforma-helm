@@ -14,11 +14,13 @@
 #   ./migration.sh seed         # create both empty target IM deployments
 #   ./migration.sh import       # lock -> import-statefile -> unlock, both
 #   ./migration.sh preview      # zero-destroy gate (run before apply!)
+#   ./migration.sh retire       # AFTER apply: retire static batch pools, if any
 #
 # Everything up to and including `import` is reversible and touches no cloud
 # resource: it reads one statefile and writes deployments that are empty.
-# `preview` is read-only. The real applies are driven by cloudshell/install.sh,
-# NOT by this script — see migration.md Phase 5.
+# `preview` is read-only, and `retire` only prints commands. The real applies
+# are driven by cloudshell/install.sh, NOT by this script — see migration.md
+# Phase 5.
 # =============================================================================
 
 set -euo pipefail
@@ -26,16 +28,15 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-PROJECT_ID="${PROJECT_ID:?set PROJECT_ID to the GCP project holding the monolith deployment}"
-DEPLOYMENT_NAME="${DEPLOYMENT_NAME:?set DEPLOYMENT_NAME to the existing monolith IM deployment name}"
+# Validated lazily by require_config() so that running with no arguments still
+# prints usage instead of dying on an unset variable.
+PROJECT_ID="${PROJECT_ID:-}"
+DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-}"
 IM_LOCATION="${IM_LOCATION:-europe-west1}"
 IM_SA_EMAIL="${IM_SA_EMAIL:-platforma-im-deployer@${PROJECT_ID}.iam.gserviceaccount.com}"
 
-INFRA_DEPLOYMENT="${DEPLOYMENT_NAME}-infra"
-PLATFORMA_DEPLOYMENT="${DEPLOYMENT_NAME}-platforma"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR="${WORK_DIR:-${SCRIPT_DIR}/.work/${PROJECT_ID}-${DEPLOYMENT_NAME}}"
+WORK_DIR_OVERRIDE="${WORK_DIR:-}"   # set WORK_DIR in the environment to relocate
 SEED_DIR="${SCRIPT_DIR}/seed"
 SPLIT_JQ="${SCRIPT_DIR}/split-state.jq"
 
@@ -131,6 +132,24 @@ DROP=(
   google_secret_manager_secret_version.master_secret
 )
 
+# -- Dropped from both halves AND scheduled for manual deletion afterwards.
+#    Present only in deployments that predate the batch ComputeClass migration
+#    (monolith commits 9b586ca / 11c7e16). Those provisioned one static batch
+#    node pool per machine shape; the split module has none — batch nodes are
+#    created on demand by the `platforma-batch` ComputeClass that
+#    terraform-platforma/computeclass.tf installs.
+#
+#    There is nothing in the new configuration for these to map onto, so they
+#    leave Terraform management entirely. The nodes keep running and keep
+#    serving jobs until the ComputeClass takes over; only then are they drained
+#    and deleted by hand (`./migration.sh retire` prints the commands).
+#
+#    A deployment migrated from a recent monolith will not have these in state
+#    at all — `classify` reports them as listed-but-absent, which is expected.
+RETIRE=(
+  google_container_node_pool.batch
+)
+
 # -----------------------------------------------------------------------------
 # Output helpers
 # -----------------------------------------------------------------------------
@@ -144,6 +163,19 @@ info() { echo "  $*"; }
 ok()   { echo "${G}  ✓ $*${N}"; }
 warn() { echo "${Y}  ! $*${N}" >&2; }
 die()  { echo "${R}  ✗ $*${N}" >&2; exit 1; }
+
+require_config() {
+  [[ -n "${PROJECT_ID}" ]] \
+    || die "set PROJECT_ID to the GCP project holding the monolith deployment"
+  [[ -n "${DEPLOYMENT_NAME}" ]] \
+    || die "set DEPLOYMENT_NAME to the existing monolith IM deployment name"
+
+  # Derived from the two above, so they are resolved here rather than at load
+  # time (when the variables may still be empty).
+  INFRA_DEPLOYMENT="${DEPLOYMENT_NAME}-infra"
+  PLATFORMA_DEPLOYMENT="${DEPLOYMENT_NAME}-platforma"
+  WORK_DIR="${WORK_DIR_OVERRIDE:-${SCRIPT_DIR}/.work/${PROJECT_ID}-${DEPLOYMENT_NAME}}"
+}
 
 im() { gcloud infra-manager "$@" --project="${PROJECT_ID}" --location="${IM_LOCATION}"; }
 
@@ -242,7 +274,7 @@ cmd_classify() {
 
   local all known unclassified missing
   all="$(state_addresses "${src}")"
-  known="$(printf '%s\n' "${KEEP_INFRA[@]}" "${KEEP_PLATFORMA[@]}" "${DROP[@]}" | sort -u)"
+  known="$(printf '%s\n' "${KEEP_INFRA[@]}" "${KEEP_PLATFORMA[@]}" "${DROP[@]}" "${RETIRE[@]}" | sort -u)"
 
   unclassified="$(comm -23 <(echo "${all}") <(echo "${known}"))"
   missing="$(comm -13 <(echo "${all}") <(echo "${known}"))"
@@ -251,6 +283,7 @@ cmd_classify() {
   info "→ terraform-infra:      ${#KEEP_INFRA[@]}"
   info "→ terraform-platforma:  ${#KEEP_PLATFORMA[@]}"
   info "→ dropped (kept in GCP): ${#DROP[@]}"
+  info "→ unmanaged, retire by hand: ${#RETIRE[@]}"
 
   if [[ -n "${unclassified}" ]]; then
     warn "these addresses exist in the state but are in NO list:"
@@ -260,13 +293,31 @@ cmd_classify() {
   ok "every address in the state is classified"
 
   if [[ -n "${missing}" ]]; then
-    warn "these addresses are listed but absent from the state (optional resources"
-    warn "gated on count/for_each are expected here; anything else is suspicious):"
+    warn "these addresses are listed but absent from the state. Expected for"
+    warn "resources gated on count/for_each, and for the RETIRE list on any"
+    warn "monolith already migrated to the batch ComputeClass. Anything else"
+    warn "is suspicious:"
     echo "${missing}" | sed 's/^/      /' >&2
   fi
 
   bold "Dropped from Terraform management (cloud objects preserved):"
   printf '      %s\n' "${DROP[@]}"
+
+  # Only meaningful when the source deployment actually has static batch pools.
+  local retire_present=""
+  local a
+  for a in "${RETIRE[@]}"; do
+    grep -qx "${a}" <<<"${all}" && retire_present+="${a}"$'\n'
+  done
+  if [[ -n "${retire_present}" ]]; then
+    echo
+    warn "This deployment predates the batch ComputeClass migration. These static"
+    warn "batch node pools have no equivalent in the split module:"
+    echo "${retire_present}" | grep . | sed 's/^/      /' >&2
+    warn "They leave Terraform management with the split and must be drained and"
+    warn "deleted by hand AFTER the ComputeClass is serving jobs."
+    warn "  → run './migration.sh retire' after Phase 5; see migration.md Phase 5b."
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -296,11 +347,16 @@ cmd_split() {
   # Independent verification: the two halves plus the drop list must exactly
   # reconstitute the source. This catches a jq filter that silently matched
   # nothing far better than eyeballing the counts above.
-  local recombined
+  # DROP/RETIRE entries are only counted when the source state actually held
+  # them — RETIRE in particular is absent from any recently-migrated monolith.
+  local unmanaged recombined
+  unmanaged="$(comm -12 \
+    <(printf '%s\n' "${DROP[@]}" "${RETIRE[@]}" | sort -u) \
+    <(state_addresses "${src}"))"
   recombined="$(cat \
     <(state_addresses "${WORK_DIR}/infra.tfstate") \
     <(state_addresses "${WORK_DIR}/platforma.tfstate") \
-    <(printf '%s\n' "${DROP[@]}") | sort -u)"
+    <(echo "${unmanaged}") | grep . | sort -u)"
   if ! diff -q <(state_addresses "${src}") <(echo "${recombined}") >/dev/null; then
     diff <(state_addresses "${src}") <(echo "${recombined}") | sed 's/^/      /' >&2
     die "split is not a clean partition of the source state (diff above)"
@@ -428,6 +484,61 @@ cmd_preview() {
 }
 
 # -----------------------------------------------------------------------------
+# retire — static batch node pools, after the ComputeClass has taken over
+# -----------------------------------------------------------------------------
+# Prints commands; deliberately does NOT run them. Deleting a node pool drains
+# every node in it, and only the operator can judge whether the ComputeClass is
+# genuinely serving jobs yet.
+cmd_retire() {
+  bold "Static batch node pools — retirement plan"
+
+  local golden="${WORK_DIR}/golden-monolith.tfstate"
+  [[ -f "${golden}" ]] || die "no golden snapshot — run './migration.sh export' first"
+
+  # Cluster name and LOCATION come from the state, not from a guess. The
+  # monolith deploys a ZONAL cluster, so this is a zone (europe-west1-b), not
+  # a region. Passing --region here would silently address a different (or
+  # non-existent) cluster.
+  local cluster location
+  cluster="$(jq -r '.resources[] | select(.type=="google_container_cluster" and .name=="primary")
+                    | .instances[0].attributes.name // empty' "${golden}")"
+  location="$(jq -r '.resources[] | select(.type=="google_container_cluster" and .name=="primary")
+                    | .instances[0].attributes.location // empty' "${golden}")"
+  [[ -n "${cluster}" && -n "${location}" ]] \
+    || die "could not read cluster name/location from ${golden}"
+  info "cluster ${cluster} in ${location}"
+
+  local pools
+  pools="$(gcloud container node-pools list --cluster="${cluster}" \
+             --location="${location}" --project="${PROJECT_ID}" \
+             --format='value(name)' 2>/dev/null || true)"
+  [[ -n "${pools}" ]] || die "could not list node pools on ${cluster}"
+
+  local batch_pools
+  batch_pools="$(echo "${pools}" | grep -E '^batch' || true)"
+  if [[ -z "${batch_pools}" ]]; then
+    ok "no static batch-* pools remain — nothing to retire"
+    return 0
+  fi
+
+  warn "Do NOT run these until the ComputeClass is serving batch jobs. Check:"
+  echo "      kubectl get nodes -L cloud.google.com/compute-class,role"
+  echo "      # expect nodes carrying compute-class=platforma-batch, and no"
+  echo "      # running job pods left on the batch-* nodes below."
+  echo
+  bold "Then, one pool at a time:"
+  local p
+  while read -r p; do
+    [[ -n "${p}" ]] || continue
+    echo "      gcloud container node-pools delete ${p} \\"
+    echo "        --cluster=${cluster} --location=${location} --project=${PROJECT_ID}"
+  done <<<"${batch_pools}"
+  echo
+  info "These pools are in no Terraform state after the split, so this is a"
+  info "plain GCP cleanup — nothing to reconcile afterwards."
+}
+
+# -----------------------------------------------------------------------------
 # reset — rehearsal only
 # -----------------------------------------------------------------------------
 cmd_reset() {
@@ -450,8 +561,14 @@ cmd_reset() {
 
 # -----------------------------------------------------------------------------
 usage() {
-  sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # Print the leading comment block (everything after the shebang up to the
+  # first line of actual code).
+  awk 'NR==1 {next} !/^#/ {exit} {sub(/^# ?/,""); print}' "${BASH_SOURCE[0]}"
 }
+
+case "${1:-}" in
+  preflight|export|classify|split|seed|import|preview|retire|reset) require_config ;;
+esac
 
 case "${1:-}" in
   preflight) cmd_preflight ;;
@@ -461,6 +578,7 @@ case "${1:-}" in
   seed)      cmd_seed ;;
   import)    cmd_import ;;
   preview)   cmd_preview ;;
+  retire)    cmd_retire ;;
   reset)     cmd_reset ;;
   *)         usage; exit 1 ;;
 esac

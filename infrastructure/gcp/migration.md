@@ -76,6 +76,14 @@ Two details to check against the deployment you are actually migrating:
 * `install.sh` expects the name `${DEPLOYMENT_NAME}-cluster-platforma-master-secret`. A monolith deployment may have used a different name. **Read the real name out of the exported state and pass that** — do not rename the secret.
 * If the monolith deployment predates the BYO change, the secret's only version was created by Terraform. It stays valid; only the ownership changes.
 
+### Static Batch Node Pools (Older Deployments Only)
+
+Deployments created before the batch ComputeClass migration provisioned one **static batch node pool per machine shape** (`google_container_node_pool.batch`, a `for_each`). The split module has none: batch nodes are created on demand by the `platforma-batch` ComputeClass that `terraform-platforma/computeclass.tf` installs.
+
+There is nothing in the new configuration for those pools to map onto, so they leave Terraform management with the split — `migration.sh` classifies them as `RETIRE`. That is not a problem in itself: the nodes keep running and keep serving jobs throughout. After the migration, once the ComputeClass is demonstrably scheduling new batch work, they are drained and deleted by hand (Phase 5b).
+
+A deployment migrated from a recent monolith will not have these in state at all, and `classify` will simply report them as listed-but-absent. Check which case you are in before starting — it is the difference between a five-phase migration and a six-phase one.
+
 ### Already Handled For You
 
 `terraform-platforma/helm.tf` carries a `moved` block:
@@ -113,6 +121,8 @@ Everything through Phase 3 is reversible and creates no cloud resources. Phase 4
 
 ### Phase 0 — Preflight and the golden snapshot
 
+**Freeze changes first.** Pause any CI job or scheduled `apply` that targets this project, and do not run the monolith's `install.sh` again for the duration — applying the monolithic module on top of a half-migrated cluster is the one way to get two states fighting over the same resources.
+
 ```sh
 ./migration.sh preflight
 ./migration.sh export
@@ -129,9 +139,18 @@ Everything through Phase 3 is reversible and creates no cloud resources. Phase 4
 ./migration.sh split
 ```
 
-`classify` asserts that **every** managed address in the exported state falls into exactly one of three lists in `migration.sh`: `KEEP_INFRA` (31 addresses), `KEEP_PLATFORMA` (18), `DROP` (3). If someone has added a resource to the monolith module that this script does not know about, classify aborts and names it.
+`classify` asserts that **every** managed address in the exported state falls into exactly one of four lists in `migration.sh`:
 
-> When that happens, decide which module owns the new resource and add it to the right list. Do not silence the failure by adding it to `DROP` — `DROP` means "deliberately unmanaged from now on", and there are exactly three such resources.
+| List | Count | Meaning |
+|---|---|---|
+| `KEEP_INFRA` | 31 | moves into `<name>-infra` |
+| `KEEP_PLATFORMA` | 18 | moves into `<name>-platforma` |
+| `DROP` | 3 | leaves Terraform management permanently; the cloud object stays (the master-secret trio) |
+| `RETIRE` | 1 | leaves Terraform management, then is deleted by hand in Phase 5b (static batch pools; absent on recent monoliths) |
+
+If someone has added a resource to the monolith module that this script does not know about, classify aborts and names it.
+
+> When that happens, decide which module owns the new resource and add it to the right list. Do not silence the failure by adding it to `DROP` or `RETIRE` — those two lists have exact, documented memberships, and widening them is how a resource gets silently orphaned.
 
 `split` runs `split-state.jq` twice to produce `infra.tfstate` and `platforma.tfstate`, then verifies the result independently: the two halves plus `DROP` must reconstitute the source address set exactly, with no overlap. The transformation also clears stale `outputs` and `check_results`, prunes dependency edges that point into the other half, and bumps `serial` so the import cannot be mistaken for stale.
 
@@ -180,6 +199,32 @@ This stages each real module (stripping `backend.tf`, which IM rejects), creates
 
 *platforma* — `kubernetes_secret.sso_client_secret` (if SSO is configured), and `kubectl_manifest.appwrapper_namespace` should appear as a **move**, not a create-and-destroy, courtesy of the `moved` block.
 
+#### Why a destroy can appear at all — config drift
+
+This is the failure mode to understand before reading the preview, because it is the only one that can destroy a stateful resource despite everything above being done correctly.
+
+Adopting a resource puts its **live attributes** into state. Terraform then diffs those attributes against the **new module's configuration**. Where they disagree you get an update — and for **immutable** GCP fields an update means destroy-and-recreate:
+
+* node pool: `machine_type`, `disk_type`, `disk_size_gb`, image type
+* cluster: `network`, `subnetwork`, location
+* Filestore: `tier`, capacity
+
+Recreating the `system` or `ui` node pool drains those nodes. Recreating the cluster or the Filestore instance is unrecoverable.
+
+The good news is that the split module's `system` and `ui` pools are defined from the **same variables** as the monolith, with the same defaults — so if your tfvars carry the same values the monolith used, they plan as no-ops. Spurious replacements almost always trace to one of:
+
+* a different `system_pool_machine_type` or `deployment_size` preset in the new tfvars than the monolith actually ran with;
+* a `zone_suffix` mismatch, so the module addresses a different location than the resources live in;
+* GKE release-channel auto-upgrades having moved the node version since the monolith last applied — a **version-only** diff is safe, a machine-type diff is not.
+
+Reconcile by making the new module's inputs match reality. **Never reconcile by editing the state.** The authoritative values are in `golden-monolith.tfstate`:
+
+```sh
+jq -r '.resources[] | select(.type=="google_container_node_pool")
+       | "\(.name)\t\(.instances[0].attributes.node_config[0].machine_type)"' \
+   .work/*/golden-monolith.tfstate
+```
+
 #### Reading a non-zero preview
 
 Do not approve your way past a destroy. Diagnose it:
@@ -195,6 +240,30 @@ Do not approve your way past a destroy. Diagnose it:
 ### Phase 5 — Apply
 
 Only after both previews are clean. Apply the real bundles through the normal path — `cloudshell/install.sh` on `main`, which applies `<name>-infra` first and waits for it to settle before `<name>-platforma`. This script deliberately does not drive the applies; there is no reason to have a second, less-tested code path for the step that actually changes production.
+
+### Phase 5b — Retire the static batch pools
+
+**Skip this phase unless `classify` reported `RETIRE` addresses present in your state.**
+
+The old static `batch-*` node pools are now managed by nothing. They keep running and keep serving whatever is already scheduled on them; new batch work goes to ComputeClass-provisioned nodes. Confirm that has actually started happening:
+
+```sh
+kubectl get nodes -L cloud.google.com/compute-class,role
+# expect nodes carrying compute-class=platforma-batch,
+# and no running job pods left on the batch-* nodes
+```
+
+Then:
+
+```sh
+./migration.sh retire
+```
+
+This reads the cluster name **and location** out of `golden-monolith.tfstate`, lists the surviving `batch-*` pools, and **prints** the delete commands without running them — deleting a node pool drains every node in it, and only you can judge whether the ComputeClass is genuinely carrying the load. Delete one pool at a time.
+
+> The location matters: the monolith deploys a **zonal** cluster, so these commands use `--location=<zone>` (e.g. `europe-west1-b`), not a region. A `--region` here addresses a different or non-existent cluster.
+
+Since the pools are in no Terraform state, this is a plain GCP cleanup with nothing to reconcile afterwards.
 
 ### Phase 6 — Retire the monolith deployment
 
@@ -219,8 +288,14 @@ Before Phase 6:
 1. Both previews showed zero destructive changes, and both applies completed.
 2. The Platforma UI answers on the **existing** ingress IP with the **existing** certificate — proving `google_compute_global_address.ingress` and the cert-manager chain were adopted, not recreated.
 3. **A project that existed before the migration still opens.** This is the master-secret check and the only one that matters for data. A fresh deployment will pass every other test while having silently lost the key.
-4. `gcloud infra-manager deployments describe` shows both new deployments ACTIVE.
-5. The resource inventory is unchanged: no new cluster, bucket, or Filestore instance was created alongside the old one.
+4. The admin password still works. The partition carries `random_password.admin` across, so it should be unchanged — if it has rotated, `random_password.admin` was dropped somewhere it should not have been.
+5. `gcloud infra-manager deployments describe` shows both new deployments ACTIVE.
+6. The resource inventory is unchanged: no new cluster, bucket, or Filestore instance was created alongside the old one.
+7. Batch jobs schedule onto ComputeClass nodes:
+   ```sh
+   kubectl -n platforma get pods
+   kubectl get nodes -L cloud.google.com/compute-class,role
+   ```
 
 ## Rollback
 
@@ -239,6 +314,7 @@ Each phase is idempotent in a specific way:
 * `seed` skips a deployment that already exists.
 * `import` can be repeated — it overwrites the target's state wholesale, and re-verifies by read-back.
 * `preview` creates a preview named `<deployment>-mig-preview`; delete the previous one (`gcloud infra-manager previews delete`) if the name collides.
+* `retire` only ever prints commands; run it as often as you like.
 
 If a rehearsal goes sideways, `ALLOW_RESET=yes ./migration.sh reset` deletes both target deployments with `--delete-policy=abandon` and clears the derived files, leaving the golden snapshot and the monolith deployment intact.
 
@@ -259,6 +335,6 @@ The `kubectl` provider jump (`< 2.4` → `~> 2.4`) is the item most worth provin
 
 | Path | Purpose |
 |---|---|
-| `migration/migration.sh` | Phase driver — preflight, export, classify, split, seed, import, preview, reset |
+| `migration/migration.sh` | Phase driver — preflight, export, classify, split, seed, import, preview, retire, reset |
 | `migration/split-state.jq` | The state partition, as an auditable jq program |
 | `migration/seed/main.tf` | Empty root module used to bring the target deployments into existence |

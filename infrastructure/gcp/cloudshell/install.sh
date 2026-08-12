@@ -850,11 +850,12 @@ detect_existing_quota_prefs() {
 #   GCS_FORCE_DESTROY           tfvar
 #   ENABLE_DEMO                 tfvar (set via prompt_var with default 'true')
 #   LDAP_START_TLS              tfvar (set via prompt_var when AUTH_METHOD=ldap)
+#   ENABLE_APPWRAPPER           tfvar (unset => terraform default 'true')
 # -----------------------------------------------------------------------------
 
 normalize_boolean_inputs() {
   local var val
-  for var in ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS; do
+  for var in ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS ENABLE_APPWRAPPER; do
     val="${!var:-}"
     [[ -z "${val}" ]] && continue
     case "${val,,}" in
@@ -1149,6 +1150,16 @@ build_tfvars_json() {
     doc="$(echo "${doc}" | jq --argjson v "${ENABLE_QUOTA_AUTO_REQUEST}" '. + {enable_quota_auto_request: $v}')"
   fi
 
+  # enable_appwrapper — install AppWrapper (applied via the kubectl provider).
+  # Leave unset (terraform default true) for a normal apply. Set
+  # ENABLE_APPWRAPPER=false ONLY for the first revision of a from-scratch
+  # deployment: it drops the kubectl provider entirely so 'terraform plan'
+  # succeeds while the cluster endpoint is still unknown. Re-run with
+  # ENABLE_APPWRAPPER=true (or unset) once the cluster exists to add AppWrapper.
+  if [[ -n "${ENABLE_APPWRAPPER:-}" ]]; then
+    doc="$(echo "${doc}" | jq --argjson v "${ENABLE_APPWRAPPER}" '. + {enable_appwrapper: $v}')"
+  fi
+
   # skip_quota_requests — auto-detected collisions + any user additions.
   local skip_list=("${SKIP_QUOTA_REQUESTS_AUTO[@]:-}")
   if [[ -n "${SKIP_QUOTA_REQUESTS:-}" ]]; then
@@ -1418,6 +1429,7 @@ main() {
   DNS zone:        ${DNS_ZONE_NAME}
   Auth method:     ${AUTH_METHOD}
   Demo library:    ${ENABLE_DEMO}
+  AppWrapper:      ${ENABLE_APPWRAPPER:-true (default)}
   Contact email:   ${CONTACT_EMAIL}
   IM service acct: ${IM_SA_EMAIL}
   Source:          ${REPO_ROOT} @ ${source_ref}

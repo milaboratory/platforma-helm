@@ -6,23 +6,23 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 6.0"
+      version = "6.50.0"
     }
     google-beta = {
       source  = "hashicorp/google-beta"
-      version = "~> 6.0"
+      version = "6.50.0"
     }
     random = {
       source  = "hashicorp/random"
-      version = "~> 3.6"
+      version = "3.9.0"
     }
     helm = {
       source  = "hashicorp/helm"
-      version = "~> 3.0"
+      version = "3.2.0"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
-      version = "~> 2.35"
+      version = "2.38.0"
     }
     # Pinned below 2.4: alekc/kubectl 2.4.0 introduced eager plan-time
     # provider-config validation that rejects this module's provider pattern
@@ -33,15 +33,15 @@ terraform {
     # and are free to use ~> 2.4. Do NOT widen this ceiling here.
     kubectl = {
       source  = "alekc/kubectl"
-      version = ">= 2.1, < 2.4"
+      version = "2.2.0"
     }
     http = {
       source  = "hashicorp/http"
-      version = "~> 3.4"
+      version = "3.6.0"
     }
     null = {
       source  = "hashicorp/null"
-      version = "~> 3.2"
+      version = "3.3.0"
     }
   }
 

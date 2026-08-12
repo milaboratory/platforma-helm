@@ -33,7 +33,7 @@ terraform {
     # and are free to use ~> 2.4. Do NOT widen this ceiling here.
     kubectl = {
       source  = "alekc/kubectl"
-      version = "2.3.1"
+      version = "2.2.0"
     }
     http = {
       source  = "hashicorp/http"

@@ -237,6 +237,26 @@ variable "kueue_version" {
   default     = "0.16.1"
 }
 
+variable "enable_appwrapper" {
+  type        = bool
+  description = <<-EOT
+    Install AppWrapper (fetched via the kubectl provider) into the cluster.
+
+    Leave true for a normal apply. Set false only to break the plan-time
+    chicken-and-egg on a FIRST from-scratch apply: the kubectl provider's host
+    is google_container_cluster.primary.endpoint, which is unknown until the
+    cluster exists, and alekc/kubectl (unlike the kubernetes/helm providers)
+    refuses to configure against an unknown host, failing 'terraform plan'.
+    Infrastructure Manager cannot '-target' the cluster first, so the workaround
+    is a two-revision apply: revision 1 with enable_appwrapper=false stands up
+    the cluster (the kubectl provider is never configured because it has no
+    resources), then revision 2 with enable_appwrapper=true applies AppWrapper
+    with the endpoint now known from state. Wired to ENABLE_APPWRAPPER in
+    cloudshell/install.sh.
+  EOT
+  default     = true
+}
+
 variable "appwrapper_version" {
   type        = string
   description = "AppWrapper release tag (used in install.yaml URL). Bumping requires updating appwrapper_install_yaml_sha256 below."

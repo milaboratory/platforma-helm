@@ -59,8 +59,15 @@ resource "helm_release" "kueue" {
 
 # AppWrapper — no official Helm chart on a registry; upstream ships install.yaml.
 # We fetch it via http data source and apply as multi-doc via kubectl provider.
+#
+# All four objects below are gated on var.enable_appwrapper. When it is false,
+# every kubectl-provider object (the data source and the managed resource) has
+# zero instances, so Terraform never configures the kubectl provider — which is
+# what lets a first, from-scratch apply plan successfully while the cluster
+# endpoint (the provider's host) is still unknown. See var.enable_appwrapper.
 data "http" "appwrapper_manifest" {
-  url = "https://github.com/project-codeflare/appwrapper/releases/download/${var.appwrapper_version}/install.yaml"
+  count = var.enable_appwrapper ? 1 : 0
+  url   = "https://github.com/project-codeflare/appwrapper/releases/download/${var.appwrapper_version}/install.yaml"
 }
 
 # Verify the fetched manifest matches the expected SHA-256. A compromised
@@ -68,7 +75,8 @@ data "http" "appwrapper_manifest" {
 # the hash and fail this assertion before kubectl_manifest tries to apply
 # anything to the cluster.
 resource "terraform_data" "appwrapper_manifest_integrity" {
-  input = sha256(data.http.appwrapper_manifest.response_body)
+  count = var.enable_appwrapper ? 1 : 0
+  input = sha256(data.http.appwrapper_manifest[0].response_body)
 
   lifecycle {
     postcondition {
@@ -79,7 +87,8 @@ resource "terraform_data" "appwrapper_manifest_integrity" {
 }
 
 data "kubectl_file_documents" "appwrapper" {
-  content = data.http.appwrapper_manifest.response_body
+  count   = var.enable_appwrapper ? 1 : 0
+  content = data.http.appwrapper_manifest[0].response_body
 }
 
 resource "kubectl_manifest" "appwrapper" {
@@ -88,7 +97,7 @@ resource "kubectl_manifest" "appwrapper" {
   # is depended-on at the resource level instead of on the data source,
   # so terraform gates the kubectl apply on the SHA-256 verification
   # passing without making the data source's outputs unknown at plan time.
-  for_each = data.kubectl_file_documents.appwrapper.manifests
+  for_each = var.enable_appwrapper ? data.kubectl_file_documents.appwrapper[0].manifests : {}
 
   yaml_body         = each.value
   server_side_apply = true

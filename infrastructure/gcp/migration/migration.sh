@@ -158,6 +158,19 @@ ACCEPT_REPLACE=(
   google_secret_manager_secret_version.admin_password
 )
 
+# -- Resources the split modules add that the monolith never had. They appear in
+#    the preview as CREATEs — a known, intended difference between the old
+#    monolith and the current two-module layout, NOT a failed import. Reported in
+#    their own group so a genuinely unexpected CREATE still stands out.
+#    (terraform-infra adds an Artifact Registry repo for pl-containers, its
+#    reader IAM, and the artifactregistry API that backs it.)
+KNOWN_NEW=(
+  google_artifact_registry_repository.pl_containers
+  google_artifact_registry_repository_iam_member.pl_containers_server_reader
+  google_artifact_registry_repository_iam_member.pl_containers_jobs_reader
+  'google_project_service.enabled["artifactregistry.googleapis.com"]'
+)
+
 # -- Dropped from both halves AND scheduled for manual deletion afterwards.
 #    Static batch node pools predating the batch ComputeClass migration. Absent
 #    from a recently-migrated monolith (classify reports them listed-but-absent,
@@ -279,22 +292,17 @@ extract_monolith_inputs() {
 # the bring-your-own master_secret_secret_id.
 build_half_inputs() {
   local half="$1" out="$2"
-  local full fulldoc msid gcs fs snc
+  local full fulldoc msid gcs fs
   full="$(extract_monolith_inputs)"
   msid="${DEPLOYMENT_NAME}-cluster-platforma-master-secret"
 
-  # The monolith module and terraform-infra disagree on the system pool's
-  # default node count (monolith 2, terraform-infra 1). initial_node_count is
-  # ForceNew and the pool does not autoscale, so a mismatch drains and recreates
-  # the pool on adoption. Pin the value to whatever the LIVE pool has, so
-  # adoption is in-place. (The monolith recorded no system_pool_node_count input.)
-  snc="$(jq -r '.resources[]|select(.type=="google_container_node_pool" and .name=="system")|.instances[0].attributes.initial_node_count // empty' "${GOLDEN}")"
-
+  # We deliberately do NOT pin system_pool_node_count here. terraform-infra's
+  # default (2) matches the live pool created by the monolith, so adoption is
+  # in-place — and, crucially, install.sh uses the SAME default, so a normal
+  # install.sh run after migration is a no-op instead of replacing the pool.
+  # Injecting a value here would make migration and install.sh disagree.
   fulldoc="${WORK_DIR}/monolith-inputs.withmsid.json"
-  jq --arg m "${msid}" --argjson snc "${snc:-null}" \
-     '. + {master_secret_secret_id: $m}
-        + (if $snc == null then {} else {system_pool_node_count: $snc} end)' \
-     "${full}" > "${fulldoc}"
+  jq --arg m "${msid}" '. + {master_secret_secret_id: $m}' "${full}" > "${fulldoc}"
   gcs="$(jq -r '.resources[]|select(.type=="google_storage_bucket" and .name=="primary")|.instances[0].attributes.name' "${GOLDEN}")"
   fs="$(jq -r '.resources[]|select(.type=="google_filestore_instance" and .name=="workspace")|.instances[0].attributes.name' "${GOLDEN}")"
   (
@@ -524,26 +532,56 @@ preview_one() {
           | "\(.terraformInfo.address) [\(.terraformInfo.actions | join("+"))]" ] | .[]')"
 
   if [[ -n "${accepted_destroyers}" ]]; then
-    warn "  ${half}: operator-accepted replacements (ACCEPT_REPLACE):"
+    warn "  ${half}: these resources WILL BE REPLACED during migration. After the"
+    warn "  migration you can run install.sh to update the configuration to what"
+    warn "  you need:"
     echo "${accepted_destroyers}" | sed 's/^/        REPLACE  /' >&2
   fi
 
-  # A CREATE on an address we meant to IMPORT = the import did not match a live
-  # resource → an apply would make a duplicate. Distinct from a CREATE of a
-  # genuinely new resource the split adds (allowed, but reported for review).
-  local bad_creates new_creates
+  # CREATEs fall into four buckets:
+  #   bad       — a CREATE on an address we meant to IMPORT; the import id did
+  #               not match a live resource, so an apply would make a duplicate.
+  #   known-new — a resource the split adds that the monolith never had
+  #               (KNOWN_NEW): an intended monolith→split difference.
+  #   state     — a state-only resource with no importer (SKIP_IMPORT types),
+  #               recreated with no cloud object.
+  #   surprise  — anything else: report loudly so a missing import stands out.
+  local known_json skip_types_json bad_creates known_creates state_creates surprise_creates
+  known_json="$(addrs_to_json "${KNOWN_NEW[@]}")"
+  skip_types_json="$(addrs_to_json "${SKIP_IMPORT[@]}")"
   bad_creates="$(echo "${changes}" | jq -r --argjson imp "${imported_json}" '
     [ .[] | select(.terraformInfo.actions == ["create"])
           | .terraformInfo.address | select(. as $a | $imp | index($a)) ] | .[]')"
-  new_creates="$(echo "${changes}" | jq -r --argjson imp "${imported_json}" '
+  known_creates="$(echo "${changes}" | jq -r --argjson known "${known_json}" '
     [ .[] | select(.terraformInfo.actions == ["create"])
-          | .terraformInfo.address | select(. as $a | ($imp | index($a)) | not) ] | .[]')"
+          | .terraformInfo.address as $a
+          | select($known | index($a)) | $a ] | .[]')"
+  state_creates="$(echo "${changes}" | jq -r --argjson known "${known_json}" --argjson skip "${skip_types_json}" '
+    [ .[] | select(.terraformInfo.actions == ["create"])
+          | .terraformInfo as $ti
+          | select(($known | index($ti.address) | not) and ($skip | index($ti.type)))
+          | $ti.address ] | .[]')"
+  surprise_creates="$(echo "${changes}" | jq -r --argjson imp "${imported_json}" --argjson known "${known_json}" --argjson skip "${skip_types_json}" '
+    [ .[] | select(.terraformInfo.actions == ["create"])
+          | .terraformInfo as $ti
+          | select(($imp   | index($ti.address) | not)
+                   and ($known | index($ti.address) | not)
+                   and ($skip  | index($ti.type)    | not))
+          | $ti.address ] | .[]')"
 
-  if [[ -n "${new_creates}" ]]; then
-    warn "  ${half}: CREATE of resources the split adds (not in the monolith) —"
-    warn "  expected for state-only recreated types (${SKIP_IMPORT[*]}) and genuinely"
-    warn "  new resources. Review that each is intended:"
-    echo "${new_creates}" | sed 's/^/        CREATE  /' >&2
+  if [[ -n "${known_creates}" ]]; then
+    warn "  ${half}: new resources known to be created during migration (a known"
+    warn "  difference between the old monolith and the current split):"
+    echo "${known_creates}" | sed 's/^/        CREATE  /' >&2
+  fi
+  if [[ -n "${state_creates}" ]]; then
+    warn "  ${half}: state-only resources recreated (no importer, no cloud object):"
+    echo "${state_creates}" | sed 's/^/        CREATE  /' >&2
+  fi
+  if [[ -n "${surprise_creates}" ]]; then
+    warn "  ${half}: unexpected CREATE(s) — not import-blocked, not a known new or"
+    warn "  state-only resource. A real resource here means a missing import. Review:"
+    echo "${surprise_creates}" | sed 's/^/        CREATE  /' >&2
   fi
 
   local fail=0

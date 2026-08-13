@@ -1,59 +1,60 @@
 # Migration: Monolithic GCP Module → Split infra/platforma Modules
 
-Procedure to move an existing GCP Platforma deployment from the original single Terraform root module onto the refactored two-module layout, **without destroying or recreating a single cloud resource**.
+Procedure to move an existing GCP Platforma deployment from the original single Terraform root module onto the refactored two-module layout, **without destroying or recreating a single stateful cloud resource**.
 
 ## Overview
 
 ### What Is Changing
 
-The first GCP deployment path (branch `chore/gcp-monolith-backport`) had one Terraform root module at `infrastructure/gcp/terraform/` and one Infrastructure Manager deployment. `main` splits that in two:
+The first GCP deployment path (branch `chore/gcp-monolith-backport`) had one Terraform root module at `infrastructure/gcp/terraform/` and one Infrastructure Manager (IM) deployment. `main` splits that in two:
 
 | | Monolith | `main` |
 |---|---|---|
 | Root modules | `terraform/` | `terraform-infra/` + `terraform-platforma/` |
 | IM deployments | `<name>` | `<name>-infra` + `<name>-platforma` |
-| Local backend prefix | `infrastructure/gcp` | `infrastructure/gcp/infra`, `.../platforma` |
 | Coupling between them | n/a | `terraform-platforma/data.tf` discovers the cluster, service accounts, bucket and Filestore **by name** — no `terraform_remote_state` |
 
-Nothing about the running deployment changes: the same GKE cluster, the same bucket, the same Filestore, the same Helm release. What changes is **which Terraform state file claims ownership of each resource**.
+The running deployment does not change: the same GKE cluster, the same bucket, the same Filestore, the same Helm release. What changes is **which Terraform state file owns each resource**.
 
-### Why This Is a State Split, Not an Import
+### How Adoption Works — and Why Not `import-statefile`
 
-The obvious reading of "move to the new modules" is *import every resource into the new configuration*. That would be the wrong tool here, for a concrete reason: **the refactor barely renamed anything**. Comparing the two trees address by address, almost every `resource` block in the monolith appears verbatim in one of the two new modules — same type, same name.
+The obvious approach is to split the monolith's state file in two and hand each half to a new IM deployment through `export-statefile` / `import-statefile`. **Do not do this. It destroys the deployment.**
 
-That means the job is a *partition* of one state file, not a re-derivation of it. Partitioning has two decisive advantages over importing:
+Infrastructure Manager cannot be handed a finished state file:
 
-* **It carries the un-importable resources.** `terraform_data.appwrapper_manifest_integrity` and `null_resource.wait_gateway_gfe_cleanup` have no cloud identity and cannot be imported at all. Under an import-based migration they would be recreated — and recreating `wait_gateway_gfe_cleanup` churns the Gateway/GFE.
-* **It cannot get an ID wrong.** Importing ~50 GCP resources means hand-writing ~50 identifiers in GCP's various formats. A partition copies the identifiers that Terraform itself wrote.
+* `import-statefile` writes to a **draft** state, not the live state. A plain `export-statefile` read-back still shows the old (empty) state, so the import *looks* like it failed even though it succeeded.
+* The **only** way to promote a draft to live is `unlock`. And `unlock` is not a passive lock release — it runs a full `terraform apply` of the deployment's current **configuration**. If that configuration is an empty seed module (the only thing you can apply to create the deployment before importing), the apply plans to destroy every resource the imported state lists, and **does it**.
 
-Infrastructure Manager supports the partition directly, through `export-statefile` / `import-statefile`.
+This is not hypothetical — it wiped a test instance during development. `apply` while a deployment is locked is rejected, so there is no way to put the real configuration in front of the draft. The seed → import → unlock path has no safe form.
+
+**So the migration adopts, it does not import-statefile.** Each target deployment is created directly from its real bundle (`terraform-infra` / `terraform-platforma`) plus a generated `imports.tf` of config-driven `import {}` blocks (Terraform 1.5+, which IM runs). On the first apply, Terraform **reads** each existing resource into state instead of creating it. The deployment is born managing the live resources, with no create and no destroy.
+
+An adopted resource is indistinguishable from one Terraform created itself: later updates, and `deployments delete`, behave identically. Adoption changes only the birth event.
 
 ### The Flow
 
 ```
   monolith IM deployment "<name>"
              │
-             │ export-statefile
+   export    │  export-statefile → golden-monolith.tfstate  (read-only; source of import IDs)
              ▼
-      monolith.tfstate ──────────► golden-monolith.tfstate  (read-only reset point)
-             │
-             │ split-state.jq  (pure partition, no address rewrites)
-             │
-     ┌───────┴────────┐              …and 3 addresses dropped from both:
-     ▼                ▼                the master-secret trio, see below
- infra.tfstate   platforma.tfstate
-     │                │
-     │  seed: apply an EMPTY bundle so the deployment exists
-     │  lock → import-statefile → unlock
-     ▼                ▼
- "<name>-infra"  "<name>-platforma"
-     │                │
-     │  preview the REAL bundle  ── must show zero destroys ──► gate
-     ▼                ▼
-   apply (via cloudshell/install.sh)
+   classify  │  every managed address must land in exactly one partition list
+             ▼
+   generate  │  per half: real bundle  +  inputs (projected via install.sh)  +  imports.tf
+             │            (import IDs read from the golden state; moved{} targets remapped)
+             ▼
+   preview   │  IM preview of each half — READ ONLY — the zero-destroy gate
+             ▼
+   apply     │  deployments apply each half → import blocks adopt the live resources
+             ▼
+   cutover   │  abandon the monolith deployment (metadata only; no resources destroyed)
+             ▼
+   retire    │  drain + delete leftover static batch node pools, if any
 ```
 
-`-infra` must be complete before `-platforma` is planned: `terraform-platforma/data.tf` resolves the cluster endpoint, the two runtime service accounts, the GCS bucket and the Filestore instance at **plan** time, and hard-fails if they are not there.
+`-infra` is adopted before `-platforma`: `terraform-platforma/data.tf` resolves the cluster endpoint, the two runtime service accounts, the GCS bucket and the Filestore instance at **plan** time, and hard-fails if they are not there.
+
+Everything through `preview` is non-destructive — `export` reads, `generate` is local, and `preview` is a read-only plan. `apply` adopts (no create or destroy of existing resources). `cutover` abandons the monolith (metadata only). `retire` is the only step that deletes real, now-redundant resources.
 
 ### The One Genuinely Dangerous Item: the Master Secret
 
@@ -65,26 +66,27 @@ random_id.master_secret
         └─► google_secret_manager_secret_version.master_secret
 ```
 
-`main` has no such resource. The refactor converted it to bring-your-own: `cloudshell/install.sh:prestage_master_secret` creates the Secret Manager entry out of band, and `terraform-platforma/app.tf` reads it through `data.google_secret_manager_secret_version.master_secret`, addressed by `var.master_secret_secret_id` (which has **no default** — plan fails without it).
+`main` has no such resource. The refactor converted it to bring-your-own: `terraform-platforma/app.tf` reads it through `data.google_secret_manager_secret_version.master_secret`, addressed by `var.master_secret_secret_id`.
 
-So the three resources above are removed from Terraform management (`migration.sh` drops them from both halves) while the Secret Manager object itself is left untouched and fed back in by name.
+So the three resources above are removed from Terraform management — `migration.sh` lists them in `DROP` and generates **no** import block for them — while the Secret Manager object itself is left untouched and fed back in by name. `migration.sh` sets `master_secret_secret_id` to `${DEPLOYMENT_NAME}-cluster-platforma-master-secret` automatically.
 
-> **This is the step that turns a routine migration into a data-loss event if it is done wrong.** The master secret is the encryption key for the deployment's artefacts. If it is destroyed and recreated, every existing project becomes unreadable — and no backup of the *infrastructure* will bring it back. Never approve a plan that touches `google_secret_manager_secret.master_secret`, and never let the migration script's `DROP` list be "fixed" by moving those entries into a keep list.
+> **This is the step that turns a routine migration into a data-loss event if it is done wrong.** The master secret is the encryption key for the deployment's artefacts. If it is destroyed and recreated, every existing project becomes unreadable, and no backup of the *infrastructure* will bring it back. Never approve a plan that touches `google_secret_manager_secret.master_secret`, and never let the `DROP` list be "fixed" by generating an import block for those entries.
 
-Two details to check against the deployment you are actually migrating:
+If the monolith used a different secret name, override `master_secret_secret_id` — do not rename the secret.
 
-* `install.sh` expects the name `${DEPLOYMENT_NAME}-cluster-platforma-master-secret`. A monolith deployment may have used a different name. **Read the real name out of the exported state and pass that** — do not rename the secret.
-* If the monolith deployment predates the BYO change, the secret's only version was created by Terraform. It stays valid; only the ownership changes.
+### Resources With No Importer
+
+`terraform_data.appwrapper_manifest_integrity` and `null_resource.wait_gateway_gfe_cleanup` have no cloud identity and **cannot be imported** — Terraform reports `Resource Import Not Implemented`. `migration.sh` lists their types in `SKIP_IMPORT` and generates no import block for them. They therefore appear in the preview as **CREATE**, which is expected and harmless: they hold no cloud object, so "creating" them only recomputes a trigger or re-runs a local wait. Nothing in the cluster is destroyed.
 
 ### Static Batch Node Pools (Older Deployments Only)
 
 Deployments created before the batch ComputeClass migration provisioned one **static batch node pool per machine shape** (`google_container_node_pool.batch`, a `for_each`). The split module has none: batch nodes are created on demand by the `platforma-batch` ComputeClass that `terraform-platforma/computeclass.tf` installs.
 
-There is nothing in the new configuration for those pools to map onto, so they leave Terraform management with the split — `migration.sh` classifies them as `RETIRE`. That is not a problem in itself: the nodes keep running and keep serving jobs throughout. After the migration, once the ComputeClass is demonstrably scheduling new batch work, they are drained and deleted by hand (Phase 5b).
+There is nothing in the new configuration for those pools to map onto, so they leave Terraform management with the split — `migration.sh` classifies them as `RETIRE`. The nodes keep running and keep serving jobs throughout. After the migration, once the ComputeClass is demonstrably scheduling new batch work, they are drained and deleted by hand (`retire`).
 
-A deployment migrated from a recent monolith will not have these in state at all, and `classify` will simply report them as listed-but-absent. Check which case you are in before starting — it is the difference between a five-phase migration and a six-phase one.
+A deployment migrated from a recent monolith will not have these in state at all, and `classify` reports them as listed-but-absent. Check which case you are in before starting.
 
-### Already Handled For You
+### Moved Blocks Handled Automatically
 
 `terraform-platforma/helm.tf` carries a `moved` block:
 
@@ -95,15 +97,15 @@ moved {
 }
 ```
 
-The AppWrapper namespace was extracted out of a `for_each` into a standalone resource. Without the `moved` block Terraform would plan a destroy of the namespace, which cascades to everything inside it. It is already in `main`, so it costs you nothing — but do not delete it until every environment has migrated.
+The AppWrapper namespace was extracted out of a `for_each` into a standalone resource. The monolith state still holds the old address, so `gen-imports.jq` would emit an import block for it — and Terraform rejects importing to a move source. `migration.sh` reads every `moved` block in the bundle and **remaps** the import target from the old address to the new one. You do not need to touch this.
 
 ---
 
 ## Audience and Scope
 
-Written for an operator with `gcloud` and Owner-equivalent rights on the target project, running from Cloud Shell or a workstation. It assumes the monolith deployment is **ACTIVE** in Infrastructure Manager. If your monolith state instead lives in a plain GCS backend (someone ran `tofu apply` by hand), the split is simpler — `tofu state mv -state-out` between two state files — and the IM-specific phases (2, 3) do not apply.
+Written for an operator with `gcloud` and Owner-equivalent rights on the target project, running from Cloud Shell or a workstation. It assumes the monolith deployment is **ACTIVE** in Infrastructure Manager. If your monolith state instead lives in a plain GCS backend (someone ran `tofu apply` by hand), the split is simpler — `tofu state mv -state-out` between two state files — and the IM-specific steps do not apply.
 
-Prerequisites: `gcloud` ≥ 450, `jq`, and a checkout of this repository at `main`.
+Prerequisites on the machine you run from: `gcloud` ≥ 450, `jq`, `gsutil`, `unzip`, `python3`, and a checkout of this repository at `main`. `migration.sh` sources `cloudshell/install.sh` to reuse its per-half input projection, so both must come from the same checkout.
 
 ---
 
@@ -117,9 +119,9 @@ export DEPLOYMENT_NAME=platforma       # the EXISTING monolith deployment name
 export IM_LOCATION=europe-west1        # default; override if you deployed elsewhere
 ```
 
-Everything through Phase 3 is reversible and creates no cloud resources. Phase 4 is read-only. Phase 5 is the first step that changes anything.
+Everything through `preview` is reversible and changes nothing in the cloud. `apply` is the first step that changes anything.
 
-### Phase 0 — Preflight and the golden snapshot
+### Phase 0 — Preflight and the Golden Snapshot
 
 **Freeze changes first.** Pause any CI job or scheduled `apply` that targets this project, and do not run the monolith's `install.sh` again for the duration — applying the monolithic module on top of a half-migrated cluster is the one way to get two states fighting over the same resources.
 
@@ -130,94 +132,79 @@ Everything through Phase 3 is reversible and creates no cloud resources. Phase 4
 
 `preflight` checks tooling, auth, that the monolith is ACTIVE, that the two targets do not already exist, and that the IM deployer service account is present.
 
-`export` pulls the monolith state to `.work/<project>-<name>/monolith.tfstate` and takes a read-only copy as `golden-monolith.tfstate`. **That golden copy is your reset button** — every later phase can be redone by starting from it, without re-provisioning a GKE cluster. Keep it until the migration is validated and the old deployment is gone.
+`export` pulls the monolith state to `.work/<project>-<name>/monolith.tfstate` and takes a read-only copy as `golden-monolith.tfstate`. Adoption reads every import identifier out of this file. **Re-export if the deployment has changed since your last export** — stale IDs (for example a different bucket suffix) make the import blocks miss the live resources.
 
-### Phase 1 — Classify and split
+### Phase 1 — Classify
 
 ```sh
 ./migration.sh classify
-./migration.sh split
 ```
 
 `classify` asserts that **every** managed address in the exported state falls into exactly one of four lists in `migration.sh`:
 
 | List | Count | Meaning |
 |---|---|---|
-| `KEEP_INFRA` | 31 | moves into `<name>-infra` |
-| `KEEP_PLATFORMA` | 18 | moves into `<name>-platforma` |
+| `KEEP_INFRA` | 31 | adopted into `<name>-infra` |
+| `KEEP_PLATFORMA` | 18 | adopted into `<name>-platforma` (2 of these types are state-only — recreated, not imported) |
 | `DROP` | 3 | leaves Terraform management permanently; the cloud object stays (the master-secret trio) |
-| `RETIRE` | 1 | leaves Terraform management, then is deleted by hand in Phase 5b (static batch pools; absent on recent monoliths) |
+| `RETIRE` | 1 | leaves Terraform management, then is deleted by hand by `retire` (static batch pools; absent on recent monoliths) |
 
 If someone has added a resource to the monolith module that this script does not know about, classify aborts and names it.
 
 > When that happens, decide which module owns the new resource and add it to the right list. Do not silence the failure by adding it to `DROP` or `RETIRE` — those two lists have exact, documented memberships, and widening them is how a resource gets silently orphaned.
 
-`split` runs `split-state.jq` twice to produce `infra.tfstate` and `platforma.tfstate`, then verifies the result independently: the two halves plus `DROP` must reconstitute the source address set exactly, with no overlap. The transformation also clears stale `outputs` and `check_results`, prunes dependency edges that point into the other half, and bumps `serial` so the import cannot be mistaken for stale.
+`classify` also reports addresses that are listed but **absent** from the state. That is expected for `count`/`for_each`-gated resources that are switched off in your deployment (for example a data-library IAM member or an unused auth secret), and for the `RETIRE` pool on an already-migrated monolith.
 
-### Phase 2 — Seed the target deployments
-
-```sh
-./migration.sh seed
-```
-
-`import-statefile` requires a deployment that already exists **and** is locked, but the only way to create a deployment is to apply a bundle — and applying the real bundle against an empty state would provision a second copy of everything.
-
-`seed/main.tf` breaks that cycle: a root module with zero resources and no providers. IM creates each deployment in seconds with an empty state, which Phase 3 then overwrites.
-
-### Phase 3 — Import the split state
+### Phase 2 — Generate the Adoption Bundles
 
 ```sh
-./migration.sh import
+./migration.sh generate
 ```
 
-Per deployment: `lock` → `import-statefile` → `unlock`, then an immediate `export-statefile` read-back whose address list is diffed against what was uploaded. The unlock runs from a `trap`, so a failed import still releases the lock — a deployment left locked cannot be applied and the lock id is awkward to recover.
+For each half, `generate` stages a directory under `.work/<project>-<name>/bundle-<half>/` containing:
 
-At this point both target deployments believe they manage the real resources, and no cloud resource has been touched.
+* the **real module** (`terraform-infra` / `terraform-platforma`), minus `backend.tf` (IM manages state itself);
+* `inputs.auto.tfvars.json` — the module's inputs, projected from the monolith's own recorded inputs by `install.sh`'s `build_tfvars_json_{infra,platforma}` (sourced, not re-implemented), plus the values only the split needs: `master_secret_secret_id`, and `system_pool_node_count` pinned to the live pool size (see [Config drift](#config-drift--forced-replace));
+* `zzz-adoption-imports.tf` — the generated `import {}` blocks, one per live resource instance, with `moved{}` targets remapped.
 
-### Phase 4 — The zero-destroy gate
+Review the import file before previewing:
 
-Produce the two tfvars files. `cloudshell/install.sh` in `main` builds these with `build_tfvars_json_infra` (line ~1578) and `build_tfvars_json_platforma` (line ~1609) from one user-supplied document; the simplest path is to run `install.sh` far enough to emit them, or to hand-write them from the monolith's inputs plus the new required keys.
+```sh
+less .work/*/bundle-infra/zzz-adoption-imports.tf
+less .work/*/bundle-platforma/zzz-adoption-imports.tf
+```
 
-**The new keys the monolith never had:**
-
-| Key | Module | Notes |
-|---|---|---|
-| `master_secret_secret_id` | platforma | **Required, no default.** Must name the *existing* secret — read it from `golden-monolith.tfstate`, do not invent it. |
-| `sso_*` | platforma | Only if adopting SSO; see `advanced-installation.md`. |
-
-Save them as `.work/<project>-<name>/inputs-infra.auto.tfvars.json` and `inputs-platforma.auto.tfvars.json`, then:
+### Phase 3 — Preview: the Zero-Destroy Gate
 
 ```sh
 ./migration.sh preview
 ```
 
-This stages each real module (stripping `backend.tf`, which IM rejects), creates an IM preview against the imported state, lists the resource changes, and **fails the run if any change has intent `DELETE` or `REPLACE`**.
+For each half, `preview` creates a read-only IM preview of the staged bundle — the target deployment does not need to exist yet — lists the resource changes, and classifies them by their Terraform actions:
 
-**Expected non-destructive changes.** The refactor added resources the monolith never had; these show up as creates and are correct:
+* **Any change carrying a `delete` action** (`DELETE` or `RECREATE`) is destructive. Unless the address is on the `ACCEPT_REPLACE` list, this **fails the run**.
+* **A `CREATE` on an address that has an import block** means the import id did not match a live resource — an apply would make a duplicate. This also **fails the run**.
+* A `CREATE` of a resource with **no** import block is a genuinely new resource the split adds (see below), or a state-only recreate. It is allowed, and listed for you to confirm.
 
-*infra* — `google_artifact_registry_repository.pl_containers` + its two IAM members, `google_container_node_pool.gpu_l4`, `google_container_node_pool.gpu_rtx_pro_6000`, `google_project_iam_member.server_batch_{agent_reporter,jobs_editor,service_agent}`, `google_service_account_iam_member.server_batch_run_as_self`.
+`ACCEPT_REPLACE` is a short, reviewed allowlist of replacements the operator consents to. It currently holds `random_password.admin` and `google_secret_manager_secret_version.admin_password` — the split adds `override_special` to the admin password, which forces the random provider to regenerate it. **The admin password rotates on adoption.** The new value is published to the admin-password Secret Manager secret, so it stays retrievable; only a cached copy of the old one goes stale. Any *other* destructive change still stops the run.
 
-*platforma* — `kubernetes_secret.sso_client_secret` (if SSO is configured), and `kubectl_manifest.appwrapper_namespace` should appear as a **move**, not a create-and-destroy, courtesy of the `moved` block.
+**Expected non-destructive changes.** The refactor added resources the monolith never had; these show up as creates and are correct — for example, on the infra half, `google_artifact_registry_repository.pl_containers`, its two IAM members, and the `artifactregistry.googleapis.com` service. Confirm each create is a resource the split is meant to add.
 
-#### Why a destroy can appear at all — config drift
+#### Config Drift → Forced Replace
 
-This is the failure mode to understand before reading the preview, because it is the only one that can destroy a stateful resource despite everything above being done correctly.
+This is the failure mode to understand, because it is the only one that can destroy a stateful resource despite everything above being done correctly.
 
 Adopting a resource puts its **live attributes** into state. Terraform then diffs those attributes against the **new module's configuration**. Where they disagree you get an update — and for **immutable** GCP fields an update means destroy-and-recreate:
 
-* node pool: `machine_type`, `disk_type`, `disk_size_gb`, image type
+* node pool: `initial_node_count`, `machine_type`, `disk_type`, `disk_size_gb`, image type
 * cluster: `network`, `subnetwork`, location
 * Filestore: `tier`, capacity
 
 Recreating the `system` or `ui` node pool drains those nodes. Recreating the cluster or the Filestore instance is unrecoverable.
 
-The good news is that the split module's `system` and `ui` pools are defined from the **same variables** as the monolith, with the same defaults — so if your tfvars carry the same values the monolith used, they plan as no-ops. Spurious replacements almost always trace to one of:
+One drift is handled for you. The `system` pool is fixed (not autoscaled) and its `initial_node_count` is immutable; the monolith module defaulted it to **2**, terraform-infra defaults to **1**. `migration.sh` reads the live count from the golden state and pins `system_pool_node_count` to it, so the pool adopts in place. If you later want a different size, that is a deliberate, scheduled pool replacement — not a migration side effect.
 
-* a different `system_pool_machine_type` or `deployment_size` preset in the new tfvars than the monolith actually ran with;
-* a `zone_suffix` mismatch, so the module addresses a different location than the resources live in;
-* GKE release-channel auto-upgrades having moved the node version since the monolith last applied — a **version-only** diff is safe, a machine-type diff is not.
-
-Reconcile by making the new module's inputs match reality. **Never reconcile by editing the state.** The authoritative values are in `golden-monolith.tfstate`:
+Any other spurious replacement traces to the projected inputs disagreeing with reality — a `system_pool_machine_type` / `deployment_size` preset, a `zone_suffix` mismatch, or a GKE release-channel auto-upgrade that moved the node version (a version-only diff is safe; a machine-type diff is not). Reconcile by making the module's inputs match reality. **Never reconcile by editing the state.** The authoritative values are in `golden-monolith.tfstate`:
 
 ```sh
 jq -r '.resources[] | select(.type=="google_container_node_pool")
@@ -225,27 +212,49 @@ jq -r '.resources[] | select(.type=="google_container_node_pool")
    .work/*/golden-monolith.tfstate
 ```
 
-#### Reading a non-zero preview
+#### Reading a Non-Zero Preview
 
 Do not approve your way past a destroy. Diagnose it:
 
 | Symptom | Likely cause |
 |---|---|
-| `google_secret_manager_secret.master_secret` appears at all | The `DROP` list was bypassed. Stop; re-split from the golden snapshot. |
-| The AppWrapper namespace is destroyed | The `moved` block was removed, or the bundle staged for preview is not from `main`. |
-| A node pool is replaced | A machine-type/disk field differs between the monolith's inputs and the tfvars you wrote. Reconcile the tfvars — not the state. |
-| The whole cluster is replaced | `cluster_name`, `zone`, or `project_id` in the tfvars does not match what the monolith created. |
-| `kubectl_manifest.*` all replaced | Provider jump: the monolith pins `alekc/kubectl >= 2.1, < 2.4`, the split module uses `~> 2.4`. Confirm on the rehearsal before touching a real deployment. |
+| `google_secret_manager_secret.master_secret` has an import block or a plan | It was moved out of `DROP`. Stop; restore the `DROP` list. |
+| A `CREATE` on an import-blocked address | The import id is wrong for that resource type — a duplicate risk. Fix the id rule in `gen-imports.jq`. |
+| A node pool is replaced | An immutable field (count, machine type, disk) differs between the live pool and the projected inputs. Reconcile the inputs — not the state. |
+| The whole cluster is replaced | `cluster_name`, `zone_suffix`, or `project_id` in the inputs does not match what the monolith created. |
+| The AppWrapper namespace is destroyed | The `moved` remap did not apply, or the bundle is not from `main`. |
 
-### Phase 5 — Apply
+### Phase 4 — Apply: Adopt
 
-Only after both previews are clean. Apply the real bundles through the normal path — `cloudshell/install.sh` on `main`, which applies `<name>-infra` first and waits for it to settle before `<name>-platforma`. This script deliberately does not drive the applies; there is no reason to have a second, less-tested code path for the step that actually changes production.
+Only after both previews are clean.
 
-### Phase 5b — Retire the static batch pools
+```sh
+./migration.sh apply
+```
 
-**Skip this phase unless `classify` reported `RETIRE` addresses present in your state.**
+This runs `deployments apply` for each half against its staged bundle. The import blocks read the existing resources into state; nothing existing is created or destroyed. `-infra` is applied and settles before `-platforma`.
 
-The old static `batch-*` node pools are now managed by nothing. They keep running and keep serving whatever is already scheduled on them; new batch work goes to ComputeClass-provisioned nodes. Confirm that has actually started happening:
+At this point both new deployments manage the live resources — **and so does the monolith**. That is safe as long as nothing applies the monolith. Do not run the monolith's `install.sh` between here and cutover.
+
+### Phase 5 — Cutover: Abandon the Monolith
+
+Once you have validated the deployment (see below):
+
+```sh
+./migration.sh cutover
+```
+
+This checks that both split halves are ACTIVE, then deletes the monolith deployment with `--delete-policy=abandon` — IM forgets it, but every cloud resource stays (the split deployments now own them).
+
+> `--delete-policy=abandon` is not optional. Without it, IM runs `terraform destroy` against a state that still lists your cluster, bucket, Filestore and secrets. `cutover` always passes it; never delete the monolith by hand without it.
+
+Do this **last**, and only after validation: until it is abandoned, the monolith deployment is a working rollback target.
+
+### Phase 5b — Retire the Static Batch Pools
+
+**Skip this unless `classify` reported `RETIRE` addresses present in your state.**
+
+The old static `batch-*` node pools are now managed by nothing. They keep serving whatever is already scheduled on them; new batch work goes to ComputeClass-provisioned nodes. Confirm that has actually started:
 
 ```sh
 kubectl get nodes -L cloud.google.com/compute-class,role
@@ -259,39 +268,22 @@ Then:
 ./migration.sh retire
 ```
 
-This reads the cluster name **and location** out of `golden-monolith.tfstate`, lists the surviving `batch-*` pools, and **prints** the delete commands without running them — deleting a node pool drains every node in it, and only you can judge whether the ComputeClass is genuinely carrying the load. Delete one pool at a time.
+This reads the cluster name **and location** out of `golden-monolith.tfstate`, lists the surviving `batch-*` pools, and **prints** the delete commands without running them — deleting a node pool drains every node in it, and only you can judge whether the ComputeClass is carrying the load. Delete one pool at a time.
 
-> The location matters: the monolith deploys a **zonal** cluster, so these commands use `--location=<zone>` (e.g. `europe-west1-b`), not a region. A `--region` here addresses a different or non-existent cluster.
-
-Since the pools are in no Terraform state, this is a plain GCP cleanup with nothing to reconcile afterwards.
-
-### Phase 6 — Retire the monolith deployment
-
-Once the deployment is validated (see below), remove IM's record of the old monolith:
-
-```sh
-gcloud infra-manager deployments delete "${DEPLOYMENT_NAME}" \
-  --location="${IM_LOCATION}" --project="${PROJECT_ID}" \
-  --delete-policy=abandon --quiet
-```
-
-> `--delete-policy=abandon` is not optional. Without it, IM runs `terraform destroy` against a state that still lists your cluster, bucket, Filestore and secrets — and destroys the deployment you just migrated.
-
-Do this **last**, and only after validation: until it is deleted, the monolith deployment is a working rollback target.
+> The location matters: the monolith deploys a **zonal** cluster, so these commands use `--location=<zone>` (e.g. `europe-west1-b`), not a region.
 
 ---
 
 ## Validation
 
-Before Phase 6:
+Before `cutover`:
 
-1. Both previews showed zero destructive changes, and both applies completed.
+1. Both previews showed no destructive changes (except the accepted admin-password rotation), and both applies completed with the deployments ACTIVE.
 2. The Platforma UI answers on the **existing** ingress IP with the **existing** certificate — proving `google_compute_global_address.ingress` and the cert-manager chain were adopted, not recreated.
-3. **A project that existed before the migration still opens.** This is the master-secret check and the only one that matters for data. A fresh deployment will pass every other test while having silently lost the key.
-4. The admin password still works. The partition carries `random_password.admin` across, so it should be unchanged — if it has rotated, `random_password.admin` was dropped somewhere it should not have been.
-5. `gcloud infra-manager deployments describe` shows both new deployments ACTIVE.
-6. The resource inventory is unchanged: no new cluster, bucket, or Filestore instance was created alongside the old one.
-7. Batch jobs schedule onto ComputeClass nodes:
+3. **A project that existed before the migration still opens.** This is the master-secret check and the only one that matters for data. A fresh deployment passes every other test while having silently lost the key.
+4. The admin password works. It **rotated** during adoption (see `ACCEPT_REPLACE`), so read the current value from the admin-password Secret Manager secret, not from a cached copy.
+5. The resource inventory is unchanged: no new cluster, bucket, or Filestore instance was created alongside the old one.
+6. Batch jobs schedule onto ComputeClass nodes:
    ```sh
    kubectl -n platforma get pods
    kubectl get nodes -L cloud.google.com/compute-class,role
@@ -301,22 +293,21 @@ Before Phase 6:
 
 The rollback target depends on how far you got:
 
-* **Through Phase 3** — nothing has changed in the cloud. Delete the two seeded deployments with `--delete-policy=abandon` (`ALLOW_RESET=yes ./migration.sh reset` does exactly this) and carry on using the monolith deployment, which is untouched.
-* **After Phase 5** — the resources have been mutated by a real apply. Re-import `golden-monolith.tfstate` into the monolith deployment (it still exists; you have not run Phase 6), delete the two new deployments with `--delete-policy=abandon`, and apply the monolith bundle to reconcile. This is why Phase 6 comes last.
-* **After Phase 6** — there is no automated rollback. Do not run Phase 6 until validation passes.
+* **Through `preview`** — nothing has changed in the cloud. Delete anything staged and carry on using the monolith, which is untouched.
+* **After `apply`, before `cutover`** — the split deployments have adopted the resources, but the monolith still owns them too and remains authoritative. Delete the two new deployments with `--delete-policy=abandon` (`ALLOW_RESET=yes ./migration.sh reset`), then carry on with the monolith. The only lasting change is the admin-password rotation.
+* **After `cutover`** — the monolith is gone. There is no automated rollback. Do not run `cutover` until validation passes.
 
 ## Re-Running After a Failure
 
-Each phase is idempotent in a specific way:
+Each step is idempotent in a specific way:
 
-* `export` refuses to overwrite an existing `monolith.tfstate` and never rewrites the golden snapshot.
-* `classify` and `split` are pure functions of the exported state; re-run freely.
-* `seed` skips a deployment that already exists.
-* `import` can be repeated — it overwrites the target's state wholesale, and re-verifies by read-back.
-* `preview` creates a preview named `<deployment>-mig-preview`; delete the previous one (`gcloud infra-manager previews delete`) if the name collides.
+* `export` refuses to overwrite an existing `monolith.tfstate` and never rewrites the golden snapshot. Delete both by hand to force a fresh export after the deployment changes.
+* `classify` and `generate` are pure functions of the golden state and the bundles; re-run freely.
+* `preview` deletes and recreates its preview (`<deployment>-adopt-preview`) each run.
+* `apply` refuses if a target deployment already exists — adoption must create it fresh. Reset first.
 * `retire` only ever prints commands; run it as often as you like.
 
-If a rehearsal goes sideways, `ALLOW_RESET=yes ./migration.sh reset` deletes both target deployments with `--delete-policy=abandon` and clears the derived files, leaving the golden snapshot and the monolith deployment intact.
+If a rehearsal goes sideways, `ALLOW_RESET=yes ./migration.sh reset` deletes both target deployments with `--delete-policy=abandon`, removes the staged bundles and previews, and leaves the golden snapshot and the monolith deployment intact.
 
 ---
 
@@ -324,17 +315,16 @@ If a rehearsal goes sideways, `ALLOW_RESET=yes ./migration.sh reset` deletes bot
 
 Do not run this against a deployment with data until it has been rehearsed end to end. The rehearsal is cheap because the expensive part — standing up the monolith — happens once:
 
-1. In a scratch project, deploy the monolith from `chore/gcp-monolith-backport` via its `cloudshell/install.sh`. Use a short `DEPLOYMENT_NAME` (it prefixes cluster, secret and certmap names, which have length limits).
+1. In a scratch project, deploy the monolith via its `cloudshell/install.sh`. Use a short `DEPLOYMENT_NAME` (it prefixes cluster, secret and certmap names, which have length limits).
 2. Create at least one project in the Platforma UI, so validation step 3 has something to check.
-3. Run Phases 0–5.
-4. `ALLOW_RESET=yes ./migration.sh reset`, then re-run Phases 2–5 to confirm the procedure is repeatable rather than a one-off that happened to work.
+3. Run `preflight` → `export` → `classify` → `generate` → `preview` → `apply` → `cutover`.
+4. `ALLOW_RESET=yes ./migration.sh reset`, then re-run from `apply` to confirm the procedure is repeatable.
 
-The `kubectl` provider jump (`< 2.4` → `~> 2.4`) is the item most worth proving on a rehearsal: it is the one version change between the two module sets that touches how existing state is read.
+The adoption import-id rules per resource type (helm release, kubectl manifest, IAM member, random password) are the item most worth proving on a rehearsal — the `preview` gate catches a wrong id safely, but you want to see it pass before touching a real deployment.
 
 ## Files
 
 | Path | Purpose |
 |---|---|
-| `migration/migration.sh` | Phase driver — preflight, export, classify, split, seed, import, preview, retire, reset |
-| `migration/split-state.jq` | The state partition, as an auditable jq program |
-| `migration/seed/main.tf` | Empty root module used to bring the target deployments into existence |
+| `migration/migration.sh` | Flow driver — preflight, export, classify, generate, preview, apply, cutover, retire, reset |
+| `migration/gen-imports.jq` | Emits the `import {}` blocks from the golden state, with per-type import-id rules |

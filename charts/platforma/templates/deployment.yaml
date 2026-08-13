@@ -221,6 +221,10 @@ spec:
             {{- else }}
             - "--runner-gpu-available=disabled"
             {{- end }}
+            # OOM retries are off by default; set kueue.oomRetry=true to enable them.
+            {{- if .Values.kueue.oomRetry }}
+            - "--k8s-oom-retry"
+            {{- end }}
             # Queue runners (hardcoded — 4 fixed queues, always K8s backend)
             - "--queue-runner=ui-tasks:k8s"
             - "--queue-runner=light:k8s"
@@ -309,7 +313,11 @@ spec:
             {{- if eq .type "pvc" }}
             - "--data-library-fs={{ .name }}=/data/sources/{{ .name }}"
             {{- else if eq .type "s3" }}
+            {{- if .s3.endpoint }}
+            - "--data-library-s3={{ .name }}={{ trimSuffix "/" .s3.endpoint }}/{{ .s3.bucket }}{{ if .s3.prefix }}/{{ trimSuffix "/" .s3.prefix }}/{{ end }}"
+            {{- else }}
             - "--data-library-s3={{ .name }}=s3://{{ .s3.bucket }}{{ if .s3.prefix }}/{{ trimSuffix "/" .s3.prefix }}/{{ end }}"
+            {{- end }}
             {{- if .s3.region }}
             - "--data-library-s3-region={{ .name }}={{ .s3.region }}"
             {{- end }}

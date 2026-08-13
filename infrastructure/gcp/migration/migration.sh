@@ -183,6 +183,18 @@ deployment_state() {
   im deployments describe "$1" --format='value(state)' 2>/dev/null || echo NOTFOUND
 }
 
+# Export a deployment's statefile to exactly $2. Some gcloud releases append a
+# '.tfstate' suffix to --file, landing the export at '$2.tfstate'; normalise
+# either name to the requested path.
+export_statefile() {
+  local dep="$1" out="$2"
+  im deployments export-statefile "${dep}" --file="${out}"
+  if [[ ! -f "${out}" && -f "${out}.tfstate" ]]; then
+    mv "${out}.tfstate" "${out}"
+  fi
+  [[ -f "${out}" ]] || die "export-statefile did not produce ${out}"
+}
+
 # Base addresses of all managed resources in a state file, sorted and unique.
 state_addresses() {
   jq -r '.resources[] | select(.mode=="managed") | "\(.type).\(.name)"' "$1" | sort -u
@@ -250,7 +262,7 @@ cmd_export() {
   if [[ -f "${out}" ]]; then
     warn "${out} already exists — keeping it (delete it by hand to re-export)"
   else
-    im deployments export-statefile "${DEPLOYMENT_NAME}" --file="${out}"
+    export_statefile "${DEPLOYMENT_NAME}" "${out}"
     ok "exported to ${out}"
   fi
 
@@ -423,7 +435,7 @@ import_one() {
   # Read it straight back and compare — proves the upload landed, not just
   # that the command exited zero.
   local verify="${WORK_DIR}/${dep}.verify.tfstate"
-  im deployments export-statefile "${dep}" --file="${verify}" >/dev/null
+  export_statefile "${dep}" "${verify}" >/dev/null
   if diff -q <(state_addresses "${file}") <(state_addresses "${verify}") >/dev/null; then
     ok "read-back matches: $(state_addresses "${verify}" | wc -l | tr -d ' ') addresses"
   else

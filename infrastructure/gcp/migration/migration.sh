@@ -370,7 +370,8 @@ cmd_split() {
     <(state_addresses "${WORK_DIR}/platforma.tfstate") \
     <(echo "${unmanaged}") | grep . | sort -u)"
   if ! diff -q <(state_addresses "${src}") <(echo "${recombined}") >/dev/null; then
-    diff <(state_addresses "${src}") <(echo "${recombined}") | sed 's/^/      /' >&2
+    # '|| true' so the failing diff pipeline does not trip 'set -e' before 'die'.
+    diff <(state_addresses "${src}") <(echo "${recombined}") | sed 's/^/      /' >&2 || true
     die "split is not a clean partition of the source state (diff above)"
   fi
   ok "split verified: infra ∪ platforma ∪ dropped == monolith, no overlap"
@@ -414,22 +415,51 @@ import_one() {
 
   info "locking ${dep}…"
   im deployments lock "${dep}" >/dev/null
+
+  # The lock id is retrieved with 'export-lock' — the documented command for
+  # this. Newer gcloud releases do NOT surface it through 'describe'
+  # (lockState.lockId is empty), so 'describe' is only a last-resort fallback
+  # for older releases.
   local lock_id
-  lock_id="$(im deployments describe "${dep}" --format='value(lockState.lockId)' 2>/dev/null || true)"
+  lock_id="$(im deployments export-lock "${dep}" --format='value(lockId)' 2>/dev/null || true)"
   if [[ -z "${lock_id}" ]]; then
-    # Field name varies across gcloud releases; fall back to a full describe.
-    lock_id="$(im deployments describe "${dep}" --format=json | jq -r '.. | .lockId? // empty' | head -1)"
+    lock_id="$(im deployments export-lock "${dep}" --format=json 2>/dev/null | jq -r '.. | .lockId? // empty' | head -1)"
   fi
-  [[ -n "${lock_id}" ]] || die "could not determine lock id for ${dep}; unlock it by hand before retrying"
+  if [[ -z "${lock_id}" ]]; then
+    # Older gcloud: the id lived on the deployment object itself.
+    lock_id="$(im deployments describe "${dep}" --format=json 2>/dev/null | jq -r '.. | .lockId? // empty' | head -1)"
+  fi
+  [[ -n "${lock_id}" ]] || die "could not determine lock id for ${dep}; recover it with 'gcloud infra-manager deployments export-lock ${dep} --project=${PROJECT_ID} --location=${IM_LOCATION}', then unlock it by hand before retrying"
   ok "locked (lock-id ${lock_id})"
 
   # Always release the lock, even if the import fails — a deployment left
-  # locked cannot be applied and the id is awkward to recover.
+  # locked cannot be applied and the id is awkward to recover. The trap is on
+  # EXIT, not RETURN: both 'die' (which calls exit) and a 'set -e' abort
+  # terminate the shell rather than returning from the function, so a RETURN
+  # trap would never fire on any error path. On the success path we unlock
+  # explicitly and clear this trap (see the end of the function). The lock id
+  # is baked into the trap string because the local goes out of scope by the
+  # time an EXIT trap runs at top level.
   # shellcheck disable=SC2064
-  trap "gcloud infra-manager deployments unlock '${dep}' --lock-id='${lock_id}' --project='${PROJECT_ID}' --location='${IM_LOCATION}' --quiet >/dev/null 2>&1 || true" RETURN
+  trap "gcloud infra-manager deployments unlock '${dep}' --lock-id='${lock_id}' --project='${PROJECT_ID}' --location='${IM_LOCATION}' --quiet >/dev/null 2>&1 || true" EXIT
 
-  info "importing ${file}…"
-  im deployments import-statefile "${dep}" --lock-id="${lock_id}" --file="${file}"
+  # Align lineage before importing. IM gives each seeded deployment its own
+  # state lineage; a statefile whose lineage differs is uploaded but NOT adopted
+  # — import-statefile reports success while the deployment silently keeps its
+  # empty seed state (the read-back below is what caught this). Our split files
+  # carry the *monolith's* lineage, so rewrite it to the seed's lineage. The
+  # split already bumped the serial well above the seed's, so only lineage needs
+  # aligning; nothing else in the state is touched.
+  local seed="${WORK_DIR}/${dep}.seed.tfstate"
+  export_statefile "${dep}" "${seed}" >/dev/null
+  local seed_lineage; seed_lineage="$(jq -r '.lineage // empty' "${seed}")"
+  [[ -n "${seed_lineage}" ]] || die "could not read seed lineage for ${dep} from ${seed}"
+  local aligned="${WORK_DIR}/${dep}.aligned.tfstate"
+  jq --arg lin "${seed_lineage}" '.lineage = $lin' "${file}" > "${aligned}"
+  info "aligned lineage to seed (${seed_lineage})"
+
+  info "importing ${aligned}…"
+  im deployments import-statefile "${dep}" --lock-id="${lock_id}" --file="${aligned}"
   ok "state imported into ${dep}"
 
   # Read it straight back and compare — proves the upload landed, not just
@@ -439,9 +469,18 @@ import_one() {
   if diff -q <(state_addresses "${file}") <(state_addresses "${verify}") >/dev/null; then
     ok "read-back matches: $(state_addresses "${verify}" | wc -l | tr -d ' ') addresses"
   else
-    diff <(state_addresses "${file}") <(state_addresses "${verify}") | sed 's/^/      /' >&2
+    # '|| true' so the failing diff pipeline does not trip 'set -e' and abort
+    # before 'die' prints its explanation.
+    diff <(state_addresses "${file}") <(state_addresses "${verify}") | sed 's/^/      /' >&2 || true
     die "read-back of ${dep} does not match what was uploaded (diff above)"
   fi
+
+  # Success: unlock explicitly and drop the safety trap so it does not fire
+  # again (or unlock the *next* deployment) when the shell later exits.
+  info "unlocking ${dep}…"
+  im deployments unlock "${dep}" --lock-id="${lock_id}" >/dev/null
+  trap - EXIT
+  ok "unlocked ${dep}"
 }
 
 cmd_import() {
@@ -567,7 +606,9 @@ cmd_reset() {
     im deployments delete "${d}" --delete-policy=abandon --quiet
     ok "${d} deleted, resources abandoned"
   done
-  rm -f "${WORK_DIR}"/{infra,platforma}.tfstate "${WORK_DIR}"/*.verify.tfstate "${WORK_DIR}"/*.changes.json
+  rm -f "${WORK_DIR}"/{infra,platforma}.tfstate \
+        "${WORK_DIR}"/*.verify.tfstate "${WORK_DIR}"/*.seed.tfstate \
+        "${WORK_DIR}"/*.aligned.tfstate "${WORK_DIR}"/*.changes.json
   ok "work dir cleaned (golden snapshot kept)"
 }
 

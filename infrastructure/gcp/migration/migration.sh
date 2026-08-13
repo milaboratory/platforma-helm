@@ -4,23 +4,39 @@
 #                terraform-infra + terraform-platforma pair
 # =============================================================================
 # See ../migration.md for the full procedure, the rationale, and the rollback
-# path. This script is the executable half of that document; run the phases in
-# order and read the guide alongside it.
+# path.
 #
-#   ./migration.sh preflight    # tooling, auth, deployment states
-#   ./migration.sh export       # monolith state -> work dir (the safety copy)
-#   ./migration.sh classify     # completeness check; prints the partition
-#   ./migration.sh split        # produce infra.tfstate + platforma.tfstate
-#   ./migration.sh seed         # create both empty target IM deployments
-#   ./migration.sh import       # lock -> import-statefile -> unlock, both
-#   ./migration.sh preview      # zero-destroy gate (run before apply!)
-#   ./migration.sh retire       # AFTER apply: retire static batch pools, if any
+#   ./migration.sh preflight   # tooling, auth, deployment states
+#   ./migration.sh export      # monolith state -> work dir (source of import IDs)
+#   ./migration.sh classify    # completeness check; prints the partition
+#   ./migration.sh generate    # stage each half: real bundle + inputs + imports.tf
+#   ./migration.sh preview     # read-only adoption plan; the zero-destroy gate
+#   ./migration.sh apply       # AFTER review: adopt each half (create + import)
+#   ./migration.sh cutover     # AFTER apply: abandon the monolith deployment
+#   ./migration.sh retire      # AFTER cutover: retire static batch pools, if any
 #
-# Everything up to and including `import` is reversible and touches no cloud
-# resource: it reads one statefile and writes deployments that are empty.
-# `preview` is read-only, and `retire` only prints commands. The real applies
-# are driven by cloudshell/install.sh, NOT by this script — see migration.md
-# Phase 5.
+# How adoption works
+# ------------------
+# Infrastructure Manager cannot be handed a finished state file: import-statefile
+# writes a *draft*, and the only way to promote a draft is `unlock`, which
+# applies the deployment's current config — an empty seed config destroys every
+# imported resource. (This is not hypothetical; it wiped a test instance during
+# development.) So the split does NOT seed-then-import.
+#
+# Instead each target deployment is created directly from its real bundle
+# (terraform-infra / terraform-platforma) with a generated `imports.tf` of
+# config-driven `import {}` blocks (Terraform 1.5+, which IM runs). On the first
+# apply, Terraform READS each existing resource into state instead of creating
+# it — so the deployment is born managing the live resources, with no create and
+# no destroy. State-only resources with no importer (null_resource,
+# terraform_data) are recreated instead; they hold no cloud object, so this is
+# harmless.
+#
+# Everything up to and including `preview` is non-destructive: export reads,
+# generate is local, and preview is a read-only plan. `apply` adopts (no
+# create/destroy of existing resources). `cutover` abandons the monolith
+# (metadata only). `retire` is the only step that deletes real (redundant)
+# resources.
 # =============================================================================
 
 set -euo pipefail
@@ -28,38 +44,31 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-# Validated lazily by require_config() so that running with no arguments still
-# prints usage instead of dying on an unset variable.
 PROJECT_ID="${PROJECT_ID:-}"
 DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-}"
 IM_LOCATION="${IM_LOCATION:-europe-west1}"
 IM_SA_EMAIL="${IM_SA_EMAIL:-platforma-im-deployer@${PROJECT_ID}.iam.gserviceaccount.com}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR_OVERRIDE="${WORK_DIR:-}"   # set WORK_DIR in the environment to relocate
-SEED_DIR="${SCRIPT_DIR}/seed"
-SPLIT_JQ="${SCRIPT_DIR}/split-state.jq"
+WORK_DIR_OVERRIDE="${WORK_DIR:-}"
+GEN_IMPORTS_JQ="${SCRIPT_DIR}/gen-imports.jq"
 
-# Real module bundles, used by `preview` only.
+# Real module bundles + the installer we borrow input projection from.
 GCP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 INFRA_TF_DIR="${GCP_DIR}/terraform-infra"
 PLATFORMA_TF_DIR="${GCP_DIR}/terraform-platforma"
+REPO_ROOT="$(cd "${GCP_DIR}/../.." && pwd)"
+CHART_DIR="${REPO_ROOT}/charts/platforma"
+INSTALL_SH="${GCP_DIR}/cloudshell/install.sh"
 
 # -----------------------------------------------------------------------------
 # The partition
 # -----------------------------------------------------------------------------
-# Base (index-free) addresses as they appear in the monolith state. Resources
-# using count/for_each are listed once here; removing a base address removes
-# all of its instances.
-#
-# These lists are NOT a convenience — `classify` asserts that every managed
-# address in the exported state appears in exactly one of them, and aborts
-# otherwise. If someone adds a resource to the monolith module later, this
-# migration fails loudly at the classify step instead of silently orphaning it.
-# When that happens, decide which half the new resource belongs to and add it
-# to the right list; do not "fix" the failure by widening the drop list.
+# `classify` asserts every managed address in the exported state appears in
+# exactly one of these lists. Adding a resource to a module later fails loudly
+# here instead of silently orphaning it.
 
-# -- Everything the infra module (terraform-infra/) owns.
+# -- terraform-infra/ owns these.
 KEEP_INFRA=(
   google_project_service.enabled
   google_compute_network.vpc
@@ -94,7 +103,7 @@ KEEP_INFRA=(
   google_cloud_quotas_quota_preference.platforma
 )
 
-# -- Everything the platforma module (terraform-platforma/) owns.
+# -- terraform-platforma/ owns these.
 KEEP_PLATFORMA=(
   kubernetes_namespace.platforma
   helm_release.kueue
@@ -116,36 +125,43 @@ KEEP_PLATFORMA=(
   null_resource.wait_gateway_gfe_cleanup
 )
 
-# -- Dropped from BOTH halves. The underlying cloud objects are NOT destroyed;
-#    they simply stop being Terraform-managed.
-#
-#    The refactor converted the master secret from Terraform-owned to
-#    bring-your-own: terraform-platforma/app.tf reads it through
-#    data.google_secret_manager_secret_version, and its name arrives as
-#    var.master_secret_secret_id. Leaving these three in either half would
-#    hand a *data* source's target to a *managed* resource in the next apply
-#    — and any plan that replaces the master secret destroys the ability to
-#    read every artefact the deployment has ever encrypted.
+# -- No importer (state-only, no cloud object). Left OUT of imports.tf so they
+#    are recreated on the adopting apply; the preview reports them as CREATEs,
+#    which is expected and harmless. They still belong to a half (they appear in
+#    KEEP_PLATFORMA above), so classify still accounts for them.
+SKIP_IMPORT=(
+  null_resource
+  terraform_data
+)
+
+# -- Dropped from BOTH halves. The cloud objects are NOT destroyed; they simply
+#    stop being Terraform-managed. terraform-platforma reads the master secret
+#    through data.google_secret_manager_secret_version instead of owning it.
 DROP=(
   random_id.master_secret
   google_secret_manager_secret.master_secret
   google_secret_manager_secret_version.master_secret
 )
 
+# -- Destructive changes the operator has REVIEWED and consented to. The preview
+#    gate warns on these but does not block; any OTHER destructive change still
+#    hard-stops. Keep this list tight and justify every entry.
+#
+#    random_password.admin: terraform-platforma adds override_special, which the
+#    live (monolith-created) password lacks — a ForceNew for the random provider.
+#    Adoption therefore ROTATES the admin password. Accepted: the new password is
+#    published to the admin-password Secret Manager secret, so it stays
+#    retrievable; only a cached copy of the old one goes stale. The dependent
+#    secret version is recreated for the same reason.
+ACCEPT_REPLACE=(
+  random_password.admin
+  google_secret_manager_secret_version.admin_password
+)
+
 # -- Dropped from both halves AND scheduled for manual deletion afterwards.
-#    Present only in deployments that predate the batch ComputeClass migration
-#    (monolith commits 9b586ca / 11c7e16). Those provisioned one static batch
-#    node pool per machine shape; the split module has none — batch nodes are
-#    created on demand by the `platforma-batch` ComputeClass that
-#    terraform-platforma/computeclass.tf installs.
-#
-#    There is nothing in the new configuration for these to map onto, so they
-#    leave Terraform management entirely. The nodes keep running and keep
-#    serving jobs until the ComputeClass takes over; only then are they drained
-#    and deleted by hand (`./migration.sh retire` prints the commands).
-#
-#    A deployment migrated from a recent monolith will not have these in state
-#    at all — `classify` reports them as listed-but-absent, which is expected.
+#    Static batch node pools predating the batch ComputeClass migration. Absent
+#    from a recently-migrated monolith (classify reports them listed-but-absent,
+#    which is expected).
 RETIRE=(
   google_container_node_pool.batch
 )
@@ -170,11 +186,10 @@ require_config() {
   [[ -n "${DEPLOYMENT_NAME}" ]] \
     || die "set DEPLOYMENT_NAME to the existing monolith IM deployment name"
 
-  # Derived from the two above, so they are resolved here rather than at load
-  # time (when the variables may still be empty).
   INFRA_DEPLOYMENT="${DEPLOYMENT_NAME}-infra"
   PLATFORMA_DEPLOYMENT="${DEPLOYMENT_NAME}-platforma"
   WORK_DIR="${WORK_DIR_OVERRIDE:-${SCRIPT_DIR}/.work/${PROJECT_ID}-${DEPLOYMENT_NAME}}"
+  GOLDEN="${WORK_DIR}/golden-monolith.tfstate"
 }
 
 im() { gcloud infra-manager "$@" --project="${PROJECT_ID}" --location="${IM_LOCATION}"; }
@@ -183,9 +198,13 @@ deployment_state() {
   im deployments describe "$1" --format='value(state)' 2>/dev/null || echo NOTFOUND
 }
 
+# Base addresses of all managed resources in a state file, sorted and unique.
+state_addresses() {
+  jq -r '.resources[] | select(.mode=="managed") | "\(.type).\(.name)"' "$1" | sort -u
+}
+
 # Export a deployment's statefile to exactly $2. Some gcloud releases append a
-# '.tfstate' suffix to --file, landing the export at '$2.tfstate'; normalise
-# either name to the requested path.
+# '.tfstate' suffix to --file; normalise either name to the requested path.
 export_statefile() {
   local dep="$1" out="$2"
   im deployments export-statefile "${dep}" --file="${out}"
@@ -195,9 +214,101 @@ export_statefile() {
   [[ -f "${out}" ]] || die "export-statefile did not produce ${out}"
 }
 
-# Base addresses of all managed resources in a state file, sorted and unique.
-state_addresses() {
-  jq -r '.resources[] | select(.mode=="managed") | "\(.type).\(.name)"' "$1" | sort -u
+# A bash array of KEEP addresses -> a JSON array (for gen-imports.jq).
+addrs_to_json() { printf '%s\n' "$@" | jq -R . | jq -s .; }
+
+# Rewrite import targets through the bundle's `moved {}` blocks. A refactor may
+# rename a resource (moved from = OLD, to = NEW); the monolith state still holds
+# OLD, so gen-imports emits `to = OLD`. Terraform rejects importing to a move
+# source, so replace OLD with NEW in the generated import blocks.
+remap_moved() {
+  local bundle_dir="$1" imports="$2"
+  local moved
+  moved="$(awk '
+    /^[[:space:]]*moved[[:space:]]*{/ { inm=1; from=""; to=""; next }
+    inm && /from[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/,""); sub(/[[:space:]]+$/,""); from=$0 }
+    inm && /to[[:space:]]*=/   { sub(/^[^=]*=[[:space:]]*/,""); sub(/[[:space:]]+$/,""); to=$0 }
+    inm && /}/ { inm=0; if (from!="" && to!="") print from "\t" to }
+  ' "${bundle_dir}"/*.tf 2>/dev/null)"
+  [[ -n "${moved}" ]] || return 0
+  local from to
+  while IFS=$'\t' read -r from to; do
+    [[ -n "${from}" && -n "${to}" ]] || continue
+    # Literal (not regex) replacement of the whole `to = OLD` line.
+    python3 - "${imports}" "${from}" "${to}" <<'PY'
+import sys
+path, frm, to = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(path).read()
+s = s.replace("  to = " + frm + "\n", "  to = " + to + "\n")
+open(path, "w").write(s)
+PY
+    info "remapped import target (moved): ${from} → ${to}"
+  done <<< "${moved}"
+}
+
+# -----------------------------------------------------------------------------
+# Inputs: reuse install.sh's per-half tfvars projection, fed by the monolith's
+# own recorded inputs (so the adopting apply plans against the same values the
+# monolith was built with).
+# -----------------------------------------------------------------------------
+
+# Download the monolith deployment's source bundle and cache its
+# inputs.auto.tfvars.json (the full input document install.sh embedded).
+extract_monolith_inputs() {
+  local out="${WORK_DIR}/monolith-inputs.full.json"
+  if [[ ! -f "${out}" ]]; then
+    local src base tmp f
+    src="$(im deployments describe "${DEPLOYMENT_NAME}" --format='value(terraformBlueprint.gcsSource)' 2>/dev/null || true)"
+    [[ -n "${src}" ]] || die "monolith ${DEPLOYMENT_NAME} has no gcsSource; cannot read its inputs"
+    base="${src%%#*}"
+    tmp="$(mktemp -d)"
+    gsutil -q cp "${base}" "${tmp}/bundle.zip" || die "cannot download monolith bundle ${base}"
+    ( cd "${tmp}" && unzip -oq bundle.zip )
+    f="$(find "${tmp}" -maxdepth 2 -name 'inputs.auto.tfvars.json' | head -1)"
+    [[ -f "${f}" ]] || die "monolith bundle has no inputs.auto.tfvars.json"
+    cp "${f}" "${out}"
+    rm -rf "${tmp}"
+  fi
+  echo "${out}"
+}
+
+# Project the monolith inputs to just the keys one half declares, reusing
+# install.sh's build_tfvars_json_{infra,platforma}. install.sh is sourced in a
+# subshell (its EXIT trap + temp dir stay contained), and its value source
+# build_tfvars_json_full is overridden to emit the monolith's real inputs plus
+# the bring-your-own master_secret_secret_id.
+build_half_inputs() {
+  local half="$1" out="$2"
+  local full fulldoc msid gcs fs snc
+  full="$(extract_monolith_inputs)"
+  msid="${DEPLOYMENT_NAME}-cluster-platforma-master-secret"
+
+  # The monolith module and terraform-infra disagree on the system pool's
+  # default node count (monolith 2, terraform-infra 1). initial_node_count is
+  # ForceNew and the pool does not autoscale, so a mismatch drains and recreates
+  # the pool on adoption. Pin the value to whatever the LIVE pool has, so
+  # adoption is in-place. (The monolith recorded no system_pool_node_count input.)
+  snc="$(jq -r '.resources[]|select(.type=="google_container_node_pool" and .name=="system")|.instances[0].attributes.initial_node_count // empty' "${GOLDEN}")"
+
+  fulldoc="${WORK_DIR}/monolith-inputs.withmsid.json"
+  jq --arg m "${msid}" --argjson snc "${snc:-null}" \
+     '. + {master_secret_secret_id: $m}
+        + (if $snc == null then {} else {system_pool_node_count: $snc} end)' \
+     "${full}" > "${fulldoc}"
+  gcs="$(jq -r '.resources[]|select(.type=="google_storage_bucket" and .name=="primary")|.instances[0].attributes.name' "${GOLDEN}")"
+  fs="$(jq -r '.resources[]|select(.type=="google_filestore_instance" and .name=="workspace")|.instances[0].attributes.name' "${GOLDEN}")"
+  (
+    # shellcheck disable=SC1090
+    source "${INSTALL_SH}"
+    build_tfvars_json_full() { cat "${fulldoc}" > "$1"; }
+    INFRA_OUT_GCS_BUCKET="${gcs}"
+    INFRA_OUT_FILESTORE_INSTANCE_NAME="${fs}"
+    case "${half}" in
+      infra)     build_tfvars_json_infra     "${out}" ;;
+      platforma) build_tfvars_json_platforma "${out}" ;;
+    esac
+  )
+  [[ -s "${out}" ]] || die "failed to build ${half} inputs"
 }
 
 # -----------------------------------------------------------------------------
@@ -206,14 +317,16 @@ state_addresses() {
 cmd_preflight() {
   bold "Preflight"
 
-  for t in gcloud jq; do
+  for t in gcloud jq gsutil unzip; do
     command -v "$t" >/dev/null || die "'$t' not found on PATH"
   done
-  ok "gcloud and jq present"
+  ok "gcloud, jq, gsutil, unzip present"
 
-  [[ -f "${SPLIT_JQ}" ]]        || die "missing ${SPLIT_JQ}"
-  [[ -f "${SEED_DIR}/main.tf" ]] || die "missing ${SEED_DIR}/main.tf"
-  ok "seed bundle and split program present"
+  [[ -f "${GEN_IMPORTS_JQ}" ]] || die "missing ${GEN_IMPORTS_JQ}"
+  [[ -f "${INSTALL_SH}" ]]     || die "missing ${INSTALL_SH}"
+  [[ -d "${INFRA_TF_DIR}" ]]     || die "missing ${INFRA_TF_DIR}"
+  [[ -d "${PLATFORMA_TF_DIR}" ]] || die "missing ${PLATFORMA_TF_DIR}"
+  ok "generator, installer, and both bundles present"
 
   gcloud auth print-access-token >/dev/null 2>&1 \
     || die "not authenticated — run: gcloud auth login"
@@ -230,16 +343,13 @@ cmd_preflight() {
     *) die "monolith deployment ${DEPLOYMENT_NAME} is ${src}; it must be ACTIVE before migrating" ;;
   esac
 
-  # Targets must not already exist with real content — importing over a
-  # deployment that already manages resources would orphan them.
   local d st
   for d in "${INFRA_DEPLOYMENT}" "${PLATFORMA_DEPLOYMENT}"; do
     st="$(deployment_state "${d}")"
     if [[ "${st}" == "NOTFOUND" ]]; then
       ok "target ${d} does not exist yet (expected)"
     else
-      warn "target ${d} already exists (state: ${st})"
-      warn "  if this is a re-run of a failed attempt, see 'Re-running after a failure' in migration.md"
+      warn "target ${d} already exists (state: ${st}) — see 'Re-running' in migration.md"
     fi
   done
 
@@ -266,12 +376,10 @@ cmd_export() {
     ok "exported to ${out}"
   fi
 
-  # The golden copy. Every rehearsal reset re-imports THIS file; nothing in
-  # this script ever writes to it again.
-  local golden="${WORK_DIR}/golden-monolith.tfstate"
-  [[ -f "${golden}" ]] || cp "${out}" "${golden}"
-  chmod 0400 "${golden}"
-  ok "golden snapshot ${golden} (read-only)"
+  # The golden copy. gen-imports reads THIS; nothing writes to it again.
+  [[ -f "${GOLDEN}" ]] || cp "${out}" "${GOLDEN}"
+  chmod 0400 "${GOLDEN}"
+  ok "golden snapshot ${GOLDEN} (read-only)"
 
   info "resources under management: $(state_addresses "${out}" | wc -l | tr -d ' ') distinct addresses"
 }
@@ -281,7 +389,7 @@ cmd_export() {
 # -----------------------------------------------------------------------------
 cmd_classify() {
   bold "Classifying monolith resources"
-  local src="${WORK_DIR}/monolith.tfstate"
+  local src="${GOLDEN}"
   [[ -f "${src}" ]] || die "no exported state — run './migration.sh export' first"
 
   local all known unclassified missing
@@ -291,265 +399,240 @@ cmd_classify() {
   unclassified="$(comm -23 <(echo "${all}") <(echo "${known}"))"
   missing="$(comm -13 <(echo "${all}") <(echo "${known}"))"
 
-  info "in state:      $(echo "${all}"   | grep -c . || true)"
-  info "→ terraform-infra:      ${#KEEP_INFRA[@]}"
-  info "→ terraform-platforma:  ${#KEEP_PLATFORMA[@]}"
-  info "→ dropped (kept in GCP): ${#DROP[@]}"
-  info "→ unmanaged, retire by hand: ${#RETIRE[@]}"
+  info "in state:                    $(echo "${all}" | grep -c . || true)"
+  info "→ terraform-infra:            ${#KEEP_INFRA[@]}"
+  info "→ terraform-platforma:        ${#KEEP_PLATFORMA[@]}"
+  info "  (of which recreated, not imported: ${#SKIP_IMPORT[@]} types)"
+  info "→ dropped (kept in GCP):      ${#DROP[@]}"
+  info "→ unmanaged, retire by hand:  ${#RETIRE[@]}"
 
   if [[ -n "${unclassified}" ]]; then
     warn "these addresses exist in the state but are in NO list:"
     echo "${unclassified}" | sed 's/^/      /' >&2
-    die "refusing to split — classify every address above, then re-run"
+    die "refusing to proceed — classify every address above, then re-run"
   fi
   ok "every address in the state is classified"
 
   if [[ -n "${missing}" ]]; then
     warn "these addresses are listed but absent from the state. Expected for"
-    warn "resources gated on count/for_each, and for the RETIRE list on any"
-    warn "monolith already migrated to the batch ComputeClass. Anything else"
-    warn "is suspicious:"
+    warn "count/for_each-gated resources and for RETIRE on an already-migrated"
+    warn "monolith. Anything else is suspicious:"
     echo "${missing}" | sed 's/^/      /' >&2
   fi
 
   bold "Dropped from Terraform management (cloud objects preserved):"
   printf '      %s\n' "${DROP[@]}"
-
-  # Only meaningful when the source deployment actually has static batch pools.
-  local retire_present=""
-  local a
-  for a in "${RETIRE[@]}"; do
-    grep -qx "${a}" <<<"${all}" && retire_present+="${a}"$'\n'
-  done
-  if [[ -n "${retire_present}" ]]; then
-    echo
-    warn "This deployment predates the batch ComputeClass migration. These static"
-    warn "batch node pools have no equivalent in the split module:"
-    echo "${retire_present}" | grep . | sed 's/^/      /' >&2
-    warn "They leave Terraform management with the split and must be drained and"
-    warn "deleted by hand AFTER the ComputeClass is serving jobs."
-    warn "  → run './migration.sh retire' after Phase 5; see migration.md Phase 5b."
-  fi
 }
 
 # -----------------------------------------------------------------------------
-# split
+# generate — stage each half: real bundle + projected inputs + imports.tf
 # -----------------------------------------------------------------------------
-cmd_split() {
-  cmd_classify
-  bold "Splitting state"
+generate_one() {
+  local half="$1" tf_dir="$2"
+  local stage="${WORK_DIR}/bundle-${half}"
+  rm -rf "${stage}"; mkdir -p "${stage}"
 
-  local src="${WORK_DIR}/monolith.tfstate"
-  local half keep_json out
+  # Assemble the bundle exactly like install.sh's submit_deployment:
+  #  - drop backend.tf (IM manages state itself and rejects a backend block)
+  #  - drop dev-only artefacts
+  (cd "${tf_dir}" && tar cf - \
+      --exclude='.terraform' --exclude='backend.tf' \
+      --exclude='terraform.tfvars' --exclude='tfplan' --exclude='errored.tfstate' . ) \
+    | (cd "${stage}" && tar xf -)
 
-  for half in infra platforma; do
-    if [[ "${half}" == "infra" ]]; then
-      keep_json="$(printf '%s\n' "${KEEP_INFRA[@]}"     | jq -R . | jq -s .)"
-    else
-      keep_json="$(printf '%s\n' "${KEEP_PLATFORMA[@]}" | jq -R . | jq -s .)"
+  # The platforma module references the chart at ../../../charts/platforma;
+  # bundle it and rewrite the path for the IM context (mirrors submit_deployment).
+  if [[ "${half}" == "platforma" && -z "${HELM_CHART_REPOSITORY:-}" ]]; then
+    cp -R "${CHART_DIR}" "${stage}/platforma"
+    if grep -q '"${path.module}/../../../charts/platforma"' "${stage}/app.tf" 2>/dev/null; then
+      sed -i.bak 's|"${path.module}/../../../charts/platforma"|"${path.module}/platforma"|' "${stage}/app.tf"
+      rm -f "${stage}/app.tf.bak"
     fi
-    out="${WORK_DIR}/${half}.tfstate"
-
-    jq --argjson keep "${keep_json}" --argjson bump 1000 \
-       -f "${SPLIT_JQ}" "${src}" > "${out}"
-
-    ok "${out} — $(state_addresses "${out}" | wc -l | tr -d ' ') addresses, serial $(jq -r .serial "${out}")"
-  done
-
-  # Independent verification: the two halves plus the drop list must exactly
-  # reconstitute the source. This catches a jq filter that silently matched
-  # nothing far better than eyeballing the counts above.
-  # DROP/RETIRE entries are only counted when the source state actually held
-  # them — RETIRE in particular is absent from any recently-migrated monolith.
-  local unmanaged recombined
-  unmanaged="$(comm -12 \
-    <(printf '%s\n' "${DROP[@]}" "${RETIRE[@]}" | sort -u) \
-    <(state_addresses "${src}"))"
-  recombined="$(cat \
-    <(state_addresses "${WORK_DIR}/infra.tfstate") \
-    <(state_addresses "${WORK_DIR}/platforma.tfstate") \
-    <(echo "${unmanaged}") | grep . | sort -u)"
-  if ! diff -q <(state_addresses "${src}") <(echo "${recombined}") >/dev/null; then
-    # '|| true' so the failing diff pipeline does not trip 'set -e' before 'die'.
-    diff <(state_addresses "${src}") <(echo "${recombined}") | sed 's/^/      /' >&2 || true
-    die "split is not a clean partition of the source state (diff above)"
   fi
-  ok "split verified: infra ∪ platforma ∪ dropped == monolith, no overlap"
-}
 
-# -----------------------------------------------------------------------------
-# seed
-# -----------------------------------------------------------------------------
-seed_one() {
-  local dep="$1"
-  local st; st="$(deployment_state "${dep}")"
-  if [[ "${st}" != "NOTFOUND" ]]; then
-    warn "${dep} already exists (${st}) — skipping seed"
-    return 0
-  fi
-  info "creating empty deployment ${dep}…"
-  im deployments apply "${dep}" \
-    --local-source="${SEED_DIR}" \
-    --service-account="projects/${PROJECT_ID}/serviceAccounts/${IM_SA_EMAIL}" \
-    --quiet
-  st="$(deployment_state "${dep}")"
-  [[ "${st}" == "ACTIVE" ]] || die "${dep} settled in state ${st}, expected ACTIVE"
-  ok "${dep} ACTIVE with an empty state"
-}
+  # Projected inputs.
+  build_half_inputs "${half}" "${stage}/inputs.auto.tfvars.json"
 
-cmd_seed() {
-  bold "Seeding target deployments"
-  seed_one "${INFRA_DEPLOYMENT}"
-  seed_one "${PLATFORMA_DEPLOYMENT}"
-}
-
-# -----------------------------------------------------------------------------
-# import
-# -----------------------------------------------------------------------------
-import_one() {
-  local dep="$1" file="$2"
-  [[ -f "${file}" ]] || die "missing ${file} — run './migration.sh split' first"
-
-  local st; st="$(deployment_state "${dep}")"
-  [[ "${st}" == "ACTIVE" ]] || die "${dep} is ${st}; it must be ACTIVE to import"
-
-  info "locking ${dep}…"
-  im deployments lock "${dep}" >/dev/null
-
-  # The lock id is retrieved with 'export-lock' — the documented command for
-  # this. Newer gcloud releases do NOT surface it through 'describe'
-  # (lockState.lockId is empty), so 'describe' is only a last-resort fallback
-  # for older releases.
-  local lock_id
-  lock_id="$(im deployments export-lock "${dep}" --format='value(lockId)' 2>/dev/null || true)"
-  if [[ -z "${lock_id}" ]]; then
-    lock_id="$(im deployments export-lock "${dep}" --format=json 2>/dev/null | jq -r '.. | .lockId? // empty' | head -1)"
-  fi
-  if [[ -z "${lock_id}" ]]; then
-    # Older gcloud: the id lived on the deployment object itself.
-    lock_id="$(im deployments describe "${dep}" --format=json 2>/dev/null | jq -r '.. | .lockId? // empty' | head -1)"
-  fi
-  [[ -n "${lock_id}" ]] || die "could not determine lock id for ${dep}; recover it with 'gcloud infra-manager deployments export-lock ${dep} --project=${PROJECT_ID} --location=${IM_LOCATION}', then unlock it by hand before retrying"
-  ok "locked (lock-id ${lock_id})"
-
-  # Always release the lock, even if the import fails — a deployment left
-  # locked cannot be applied and the id is awkward to recover. The trap is on
-  # EXIT, not RETURN: both 'die' (which calls exit) and a 'set -e' abort
-  # terminate the shell rather than returning from the function, so a RETURN
-  # trap would never fire on any error path. On the success path we unlock
-  # explicitly and clear this trap (see the end of the function). The lock id
-  # is baked into the trap string because the local goes out of scope by the
-  # time an EXIT trap runs at top level.
-  # shellcheck disable=SC2064
-  trap "gcloud infra-manager deployments unlock '${dep}' --lock-id='${lock_id}' --project='${PROJECT_ID}' --location='${IM_LOCATION}' --quiet >/dev/null 2>&1 || true" EXIT
-
-  # Align lineage before importing. IM gives each seeded deployment its own
-  # state lineage; a statefile whose lineage differs is uploaded but NOT adopted
-  # — import-statefile reports success while the deployment silently keeps its
-  # empty seed state (the read-back below is what caught this). Our split files
-  # carry the *monolith's* lineage, so rewrite it to the seed's lineage. The
-  # split already bumped the serial well above the seed's, so only lineage needs
-  # aligning; nothing else in the state is touched.
-  local seed="${WORK_DIR}/${dep}.seed.tfstate"
-  export_statefile "${dep}" "${seed}" >/dev/null
-  local seed_lineage; seed_lineage="$(jq -r '.lineage // empty' "${seed}")"
-  [[ -n "${seed_lineage}" ]] || die "could not read seed lineage for ${dep} from ${seed}"
-  local aligned="${WORK_DIR}/${dep}.aligned.tfstate"
-  jq --arg lin "${seed_lineage}" '.lineage = $lin' "${file}" > "${aligned}"
-  info "aligned lineage to seed (${seed_lineage})"
-
-  info "importing ${aligned}…"
-  im deployments import-statefile "${dep}" --lock-id="${lock_id}" --file="${aligned}"
-  ok "state imported into ${dep}"
-
-  # Read it straight back and compare — proves the upload landed, not just
-  # that the command exited zero.
-  local verify="${WORK_DIR}/${dep}.verify.tfstate"
-  export_statefile "${dep}" "${verify}" >/dev/null
-  if diff -q <(state_addresses "${file}") <(state_addresses "${verify}") >/dev/null; then
-    ok "read-back matches: $(state_addresses "${verify}" | wc -l | tr -d ' ') addresses"
+  # Import blocks. The file name sorts last so it is obvious in the bundle.
+  local keep_json skip_json
+  if [[ "${half}" == "infra" ]]; then
+    keep_json="$(addrs_to_json "${KEEP_INFRA[@]}")"
   else
-    # '|| true' so the failing diff pipeline does not trip 'set -e' and abort
-    # before 'die' prints its explanation.
-    diff <(state_addresses "${file}") <(state_addresses "${verify}") | sed 's/^/      /' >&2 || true
-    die "read-back of ${dep} does not match what was uploaded (diff above)"
+    keep_json="$(addrs_to_json "${KEEP_PLATFORMA[@]}")"
   fi
+  skip_json="$(addrs_to_json "${SKIP_IMPORT[@]}")"
+  jq -r --argjson keep "${keep_json}" --argjson skip "${skip_json}" \
+     -f "${GEN_IMPORTS_JQ}" "${GOLDEN}" > "${stage}/zzz-adoption-imports.tf"
+  remap_moved "${stage}" "${stage}/zzz-adoption-imports.tf"
 
-  # Success: unlock explicitly and drop the safety trap so it does not fire
-  # again (or unlock the *next* deployment) when the shell later exits.
-  info "unlocking ${dep}…"
-  im deployments unlock "${dep}" --lock-id="${lock_id}" >/dev/null
-  trap - EXIT
-  ok "unlocked ${dep}"
+  local n; n="$(grep -c '^import {' "${stage}/zzz-adoption-imports.tf" || true)"
+  ok "${half}: staged bundle + $(jq 'length' "${stage}/inputs.auto.tfvars.json") inputs + ${n} import blocks → ${stage}"
 }
 
-cmd_import() {
-  bold "Importing split state"
-  import_one "${INFRA_DEPLOYMENT}"     "${WORK_DIR}/infra.tfstate"
-  import_one "${PLATFORMA_DEPLOYMENT}" "${WORK_DIR}/platforma.tfstate"
+cmd_generate() {
+  bold "Generating adoption bundles"
+  [[ -f "${GOLDEN}" ]] || die "no golden state — run './migration.sh export' first"
+  cmd_classify >/dev/null   # completeness gate before we build anything
+  generate_one infra     "${INFRA_TF_DIR}"
+  generate_one platforma "${PLATFORMA_TF_DIR}"
+  info "review the import blocks before previewing:"
+  info "  ${WORK_DIR}/bundle-infra/zzz-adoption-imports.tf"
+  info "  ${WORK_DIR}/bundle-platforma/zzz-adoption-imports.tf"
 }
 
 # -----------------------------------------------------------------------------
-# preview — the zero-destroy gate
+# preview — the read-only, zero-destroy adoption gate
 # -----------------------------------------------------------------------------
 preview_one() {
-  local dep="$1" tf_dir="$2" tfvars="$3"
-  [[ -f "${tfvars}" ]] || die "missing ${tfvars} — see migration.md Phase 4 for how to produce it"
+  local half="$1" dep="$2"
+  local stage="${WORK_DIR}/bundle-${half}"
+  [[ -d "${stage}" ]] || die "no staged bundle for ${half} — run './migration.sh generate' first"
 
-  local stage="${WORK_DIR}/preview-${dep}"
-  rm -rf "${stage}"; mkdir -p "${stage}"
-  # backend.tf is a local-development artefact; IM manages state itself and
-  # rejects bundles carrying their own backend block.
-  (cd "${tf_dir}" && tar cf - --exclude='.terraform' --exclude='backend.tf' .) | (cd "${stage}" && tar xf -)
-  cp "${tfvars}" "${stage}/inputs.auto.tfvars.json"
-
-  local preview_id="${dep}-mig-preview"
-  info "creating preview ${preview_id}…"
-  gcloud infra-manager previews create "${preview_id}" \
-    --deployment="${dep}" \
+  local pv="${dep}-adopt-preview"
+  info "creating preview ${pv} (read-only; the target deployment need not exist)…"
+  im previews delete "${pv}" --quiet >/dev/null 2>&1 || true
+  im previews create "${pv}" \
     --local-source="${stage}" \
     --service-account="projects/${PROJECT_ID}/serviceAccounts/${IM_SA_EMAIL}" \
-    --project="${PROJECT_ID}" --location="${IM_LOCATION}" --quiet
+    --quiet
 
-  local changes destroys
-  changes="$(gcloud infra-manager resource-changes list \
-    --preview="${preview_id}" --project="${PROJECT_ID}" --location="${IM_LOCATION}" \
-    --format=json)"
-  echo "${changes}" > "${WORK_DIR}/${dep}.changes.json"
+  local changes
+  changes="$(im resource-changes list --preview="${pv}" --format=json)"
+  echo "${changes}" > "${WORK_DIR}/${half}.changes.json"
 
-  destroys="$(echo "${changes}" | jq -r '[.[] | select(.intent // "" | test("DELETE|REPLACE"))] | length')"
-  info "planned changes written to ${WORK_DIR}/${dep}.changes.json"
-  echo "${changes}" | jq -r '.[] | "      \(.intent // "?")  \(.name // .address // "?")"' || true
+  bold "  ${half}: planned intents"
+  echo "${changes}" | jq -r 'group_by(.intent)[] | "      \(.[0].intent): \(length)"'
 
-  if [[ "${destroys}" != "0" ]]; then
-    die "${dep}: preview plans ${destroys} destructive change(s) — STOP. See migration.md 'Reading a non-zero preview'."
+  # The addresses we told Terraform to adopt (from the generated import blocks).
+  local imported_json
+  imported_json="$(grep -E '^[[:space:]]*to = ' "${stage}/zzz-adoption-imports.tf" \
+                   | sed -E 's/^[[:space:]]*to = //' | jq -R . | jq -s .)"
+
+  # Destructive = any change whose Terraform actions include "delete" (DELETE and
+  # RECREATE both carry it). Split into operator-accepted (ACCEPT_REPLACE) and
+  # unexpected. The base address (index stripped) is matched against the list.
+  local accept_json accepted_destroyers destroyers
+  accept_json="$(addrs_to_json "${ACCEPT_REPLACE[@]}")"
+  accepted_destroyers="$(echo "${changes}" | jq -r --argjson acc "${accept_json}" '
+    [ .[] | select(.terraformInfo.actions | index("delete"))
+          | .terraformInfo.address
+          | select( (sub("\\[.*\\]$";"")) as $b | ($acc | index($b)) )
+          | "\(.)" ] | .[]')"
+  destroyers="$(echo "${changes}" | jq -r --argjson acc "${accept_json}" '
+    [ .[] | select(.terraformInfo.actions | index("delete"))
+          | select( (.terraformInfo.address | sub("\\[.*\\]$";"")) as $b | ($acc | index($b)) | not )
+          | "\(.terraformInfo.address) [\(.terraformInfo.actions | join("+"))]" ] | .[]')"
+
+  if [[ -n "${accepted_destroyers}" ]]; then
+    warn "  ${half}: operator-accepted replacements (ACCEPT_REPLACE):"
+    echo "${accepted_destroyers}" | sed 's/^/        REPLACE  /' >&2
   fi
-  ok "${dep}: zero destructive changes"
+
+  # A CREATE on an address we meant to IMPORT = the import did not match a live
+  # resource → an apply would make a duplicate. Distinct from a CREATE of a
+  # genuinely new resource the split adds (allowed, but reported for review).
+  local bad_creates new_creates
+  bad_creates="$(echo "${changes}" | jq -r --argjson imp "${imported_json}" '
+    [ .[] | select(.terraformInfo.actions == ["create"])
+          | .terraformInfo.address | select(. as $a | $imp | index($a)) ] | .[]')"
+  new_creates="$(echo "${changes}" | jq -r --argjson imp "${imported_json}" '
+    [ .[] | select(.terraformInfo.actions == ["create"])
+          | .terraformInfo.address | select(. as $a | ($imp | index($a)) | not) ] | .[]')"
+
+  if [[ -n "${new_creates}" ]]; then
+    warn "  ${half}: CREATE of resources the split adds (not in the monolith) —"
+    warn "  expected for state-only recreated types (${SKIP_IMPORT[*]}) and genuinely"
+    warn "  new resources. Review that each is intended:"
+    echo "${new_creates}" | sed 's/^/        CREATE  /' >&2
+  fi
+
+  local fail=0
+  if [[ -n "${bad_creates}" ]]; then
+    warn "  ${half}: these addresses have an import block but plan a CREATE — the"
+    warn "  import did not match a live resource (wrong id) → duplicate risk:"
+    echo "${bad_creates}" | sed 's/^/        CREATE  /' >&2
+    fail=1
+  fi
+  if [[ -n "${destroyers}" ]]; then
+    warn "  ${half}: destructive changes planned:"
+    echo "${destroyers}" | sed 's/^/        /' >&2
+    fail=1
+  fi
+  [[ "${fail}" == "0" ]] \
+    || die "${half}: preview is NOT safe to apply — see above. Details: ${WORK_DIR}/${half}.changes.json"
+
+  ok "${half}: no destructive changes, no failed imports (details: ${WORK_DIR}/${half}.changes.json)"
 }
 
 cmd_preview() {
-  bold "Previewing the real bundles against the imported state"
-  preview_one "${INFRA_DEPLOYMENT}"     "${INFRA_TF_DIR}"     "${WORK_DIR}/inputs-infra.auto.tfvars.json"
-  preview_one "${PLATFORMA_DEPLOYMENT}" "${PLATFORMA_TF_DIR}" "${WORK_DIR}/inputs-platforma.auto.tfvars.json"
-  bold "Both previews are clean. Proceed to Phase 5 in migration.md."
+  bold "Previewing adoption (read-only)"
+  preview_one infra     "${INFRA_DEPLOYMENT}"
+  preview_one platforma "${PLATFORMA_DEPLOYMENT}"
+  bold "Both previews are clean. Review the CREATE/UPDATE lists, then './migration.sh apply'."
+}
+
+# -----------------------------------------------------------------------------
+# apply — adopt each half (create the deployment; import blocks read existing
+#         resources into state instead of creating them)
+# -----------------------------------------------------------------------------
+apply_one() {
+  local half="$1" dep="$2"
+  local stage="${WORK_DIR}/bundle-${half}"
+  [[ -d "${stage}" ]] || die "no staged bundle for ${half} — run './migration.sh generate' first"
+
+  local st; st="$(deployment_state "${dep}")"
+  [[ "${st}" == "NOTFOUND" ]] \
+    || die "${dep} already exists (${st}); adoption creates it fresh. See migration.md 'Re-running'."
+
+  info "applying ${dep} (adopts ${half} resources)…"
+  im deployments apply "${dep}" \
+    --local-source="${stage}" \
+    --service-account="projects/${PROJECT_ID}/serviceAccounts/${IM_SA_EMAIL}" \
+    --quiet
+  st="$(deployment_state "${dep}")"
+  [[ "${st}" == "ACTIVE" ]] || die "${dep} settled in state ${st}, expected ACTIVE — inspect Cloud Build logs"
+  ok "${dep} ACTIVE — resources adopted"
+}
+
+cmd_apply() {
+  bold "Adopting resources into the split deployments"
+  warn "This creates the target deployments. It is safe (import, not create), but"
+  warn "run './migration.sh preview' first and confirm zero destructive changes."
+  apply_one infra     "${INFRA_DEPLOYMENT}"
+  apply_one platforma "${PLATFORMA_DEPLOYMENT}"
+  bold "Both halves adopted. Verify the app, then './migration.sh cutover'."
+}
+
+# -----------------------------------------------------------------------------
+# cutover — stop the monolith managing the now-adopted resources
+# -----------------------------------------------------------------------------
+cmd_cutover() {
+  bold "Cutover: abandoning the monolith deployment"
+  local st; st="$(deployment_state "${DEPLOYMENT_NAME}")"
+  [[ "${st}" != "NOTFOUND" ]] || { ok "monolith ${DEPLOYMENT_NAME} already gone"; return 0; }
+
+  for d in "${INFRA_DEPLOYMENT}" "${PLATFORMA_DEPLOYMENT}"; do
+    [[ "$(deployment_state "${d}")" == "ACTIVE" ]] \
+      || die "${d} is not ACTIVE — do not abandon the monolith until both halves are adopted"
+  done
+  ok "both split halves are ACTIVE"
+
+  # --delete-policy=abandon removes only IM's record; every cloud resource stays
+  # (the split deployments now manage them).
+  info "abandoning ${DEPLOYMENT_NAME} (no resources destroyed)…"
+  im deployments delete "${DEPLOYMENT_NAME}" --delete-policy=abandon --quiet
+  ok "monolith ${DEPLOYMENT_NAME} abandoned; the split deployments are now authoritative"
 }
 
 # -----------------------------------------------------------------------------
 # retire — static batch node pools, after the ComputeClass has taken over
 # -----------------------------------------------------------------------------
-# Prints commands; deliberately does NOT run them. Deleting a node pool drains
-# every node in it, and only the operator can judge whether the ComputeClass is
-# genuinely serving jobs yet.
 cmd_retire() {
   bold "Static batch node pools — retirement plan"
 
-  local golden="${WORK_DIR}/golden-monolith.tfstate"
+  local golden="${GOLDEN}"
   [[ -f "${golden}" ]] || die "no golden snapshot — run './migration.sh export' first"
 
-  # Cluster name and LOCATION come from the state, not from a guess. The
-  # monolith deploys a ZONAL cluster, so this is a zone (europe-west1-b), not
-  # a region. Passing --region here would silently address a different (or
-  # non-existent) cluster.
   local cluster location
   cluster="$(jq -r '.resources[] | select(.type=="google_container_cluster" and .name=="primary")
                     | .instances[0].attributes.name // empty' "${golden}")"
@@ -574,8 +657,6 @@ cmd_retire() {
 
   warn "Do NOT run these until the ComputeClass is serving batch jobs. Check:"
   echo "      kubectl get nodes -L cloud.google.com/compute-class,role"
-  echo "      # expect nodes carrying compute-class=platforma-batch, and no"
-  echo "      # running job pods left on the batch-* nodes below."
   echo
   bold "Then, one pool at a time:"
   local p
@@ -584,9 +665,6 @@ cmd_retire() {
     echo "      gcloud container node-pools delete ${p} \\"
     echo "        --cluster=${cluster} --location=${location} --project=${PROJECT_ID}"
   done <<<"${batch_pools}"
-  echo
-  info "These pools are in no Terraform state after the split, so this is a"
-  info "plain GCP cleanup — nothing to reconcile afterwards."
 }
 
 # -----------------------------------------------------------------------------
@@ -600,37 +678,36 @@ cmd_reset() {
   local d
   for d in "${INFRA_DEPLOYMENT}" "${PLATFORMA_DEPLOYMENT}"; do
     [[ "$(deployment_state "${d}")" == "NOTFOUND" ]] && { info "${d} absent"; continue; }
-    # --delete-policy=abandon leaves every cloud resource in place and removes
-    # only IM's record of it. Without it, IM runs `terraform destroy`.
+    # abandon = drop IM's record, leave every cloud resource in place.
     info "deleting ${d} (abandon)…"
     im deployments delete "${d}" --delete-policy=abandon --quiet
     ok "${d} deleted, resources abandoned"
   done
-  rm -f "${WORK_DIR}"/{infra,platforma}.tfstate \
-        "${WORK_DIR}"/*.verify.tfstate "${WORK_DIR}"/*.seed.tfstate \
-        "${WORK_DIR}"/*.aligned.tfstate "${WORK_DIR}"/*.changes.json
+  for d in "${INFRA_DEPLOYMENT}" "${PLATFORMA_DEPLOYMENT}"; do
+    im previews delete "${d}-adopt-preview" --quiet >/dev/null 2>&1 || true
+  done
+  rm -rf "${WORK_DIR}"/bundle-infra "${WORK_DIR}"/bundle-platforma \
+         "${WORK_DIR}"/*.changes.json "${WORK_DIR}"/monolith-inputs.*.json
   ok "work dir cleaned (golden snapshot kept)"
 }
 
 # -----------------------------------------------------------------------------
 usage() {
-  # Print the leading comment block (everything after the shebang up to the
-  # first line of actual code).
   awk 'NR==1 {next} !/^#/ {exit} {sub(/^# ?/,""); print}' "${BASH_SOURCE[0]}"
 }
 
 case "${1:-}" in
-  preflight|export|classify|split|seed|import|preview|retire|reset) require_config ;;
+  preflight|export|classify|generate|preview|apply|cutover|retire|reset) require_config ;;
 esac
 
 case "${1:-}" in
   preflight) cmd_preflight ;;
   export)    cmd_export ;;
   classify)  cmd_classify ;;
-  split)     cmd_split ;;
-  seed)      cmd_seed ;;
-  import)    cmd_import ;;
+  generate)  cmd_generate ;;
   preview)   cmd_preview ;;
+  apply)     cmd_apply ;;
+  cutover)   cmd_cutover ;;
   retire)    cmd_retire ;;
   reset)     cmd_reset ;;
   *)         usage; exit 1 ;;

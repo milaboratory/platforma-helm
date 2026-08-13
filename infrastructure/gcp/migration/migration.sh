@@ -153,9 +153,16 @@ DROP=(
 #    published to the admin-password Secret Manager secret, so it stays
 #    retrievable; only a cached copy of the old one goes stale. The dependent
 #    secret version is recreated for the same reason.
+#    google_container_node_pool.system: the monolith created it with 2 nodes;
+#    terraform-infra's default is 1. initial_node_count is immutable and the pool
+#    does not autoscale, so adoption reduces it to 1 with a one-time drain +
+#    recreate DURING the migration window. Accepted deliberately so that a normal
+#    install.sh run afterward — which also uses the default of 1 — is a clean
+#    no-op instead of springing this replacement on the operator later.
 ACCEPT_REPLACE=(
   random_password.admin
   google_secret_manager_secret_version.admin_password
+  google_container_node_pool.system
 )
 
 # -- Resources the split modules add that the monolith never had. They appear in
@@ -229,6 +236,21 @@ export_statefile() {
 
 # A bash array of KEEP addresses -> a JSON array (for gen-imports.jq).
 addrs_to_json() { printf '%s\n' "$@" | jq -R . | jq -s .; }
+
+# Render a resource-changes JSON document to a readable per-property diff,
+# grouped by resource and action. "(known after apply)" values are Terraform's,
+# not ours.
+render_full_diff() {
+  local changes_json="$1" out="$2"
+  jq -r '
+    def v(x): if x == null then "null" else (x | tojson) end;
+    .[]
+    | .terraformInfo as $ti
+    | "### \($ti.address)  [\($ti.actions | join("+"))]",
+      ( .propertyChanges[]? | "    \(.path): \(v(.before)) -> \(v(.after))" ),
+      ""
+  ' "${changes_json}" > "${out}"
+}
 
 # Rewrite import targets through the bundle's `moved {}` blocks. A refactor may
 # rename a resource (moved from = OLD, to = NEW); the monolith state still holds
@@ -596,10 +618,21 @@ preview_one() {
     echo "${destroyers}" | sed 's/^/        /' >&2
     fail=1
   fi
-  [[ "${fail}" == "0" ]] \
-    || die "${half}: preview is NOT safe to apply — see above. Details: ${WORK_DIR}/${half}.changes.json"
+  # Full per-property diff, always written; printed inline when SHOW_DIFF is set.
+  # The raw `terraform plan` text is also in the preview's Cloud Build log
+  # (Cloud Build console, or the deployment's blueprint-config GCS bucket).
+  local difffile="${WORK_DIR}/${half}.diff.txt"
+  render_full_diff "${WORK_DIR}/${half}.changes.json" "${difffile}"
+  if [[ -n "${SHOW_DIFF:-}" ]]; then
+    bold "  ${half}: full property diff"
+    sed 's/^/    /' "${difffile}" >&2
+  fi
 
-  ok "${half}: no destructive changes, no failed imports (details: ${WORK_DIR}/${half}.changes.json)"
+  [[ "${fail}" == "0" ]] \
+    || die "${half}: preview is NOT safe to apply — see above. Full diff: ${difffile}"
+
+  ok "${half}: no unexpected destructive changes, no failed imports"
+  info "  intents: ${WORK_DIR}/${half}.changes.json   full diff: ${difffile}   (SHOW_DIFF=1 to print)"
 }
 
 cmd_preview() {

@@ -19,9 +19,9 @@
 # ------------------
 #
 # Configure script to point your installation:
-#  PROJECT_ID - GCP project holding the monolith deployment
-#  DEPLOYMENT_NAME - existing monolith IM deployment name
-#  IM_LOCATION - location (--location) of the monolith IM deployment
+#  export PROJECT_ID=<GCP project holding the monolith deployment>
+#  export DEPLOYMENT_NAME=<existing monolith IM deployment name>
+#  export IM_LOCATION=<location (--location) of the monolith IM deployment>
 #
 # Run commands in sequence they are shown in help. Steps before 'apply' are all
 # read-only for cloud resources: they read state of deployment, create local files

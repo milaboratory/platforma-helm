@@ -17,26 +17,31 @@
 #
 # How adoption works
 # ------------------
-# Infrastructure Manager cannot be handed a finished state file: import-statefile
-# writes a *draft*, and the only way to promote a draft is `unlock`, which
-# applies the deployment's current config — an empty seed config destroys every
-# imported resource. (This is not hypothetical; it wiped a test instance during
-# development.) So the split does NOT seed-then-import.
 #
-# Instead each target deployment is created directly from its real bundle
-# (terraform-infra / terraform-platforma) with a generated `imports.tf` of
-# config-driven `import {}` blocks (Terraform 1.5+, which IM runs). On the first
-# apply, Terraform READS each existing resource into state instead of creating
-# it — so the deployment is born managing the live resources, with no create and
-# no destroy. State-only resources with no importer (null_resource,
-# terraform_data) are recreated instead; they hold no cloud object, so this is
-# harmless.
+# Configure script to point your installation:
+#  PROJECT_ID - GCP project holding the monolith deployment
+#  DEPLOYMENT_NAME - existing monolith IM deployment name
+#  IM_LOCATION - location (--location) of the monolith IM deployment
 #
-# Everything up to and including `preview` is non-destructive: export reads,
-# generate is local, and preview is a read-only plan. `apply` adopts (no
-# create/destroy of existing resources). `cutover` abandons the monolith
-# (metadata only). `retire` is the only step that deletes real (redundant)
-# resources.
+# Run commands in sequence they are shown in help. Steps before 'apply' are all
+# read-only for cloud resources: they read state of deployment, create local files
+# and perform verification of what is going to be done.
+#
+# First real step that changes cluster deployments and can make harm is is 'apply',
+# which creates new deployments on top of existing resources and configures them to
+# be aligned with the new configuration.
+#
+# 'preview' shows what 'apply' will do. To see full diff of changes, run
+# 'preview' with SHOW_DIFF=true environment variable, or see diff-file
+# reported after preview finished.
+#
+# We recommend to run cloudshell 'install.sh' script after 'apply' and before
+# 'cutover' and check if everything is working as expected.
+#
+# 'cutover' deletes old monolith deployment, keeping all resources it created
+# in place. 'cutover' and 'retire' are final steps that make new deployments to
+# be the source of truth.
+#
 # =============================================================================
 
 set -euo pipefail

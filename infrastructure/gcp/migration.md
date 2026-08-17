@@ -2,6 +2,8 @@
 
 Procedure to move an existing GCP Platforma deployment from the original single Terraform root module onto the refactored two-module layout, **without destroying or recreating a single stateful cloud resource**.
 
+> **Which script do you need?** This document covers deployments managed by **Infrastructure Manager** — `migration/migration.sh`. If you apply the monolith yourself (GCS backend, Terraform Cloud, or local state), use **`migration/migration-tf.sh`** instead; its `--help` carries that whole procedure. The two paths share the partition, the master-secret rule and the zero-destroy plan gate. They differ only in mechanism: plain Terraform can be handed a finished state, so it *moves* entries; IM cannot, so it *adopts* resources through generated `import {}` blocks (see [How adoption works](#how-adoption-works--and-why-not-import-statefile)).
+
 ## Overview
 
 ### What Is Changing
@@ -103,7 +105,9 @@ The AppWrapper namespace was extracted out of a `for_each` into a standalone res
 
 ## Audience and Scope
 
-Written for an operator with `gcloud` and Owner-equivalent rights on the target project, running from Cloud Shell or a workstation. It assumes the monolith deployment is **ACTIVE** in Infrastructure Manager. If your monolith state instead lives in a plain GCS backend (someone ran `tofu apply` by hand), the split is simpler — `tofu state mv -state-out` between two state files — and the IM-specific steps do not apply.
+Written for an operator with `gcloud` and Owner-equivalent rights on the target project, running from Cloud Shell or a workstation. It assumes the monolith deployment is **ACTIVE** in Infrastructure Manager.
+
+If your monolith state instead lives in a plain GCS backend, Terraform Cloud, or local state (someone ran `tofu apply` by hand), none of the IM-specific steps below apply. Use `migration/migration-tf.sh`, which reads a state dump you take yourself and prints the `terraform state mv` / `state rm` commands for you to run by hand; `terraform plan` is then the gate. Run `./migration-tf.sh --help` for the full procedure. It also handles a monolith called as a **child module** from a wrapper root — it detects which module holds the monolith and leaves everything outside it untouched, which the IM path never has to deal with.
 
 Prerequisites on the machine you run from: `gcloud` ≥ 450, `jq`, `gsutil`, `unzip`, `python3`, and a checkout of this repository at `main`. `migration.sh` sources `cloudshell/install.sh` to reuse its per-half input projection, so both must come from the same checkout.
 
@@ -326,5 +330,8 @@ The adoption import-id rules per resource type (helm release, kubectl manifest, 
 
 | Path | Purpose |
 |---|---|
-| `migration/migration.sh` | Flow driver — preflight, export, classify, generate, preview, apply, cutover, retire, reset |
+| `migration/migration.sh` | **Infrastructure Manager path.** Flow driver — preflight, export, classify, generate, preview, apply, cutover, retire, reset |
 | `migration/gen-imports.jq` | Emits the `import {}` blocks from the golden state, with per-type import-id rules |
+| `migration/migration-tf.sh` | **Plain-Terraform path.** `classify` + `generate` over a state dump; prints the `state mv`/`state rm` commands, the operator runs them. `--help` carries the procedure |
+
+The two scripts hold the same four partition lists (`KEEP_INFRA`, `KEEP_PLATFORMA`, `DROP`, `RETIRE`). **Update both together** — `migration-tf.sh classify` warns when they have drifted.

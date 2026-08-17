@@ -40,13 +40,13 @@
 #    which Terraform rejects in combination with depends_on):
 #
 #      module "platforma_infra" {
-#        source = "git::https://github.com/milaboratory/platforma-helm.git//infrastructure/gcp/terraform-infra?ref=7e89bb23479ca92daa7f15ac77eb25f5c8437d2e"
+#        source = "git::https://github.com/milaboratory/platforma-helm.git//infrastructure/gcp/terraform-infra?ref=v4.2.14"
 #        # project_id, region, zone_suffix, cluster_name, deployment_size,
 #        # contact_email, ingress_*, dns_*, data_libraries, ...
 #      }
 #
 #      module "platforma_platforma" {
-#        source = "git::https://github.com/milaboratory/platforma-helm.git//infrastructure/gcp/terraform-platforma?ref=7e89bb23479ca92daa7f15ac77eb25f5c8437d2e"
+#        source = "git::https://github.com/milaboratory/platforma-helm.git//infrastructure/gcp/terraform-platforma?ref=v4.2.14"
 #
 #        gcs_bucket              = module.platforma_infra.gcs_bucket
 #        filestore_instance_name = module.platforma_infra.filestore_instance_name

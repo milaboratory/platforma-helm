@@ -345,10 +345,10 @@ locals {
             cpu    = local.preset.batch_cpu
             memory = "${local.preset.batch_memory_gi}Gi"
           }
+          # cpu/memory are DERIVED by the chart from gpu × maxJobResources.gpuCpu/gpuRam;
+          # only the GPU-job concurrency count is set here.
           gpu = {
-            gpu    = local.gpu_queue_gpu
-            cpu    = local.gpu_queue_cpu
-            memory = "${local.gpu_queue_memory_gi}Gi"
+            gpu = local.gpu_queue_gpu
           }
         }
       }
@@ -359,7 +359,10 @@ locals {
         limits   = { cpu = 8, memory = "32Gi" }
       }
       nodeSelector = { "node.kubernetes.io/pool" = "system" }
-      extraArgs    = ["--default-docker-registry=${local.ecr_registry}"]
+      extraArgs = concat(
+        ["--default-docker-registry=${local.ecr_registry}"],
+        var.additional_extra_args,
+      )
     }
     dataSources = local.data_sources
   }

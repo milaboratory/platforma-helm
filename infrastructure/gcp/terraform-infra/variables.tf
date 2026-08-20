@@ -113,13 +113,25 @@ variable "enable_private_nodes" {
 
 variable "system_pool_machine_type" {
   type        = string
-  description = "Machine type for system node pool (Platforma server, Kueue, AppWrapper, controllers)."
-  default     = "n2d-standard-8"
+  description = "Machine type for the system node pool. Hosts cluster-support services only (Kueue, AppWrapper, controllers, CoreDNS, CSI, metrics-server) — the Platforma backend runs on its own dedicated pool (platforma_pool_machine_type), so this can stay small. n2d-standard-4 (4 vCPU / 16 GiB) is ample for the services."
+  default     = "n2d-standard-4"
 }
 
 variable "system_pool_node_count" {
   type        = number
-  description = "Number of nodes in the system pool (fixed, not autoscaled). 1 is sufficient for Platforma: the server pod is single-instance, so a spare node doesn't reduce downtime on node failure (K8s reschedules in minutes either way). Matches the AWS CloudFormation default. Increase to 2+ only if you have an explicit HA strategy."
+  description = "Number of nodes in the system pool (fixed, not autoscaled). 1 is sufficient: the cluster services fit comfortably on one node. Increase to 2+ only if you have an explicit HA strategy for the services."
+  default     = 1
+}
+
+variable "platforma_pool_machine_type" {
+  type        = string
+  description = "Machine type for the dedicated Platforma backend node pool. Split out from the system pool (MILAB-6566) so the server pod's memory can grow into a whole node without contending with cluster services. n2d-standard-16 (~58 GiB allocatable) realizes the chart's 32 GiB memory limit with headroom; n2d-standard-8 (~26 GiB allocatable) would cap the pod below its limit."
+  default     = "n2d-standard-16"
+}
+
+variable "platforma_pool_node_count" {
+  type        = number
+  description = "Number of nodes in the dedicated Platforma backend pool (fixed, not autoscaled). The backend is a single-instance pod, so 1 is correct. Increase only with an explicit HA strategy."
   default     = 1
 }
 
@@ -296,26 +308,35 @@ variable "enable_google_batch" {
   default     = false
 }
 
-variable "gpu_l4_node_locations" {
-  type        = list(string)
+variable "gpu_l4_pools" {
+  type        = map(list(string))
   description = <<-EOT
-    List of zones the L4 GPU node pools (g2-standard-*) may create nodes in.
+    Map of L4 GPU machine shape (g2-standard-*) -> the zones its node pool may
+    create nodes in. One node pool is created per key (adaptive ladder — a
+    region provisions only the shapes it actually offers).
 
     Normally populated by install.sh at deploy time — it calls gcptest.sh
-    discover for nvidia-l4 in var.region and embeds the resulting zone list
-    here automatically. Operators do not set this env-var-style.
+    discover for nvidia-l4 in var.region, which returns, per shape, the zones
+    that offer it (shapes offered in no zone are omitted). Operators do not set
+    this by hand.
 
-    When null (operator running terraform directly without install.sh), the
-    L4 pools fall back to [local.zone] (single-zone, no capacity diversity).
+    Three cases (see effective_gpu_l4_pools in presets.tf):
+      - null              running terraform directly without install.sh: falls
+                          back to the full default ladder
+                          (local.default_gpu_l4_ladder) in [local.zone].
+      - {}                install.sh found L4 is not offered in var.region: L4
+                          pools are disabled (gpu_l4_enabled = false).
+      - {shape=[zone..]}  discovered per-shape zones for L4.
   EOT
   default     = null
 }
 
-variable "gpu_rtx_pro_6000_node_locations" {
-  type        = list(string)
+variable "gpu_rtx_pro_6000_pools" {
+  type        = map(list(string))
   description = <<-EOT
-    List of zones the RTX PRO 6000 GPU node pools (g4-standard-*) may create
-    nodes in. Same install.sh-driven discovery as gpu_l4_node_locations.
+    Map of RTX PRO 6000 machine shape (g4-standard-*) -> zones for that shape's
+    node pool. Same install.sh-driven discovery and null/{}/{shape=[zones]}
+    semantics as gpu_l4_pools.
   EOT
   default     = null
 }
@@ -347,26 +368,47 @@ variable "enable_gpu" {
     requesting ≤ 24 GiB land on L4; > 24 GiB land on RTX PRO 6000; the L4
     preferred-Lt clause + CA's least-waste expander keep small jobs on L4.
 
-    GPU pools span the zones in var.region where each SKU's full machine
-    ladder is offered — discovered by install.sh via gcptest.sh discover
-    and embedded in var.gpu_l4_node_locations / var.gpu_rtx_pro_6000_node_locations
-    automatically. If no zone in the region has the full ladder for a
-    SKU, install.sh aborts with a clear error pointing at the missing
-    shapes per zone. System and UI pools stay in the cluster's primary
-    zone (local.zone).
+    Each GPU pool spans the zones in var.region where its machine shape is
+    offered — discovered per shape by install.sh via gcptest.sh discover and
+    embedded in var.gpu_l4_pools / var.gpu_rtx_pro_6000_pools automatically.
+    Shapes offered in no zone are dropped; a SKU offered nowhere is skipped;
+    if neither SKU is available install.sh continues CPU-only. System and UI
+    pools stay in the cluster's primary zone (local.zone).
 
-    Default false — nothing GPU-related is created or wired.
+    Default true — GPU support is opt-out. Set false to skip all
+    GPU node pools and Kueue GPU wiring.
 
     NVIDIA_L4_GPUS and NVIDIA_RTX_PRO_6000_GPUS regional quotas are required
-    for the pools to actually provision nodes; quotas.tf does not yet
-    auto-request these — operators must arrange the quotas separately.
+    for the pools to actually provision nodes. quotas.tf auto-requests these
+    (sized from the deployment_size preset) when enable_quota_auto_request is
+    true — the empty scale-to-zero pools consume no GPU quota at apply time, so
+    a still-pending request only leaves GPU jobs Pending, never fails apply.
   EOT
-  default     = false
+  default     = true
 }
 
 # -----------------------------------------------------------------------------
 # Quota auto-request
 # -----------------------------------------------------------------------------
+
+# Whether to submit the per-SKU GPU quota-increase request, DECOUPLED from
+# whether that SKU's node pools are actually created. install.sh sets these true
+# whenever a SKU is offered in the region (so the increase is requested) even
+# when it also empties gpu_*_pools because the current quota is still below the
+# deployment's need — that lets Platforma come up GPU-less for that SKU now and
+# pick it up on a re-install once the quota lands. null (bare terraform, no
+# install.sh) falls back to var.enable_gpu (see effective_request_gpu_*_quota).
+variable "request_gpu_l4_quota" {
+  type        = bool
+  description = "Submit the NVIDIA L4 GPU quota-increase request, independent of pool creation. null = follow var.enable_gpu."
+  default     = null
+}
+
+variable "request_gpu_rtx_pro_6000_quota" {
+  type        = bool
+  description = "Submit the NVIDIA RTX PRO 6000 GPU quota-increase request, independent of pool creation. null = follow var.enable_gpu."
+  default     = null
+}
 
 variable "enable_quota_auto_request" {
   type        = bool

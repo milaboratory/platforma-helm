@@ -68,9 +68,14 @@ data:
                     app.kubernetes.io/managed-by: platforma
                 spec:
                   serviceAccountName: {{ include "platforma.jobServiceAccountName" . }}
+                  # OnRootMismatch: without it kubelet recursively chowns the whole
+                  # workspace PVC on every job pod start. The volume holds hundreds of
+                  # thousands of files, so that walk adds minutes of ContainerCreating
+                  # to each job and serialises across concurrent pods.
                   securityContext:
                     runAsNonRoot: true
                     fsGroup: 1010
+                    fsGroupChangePolicy: OnRootMismatch
                   restartPolicy: Never
                   <<- if eq .PlatformaQueue "ui-tasks" >>
                   {{- with .Values.kueue.pools.ui.nodeSelector }}
@@ -149,13 +154,20 @@ data:
                         - name: PL_JOB_STDERR_PATH
                           value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .StdErrRelativePath >>
                         <<- end >>
-                        <<- if .ExpectedItems >>
-                        - name: PL_JOB_EXPECTED_ITEMS
-                          value: << join "\n" .ExpectedItems | quote >>
+                        <<- /* The workdir item list reaches the job by path, never by value: a
+                               single env var is capped at MAX_ARG_STRLEN (131072 bytes), which a
+                               workdir of more than ~7300 files exceeds, and execve then fails
+                               with E2BIG before the entrypoint runs. */>>
+                        <<- if .ExpectedItemsFileRelativePath >>
+                        - name: PL_JOB_EXPECTED_ITEMS_FILE
+                          value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .ExpectedItemsFileRelativePath >>
+                        <<- end >>
+                        <<- /* The marker is independent of the item list: the runner reads its
+                               absence as an OOM kill, so a job with an empty workdir must still
+                               get one or every failure of it is misread as an OOM. */>>
                         <<- if .CompletionMarkerRelativePath >>
                         - name: PL_JOB_COMPLETION_MARKER_PATH
                           value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .CompletionMarkerRelativePath >>
-                        <<- end >>
                         <<- end >>
                         {{- if .Values.kueue.pools.gpu.enabled }}
                         <<- if and .Resources .Resources.HasGPU >>

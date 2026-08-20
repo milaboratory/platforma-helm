@@ -21,9 +21,19 @@
 #   IM_LOCATION         IM deployment region         (default: europe-west1)
 #   CLUSTER_NAME        GKE cluster name             (default: ${DEPLOYMENT_NAME}-cluster)
 #   PLATFORMA_NAMESPACE Namespace holding chart PVCs (default: platforma)
+#   ASSUME_YES          Skip the "delete bucket data?" y/N prompt (default: false)
 # =============================================================================
 
 set -euo pipefail
+
+# Silently lowercase identifier-style inputs — see install.sh for rationale.
+# GKE cluster names, Kubernetes namespaces, project IDs, IM deployment names
+# and regions are lowercase-only; case-sensitive inputs are left untouched.
+for _lc_var in PROJECT_ID DEPLOYMENT_NAME IM_LOCATION CLUSTER_NAME PLATFORMA_NAMESPACE; do
+  _lc_val="${!_lc_var:-}"
+  [[ -n "${_lc_val}" ]] && printf -v "${_lc_var}" '%s' "${_lc_val,,}"
+done
+unset _lc_var _lc_val
 
 bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 red()   { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -252,6 +262,87 @@ cleanup_pvcs() {
 }
 
 # -----------------------------------------------------------------------------
+# Empty primary GCS bucket(s)
+# -----------------------------------------------------------------------------
+# The infra deployment's google_storage_bucket.primary is created with
+# force_destroy=false unless the operator set GCS_FORCE_DESTROY=true at install.
+# terraform then REFUSES to delete a non-empty bucket, so the entire infra
+# destroy fails with:
+#     Error trying to delete bucket platforma-...-cluster-<hash> without
+#     `force_destroy` set to true
+# leaving the cluster, network, IAM, etc. behind. Empty the bucket here — this
+# runs AFTER cleanup_pvcs has scaled the platforma app to 0, so nothing is
+# writing to it — and BEFORE the infra IM delete that owns the bucket. Safe and
+# idempotent whether or not GCS_FORCE_DESTROY was set: an already-empty (or
+# force_destroy=true) bucket just yields nothing to remove.
+#
+# The bucket name is platforma-<RESOURCE_NAME_PREFIX>-cluster-<random>, and
+# CLUSTER_NAME == <RESOURCE_NAME_PREFIX>-cluster, so 'platforma-<CLUSTER_NAME>-'
+# is the exact prefix. We match on it rather than reconstructing the random
+# suffix.
+empty_primary_buckets() {
+  bold "Emptying deployment GCS bucket(s) before infra destroy"
+
+  local buckets
+  buckets=$(gcloud storage buckets list --project="${PROJECT_ID}" \
+    --format='value(name)' 2>/dev/null | grep "^platforma-${CLUSTER_NAME}-" || true)
+
+  if [[ -z "${buckets}" ]]; then
+    info "No platforma-${CLUSTER_NAME}-* bucket found — nothing to empty (already gone or GCS_FORCE_DESTROY=true)."
+    echo
+    return 0
+  fi
+
+  # Split into buckets that actually hold objects vs already-empty ones. Only
+  # non-empty buckets require the destructive-data confirmation below; empty
+  # ones are deleted by the infra destroy without any data loss.
+  local bucket obj
+  local nonempty=()
+  for bucket in ${buckets}; do
+    # `|| true` is REQUIRED: `set -o pipefail` + `gcloud storage ls` returning
+    # non-zero on an empty bucket would otherwise abort the script here.
+    obj="$(gcloud storage ls -r "gs://${bucket}/**" --project="${PROJECT_ID}" 2>/dev/null | head -1 || true)"
+    [[ -n "${obj}" ]] && nonempty+=("${bucket}")
+  done
+
+  if (( ${#nonempty[@]} == 0 )); then
+    info "Bucket(s) already empty — nothing to remove."
+    echo
+    return 0
+  fi
+
+  # Second, explicit confirmation. Emptying a bucket is IRREVERSIBLE data loss
+  # (workspace files, database backups). The strong-phrase prompt gated the
+  # overall teardown, but destroying bucket DATA is called out on its own so the
+  # operator can back it up first. Set ASSUME_YES=true to skip in automation.
+  echo
+  red "  These bucket(s) CONTAIN DATA — IT WILL BE REMOVED COMPLETELY and cannot be recovered:"
+  for bucket in "${nonempty[@]}"; do red "      gs://${bucket}"; done
+  echo
+  if [[ "${ASSUME_YES:-false}" == "true" ]]; then
+    warn "ASSUME_YES=true — deleting bucket data non-interactively."
+  else
+    local reply
+    read -r -p "  Delete ALL data in the bucket(s) above? (y/N): " reply
+    if [[ ! "${reply}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+      warn "Declined — leaving bucket data intact."
+      warn "  → The infra destroy would FAIL on the non-empty bucket, so stopping here."
+      warn "    Back up the data, empty the bucket(s) manually, then re-run:  bash $0"
+      echo
+      exit 0
+    fi
+  fi
+
+  for bucket in "${nonempty[@]}"; do
+    info "Emptying gs://${bucket} (so terraform can delete it with force_destroy=false)…"
+    # Best-effort: a concurrently-emptied bucket returns non-zero, not an error.
+    gcloud storage rm -r "gs://${bucket}/**" --project="${PROJECT_ID}" --quiet 2>/dev/null \
+      || info "  (nothing to remove)"
+  done
+  echo
+}
+
+# -----------------------------------------------------------------------------
 # Submit IM delete
 # -----------------------------------------------------------------------------
 
@@ -358,13 +449,16 @@ This will:
      Gateway). The Gateway controller releases its GFE child resources
      during this destroy — must complete before the infra deployment's
      certmap is destroyed.
-  3. Submit 'gcloud infra-manager deployments delete ${infra_deployment}'
+  3. Empty the primary GCS bucket (platforma-${CLUSTER_NAME}-*) so the infra
+     destroy can delete it even when it was applied with force_destroy=false.
+     If the bucket holds data you'll be asked to confirm before it's removed.
+  4. Submit 'gcloud infra-manager deployments delete ${infra_deployment}'
      with --delete-policy=delete (destroys GKE cluster, Filestore, GCS,
      network, IAM, certmap, DNS).
 
 Everything terraform manages goes away: GKE cluster, Filestore (workspace
-data), GCS primary bucket (only if applied with GCS_FORCE_DESTROY=true,
-otherwise empty it manually first), VPC + Cloud NAT, IAM, certs, DNS A
+data), GCS primary bucket (its objects are emptied in step 3 so the delete
+succeeds regardless of GCS_FORCE_DESTROY), VPC + Cloud NAT, IAM, certs, DNS A
 record. The Cloud DNS managed zone and any pre-existing storage outside
 terraform state are left untouched.
 
@@ -377,6 +471,10 @@ EOF
   # controller clean up its GFE-side resources (target-https-proxy,
   # backend-services, NEGs) before the certmap they reference is destroyed.
   submit_im_delete "${platforma_deployment}"
+
+  # Empty the primary bucket (app already scaled to 0) so the infra destroy's
+  # force_destroy=false bucket delete doesn't fail the whole teardown.
+  empty_primary_buckets
 
   # Then infra — certmap, cluster, network, GCS, etc.
   submit_im_delete "${infra_deployment}"

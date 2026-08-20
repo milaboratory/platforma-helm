@@ -36,10 +36,14 @@ All three share the same Terraform module under [`terraform/`](terraform/).
                       │  (private nodes,       │                             │
                       │   public ctrl plane)   │                             │
                       │                        │                             │
+                      │  ┌─platforma pool──┐   │                             │
+                      │  │ Platforma srv   │   │ ──ServiceAccount──▶ GCS     │
+                      │  │ (dedicated node)│   │     (Workload Identity)     │
+                      │  └─────────────────┘   │                             │
                       │  ┌─system pool─────┐   │                             │
-                      │  │ Platforma srv   │   │                             │
-                      │  │ Kueue / AppWr   │   │ ──ServiceAccount──▶ GCS     │
-                      │  └─────────────────┘   │     (Workload Identity)     │
+                      │  │ Kueue / AppWr   │   │                             │
+                      │  │ controllers/DNS │   │                             │
+                      │  └─────────────────┘   │                             │
                       │  ┌─UI pool──────┐      │                             │
                       │  │ scale 0-N    │      │ ──Filestore CSI──▶ Filestore (Zonal SSD)
                       │  └──────────────┘      │                             │
@@ -66,8 +70,9 @@ All three share the same Terraform module under [`terraform/`](terraform/).
 ## Prerequisites
 
 - A GCP project with billing enabled
-- Owner role on the project (for the simplest installer flow), OR the
-  [fine-grained role set](permissions.md) for production
+- Permissions on the project for **the Google user running the scripts** — the
+  [operator role set](permissions.md#permissions-for-the-operator-the-google-user-running-the-scripts)
+  (project **Owner** also works and is the simplest for dev/test)
 - A registered domain — see [`domain-guide.md`](domain-guide.md) for setting
   up a Cloud DNS zone (works with Route53, Cloudflare, GoDaddy, etc.)
 - A Platforma license key from MiLaboratories
@@ -150,50 +155,75 @@ GPU drivers are installed automatically by GKE.
 
 ### Zones
 
-Both SKUs use the same multi-zone discovery mechanism. The installer calls
-`gcptest.sh` for each SKU and embeds the resulting list as
-`gpu_l4_node_locations` / `gpu_rtx_pro_6000_node_locations` — every zone in
-the chosen `REGION` where the **full machine-type ladder** for that SKU is
-available. Cluster Autoscaler picks the zone with available capacity at
-scale-up, so single-zone stockouts don't block scheduling.
+Both SKUs use the same per-shape discovery mechanism. The installer calls
+`gcptest.sh` for each SKU and embeds the result as the `gpu_l4_pools` /
+`gpu_rtx_pro_6000_pools` maps (`machine-shape → [zones]`) — for **each machine
+shape**, every zone in the chosen `REGION` that offers it. A shape offered in
+no zone is dropped (adaptive ladder — the region provisions only the shapes it
+has); a SKU offered nowhere is skipped entirely. Cluster Autoscaler picks the
+zone with available capacity at scale-up, so single-zone stockouts don't block
+scheduling.
 
 In practice the two SKUs differ by **GCP availability**, not by chart
 design. L4 typically has 2-3 zones with the full ladder in most regions
 (us-central1 a/b/c, europe-west1/4 b/c/d, etc.). RTX PRO 6000 is narrower —
 in `us-central1` only `us-central1-b` carries the full G4 ladder today, so
-the discovery result is a single zone. In regions without any RTX-carrying
-zone, discovery aborts the install with a clear error and no RTX pools are
-created (in that case, request RTX in a different region or skip the RTX
-quota request entirely — L4-only deployments are fine).
+the discovery result is a single zone.
 
-### GCP GPU quotas (manual)
+Discovery is **per-SKU and non-fatal**: a SKU that isn't offered in the chosen
+region is skipped (its pools and quota request are dropped) and the install
+continues with whatever's available. So an L4-only region, an RTX-only region
+(e.g. `europe-north1` carries RTX PRO 6000 but not L4), and a region with no
+GPUs at all all install cleanly — in the last case GPU is turned off and the
+cluster comes up CPU-only. The installer prints a warning for each skipped SKU.
 
-Unlike the CPU/RAM quotas (auto-submitted by the installer via the Cloud
-Quotas API), **GPU quotas must be requested manually** before turning on
-`ENABLE_GPU=true`. The installer doesn't auto-request them because:
+### GCP GPU quotas (auto-requested)
 
-- The Cloud Quotas API workflow for GPUs needs human review on most projects.
-- GPU prices warrant explicit operator opt-in.
+GPU quotas are **auto-submitted by the installer** via the Cloud Quotas API,
+the same way as the CPU/RAM/storage quotas — no manual step is required before
+enabling GPU. When `ENABLE_GPU=true` (the default), `quotas.tf` requests these
+regional quotas in the deployment region:
 
-The two SKUs map to these regional quotas (request in the same region you're
-deploying to):
-
-| SKU | Quota name in Cloud Quotas Console | Suggested initial value |
+| SKU | Cloud Quotas quota ID (+ dimensions) | Requested value |
 |---|---|---|
-| L4 | `NVIDIA L4 GPUs` (per-region) | 8 (matches `small` preset) |
-| RTX PRO 6000 | `NVIDIA RTX PRO 6000 GPUs` (per-region) | 4 (matches `small` preset) |
+| L4 | `NVIDIA-L4-GPUS-per-project-region` | `small` 8 / `medium` 16 / `large` 32 / `xlarge` 64 |
+| RTX PRO 6000 | `GPUS-PER-GPU-FAMILY-per-project-region`, `gpu_family=NVIDIA_RTX_PRO_6000` | `small` 4 / `medium` 8 / `large` 16 / `xlarge` 32 |
 
-Request via Console — Cloud Quotas → "All quotas" → filter by name → "Edit
-Quota" → set new value → submit justification. Typical turnaround is hours
-to a few days depending on GCP region and quota size.
+L4 has a dedicated per-SKU quota; RTX PRO 6000 (Blackwell), like the other
+newest families (B200/H100/H200), has **no** dedicated quota and is governed by
+the unified per-GPU-family quota scoped by the `gpu_family` dimension.
 
-If you only need one SKU, request just that quota — the installer detects
-which SKUs the region carries and skips pools it can't provision. To enable
-GPU on an existing deployment that was originally installed without GPU,
-request the quotas first, then re-run `install.sh` with `ENABLE_GPU=true`
-exported (and the existing env vars from your prior install — see "Updates"
-below). The TF module flips `enable_gpu = true` and the GPU pools come up
-on the next IM revision without touching the existing CPU pools.
+The request **does not block the install**. The GPU node pools are created
+empty and scale-to-zero, so they consume no GPU quota at apply time — the
+regional `NVIDIA_*_GPUS` quota only binds when a GPU pod triggers a scale-up.
+So the cluster (and all CPU work) comes up immediately; if the GPU quota is
+still pending, only GPU jobs stay `Pending` until it's granted. Small bumps
+auto-approve in seconds; larger ones can take hours to a few days of Google
+review (notification goes to `contact_email`).
+
+**Check / track approval status:** the installer prints the exact command at the
+end of the run. You can also query it directly:
+
+```
+gcloud beta quotas preferences list --project=YOUR_PROJECT \
+  --format='table(name.basename(),quotaConfig.preferredValue,dimensions,reconciling)'
+```
+
+The installer requests quotas via the Cloud Quotas API (`QuotaPreference`
+objects). The Cloud Console `/iam-admin/quotas` → "Increase requests" tab is the
+*legacy* request system and does **not** list these — use the command above.
+
+If your project already has an effective GPU quota above the preset (default
+allowances are often non-zero), the installer detects it and **skips
+re-requesting** — same adopt-by-skip logic as the CPU quotas. To opt out of
+quota auto-request entirely, set `ENABLE_QUOTA_AUTO_REQUEST=false` and arrange
+GPU quota manually.
+
+To enable GPU on an existing deployment that was installed with
+`ENABLE_GPU=false`, re-run `install.sh` with `ENABLE_GPU=true` exported (and
+the existing env vars from your prior install — see "Updates" below). The TF
+module flips `enable_gpu = true`, submits the GPU quota requests, and the GPU
+pools come up on the next IM revision without touching the existing CPU pools.
 
 ### GPU Kueue queue
 
@@ -229,10 +259,19 @@ Rough idle cost (no jobs running, Tier-1 small):
 | Component | $/hour idle |
 |---|---|
 | GKE Standard control plane | $0.10 |
-| System pool (1× n2d-standard-8) | $0.40 |
+| Platforma pool (1× n2d-standard-16) | $0.80 |
+| System pool (1× n2d-standard-4) | $0.20 |
 | Filestore Zonal 1 TiB | $0.40 |
 | Static IP + Cloud DNS records + Cert Manager | ~$0 |
-| **Idle total** | **~$0.90/hour (~$650/month)** |
+| **Idle total** | **~$1.50/hour (~$1,080/month)** |
+
+The Platforma backend runs on its own dedicated node pool
+(`platforma_pool_machine_type`, default `n2d-standard-16`), split out from the
+system pool (MILAB-6566) so the server's memory can grow into a whole node
+without contending with the cluster-support services. The system pool
+(`system_pool_machine_type`, default `n2d-standard-4`) now hosts only those
+light services. Shrink `platforma_pool_machine_type` for a memory-light
+deployment, or grow it to give the backend more headroom.
 
 **UI pool** is a static pool that autoscales from zero (`min_node_count = 0`),
 so it adds nothing idle. **Batch nodes don't exist until needed** — there are
@@ -335,7 +374,7 @@ to users.
   - [`install.sh`](cloudshell/install.sh) — driver script (also runs standalone outside Cloud Shell).
   - [`teardown.sh`](cloudshell/teardown.sh) — clean-teardown driver. Use instead of raw `gcloud infra-manager deployments delete` to avoid stuck PV finalizers on the chart's retained PVCs.
 - [`domain-guide.md`](domain-guide.md) — Cloud DNS zone creation + delegation from external registrars (Route53, Cloudflare, GoDaddy, Namecheap).
-- [`permissions.md`](permissions.md) — fine-grained IAM role set replacing `roles/owner` on the deployer SA.
+- [`permissions.md`](permissions.md) — IAM permissions reference: the role set for the **operator** running install/update/teardown, plus the fine-grained deployer-SA roles replacing `roles/owner`.
 - [`advanced-installation.md`](advanced-installation.md) — Tier-3 local-Terraform path with manual gcloud auth, custom backends, full customization.
 
 ## Updates
@@ -433,12 +472,6 @@ export GCS_FORCE_DESTROY=true
 
 # Provision GPU node pools (L4 + RTX PRO 6000) and the Kueue GPU queue.
 # Default is ON (opt-out) — set ENABLE_GPU=false to skip all GPU pools.
-# See "GPU Support" above for the manual GPU quota request
-# step that MUST precede setting this to true — terraform apply fails on
-# the first GPU pool create if the regional NVIDIA_*_GPUS quota is 0.
-# Setting this on an existing deployment is supported: re-run install.sh
-# with ENABLE_GPU=true and the same env vars as your prior install; the
-# next IM revision adds the GPU pools without touching anything else.
 export ENABLE_GPU=false
 ```
 
@@ -585,3 +618,15 @@ gcloud compute backend-services list --global --project=YOUR_PROJECT \
 Should include a backend with `protocol: H2C`. If only `HTTP` shows up, the
 gRPC backend protocol isn't being declared — usually transient on first
 provision; wait a few min.
+
+### Pod CrashLoopBackOff With "unknown flag"
+
+The `platforma` pod restarts continuously and its logs show `unknown flag
+'<name>'` / `Invalid command line options`; the startup probe never passes.
+The Helm chart and the container image are out of sync — the chart passes a
+backend flag the image doesn't understand. This happens when installing the
+chart from an **unreleased commit** (e.g. straight off `main`) whose templates
+are ahead of the chart's default `appVersion` image. Released chart versions
+pin a matching image, so this doesn't occur on a normal install. Fix: pin a
+matching image built from the same commit via `PLATFORMA_IMAGE_OVERRIDE`, or
+install a released chart version.

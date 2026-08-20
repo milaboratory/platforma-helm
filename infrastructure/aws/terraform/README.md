@@ -263,6 +263,10 @@ aws ssm get-parameter \
   `oci://ghcr.io/milaboratory/platforma-helm/platforma` by default. Set
   `chart_local_path` to install from a local chart directory or `.tgz`
   (development / air-gapped). `platforma_image` overrides the container image.
+- **Extra server args** — `additional_extra_args` appends arbitrary flags to
+  the Platforma server command line, after the flags the module manages (e.g.
+  `--default-docker-registry`). Each element is one whole argument starting
+  with `-`, e.g. `["--some-flag=value"]`.
 
 ## Controllers-only mode
 

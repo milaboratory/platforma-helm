@@ -512,6 +512,10 @@
           "type": "string",
           "enum": ["dedicated", "shared"]
         },
+        "imagePullMaxRetries": {
+          "type": "integer",
+          "minimum": 0
+        },
         "oomRetry": {
           "type": "boolean"
         },
@@ -522,16 +526,19 @@
               "type": ["integer", "string"]
             },
             "memory": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+Gi$"
             },
             "gpuMemory": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+Gi$"
             },
             "gpuCpu": {
               "type": ["integer", "string"]
             },
             "gpuRam": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+Gi$"
             }
           },
           "additionalProperties": false
@@ -569,6 +576,14 @@
                 },
                 "tolerations": {
                   "type": "array"
+                },
+                "devicePlugin": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  }
                 }
               }
             }

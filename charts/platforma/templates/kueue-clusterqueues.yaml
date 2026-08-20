@@ -89,14 +89,31 @@ spec:
               borrowingLimit: {{ .Values.kueue.dedicated.resources.ui.memory | quote }}
             - name: "nvidia.com/gpu"
               nominalQuota: "0"
+        # GPU flavor cpu/memory quota is DERIVED from the per-job GPU ceiling
+        # (maxJobResources.gpuCpu/gpuRam) times the GPU-job concurrency
+        # (dedicated.resources.gpu.gpu). Deriving it from the same ceiling the
+        # runner clamps GPU jobs to guarantees quota >= any admittable job, so a
+        # correctly-ceiled GPU job can never be rejected for insufficient
+        # cpu/memory in its own flavor. gpuRam must be expressed in Gi.
+        {{- $gpuCount := .Values.kueue.dedicated.resources.gpu.gpu | int }}
+        {{- if not .Values.kueue.maxJobResources.gpuCpu }}
+        {{- fail "ERROR: kueue.maxJobResources.gpuCpu is required when kueue.pools.gpu.enabled=true.\nSet it to the allocatable CPU cores of the largest GPU node in your cluster." }}
+        {{- end }}
+        {{- if not .Values.kueue.maxJobResources.gpuRam }}
+        {{- fail "ERROR: kueue.maxJobResources.gpuRam is required when kueue.pools.gpu.enabled=true.\nSet it to the allocatable RAM of the largest GPU node in your cluster (e.g. 128Gi, 192Gi)." }}
+        {{- end }}
+        {{- $gpuRam := .Values.kueue.maxJobResources.gpuRam | toString }}
+        {{- if not (hasSuffix "Gi" $gpuRam) }}
+        {{- fail (printf "kueue.maxJobResources.gpuRam must be expressed in Gi (got %q): the GPU flavor memory quota is derived by arithmetic on the numeric part, so a non-Gi unit would silently render a 0Gi quota and reject every GPU job" $gpuRam) }}
+        {{- end }}
         - name: {{ include "platforma.kueue.clusterResourceName" . }}-gpu-flavor
           resources:
             - name: cpu
-              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.cpu | quote }}
+              nominalQuota: {{ mul $gpuCount (.Values.kueue.maxJobResources.gpuCpu | int) | quote }}
             - name: memory
-              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.memory | quote }}
+              nominalQuota: {{ printf "%dGi" (mul $gpuCount ($gpuRam | trimSuffix "Gi" | int)) | quote }}
             - name: "nvidia.com/gpu"
-              nominalQuota: {{ .Values.kueue.dedicated.resources.gpu.gpu | quote }}
+              nominalQuota: {{ $gpuCount | quote }}
 {{- else }}
     - coveredResources: ["cpu", "memory"]
       flavors:

@@ -21,16 +21,68 @@
 # QUOTA_DECREASE_TOO_LARGE). Set enable_quota_auto_request = false in those
 # cases — see infrastructure/gcp/advanced-installation.md for the full path.
 #
-# Quota IDs verified against the Cloud Quotas API by end-to-end apply on
-# mik8s-euwe3-prod-gke-project (2026-05-07). Mix of HYPHEN-CASE
+# Quota IDs verified against the Cloud Quotas API by end-to-end apply on a
+# test GCP project (2026-05-07). Mix of HYPHEN-CASE
 # (CPUS-ALL-REGIONS-per-project, N2D-CPUS-per-project-region, ...) and
 # camelCase (EnterpriseStorageGibPerRegion) is intentional — that's how the
 # upstream API exposes them.
 # =============================================================================
 
 locals {
-  # Map of quota requests submitted on apply.
-  quota_requests = {
+  # GPU quota requests — only submitted when GPU support is enabled
+  # (var.enable_gpu, default true). Per-SKU regional GPU-count quotas. The
+  # preferred value mirrors the deployment_size preset's per-shape node
+  # ceiling, which equals the Kueue GPU ClusterQueue admission cap for that
+  # SKU (small = 8 L4 / 4 RTX PRO 6000 — see presets.tf and the GPU Kueue
+  # queue table in README.md).
+  #
+  # Like the CPU/storage requests, this does NOT block apply: small bumps
+  # auto-approve, larger ones queue for Google review. The empty, scale-to-zero
+  # GPU node pools created by gke.tf consume no GPU quota — the regional
+  # NVIDIA_*_GPUS quota only binds when a GPU pod triggers a scale-up, so a
+  # still-pending request just leaves GPU jobs Pending, never fails the install.
+  #
+  # Quota IDs verified against the Cloud Quotas API on a test GCP project
+  # (2026-06-29):
+  #   - L4 has a dedicated per-SKU quota (NVIDIA-L4-GPUS-per-project-region).
+  #   - RTX PRO 6000 (Blackwell) has NO dedicated per-SKU quota. Like the other
+  #     newest families (B200/H100/H200), it is governed by the unified
+  #     GPUS-PER-GPU-FAMILY-per-project-region quota, scoped by a gpu_family
+  #     dimension (NVIDIA_RTX_PRO_6000). A plain NVIDIA-RTX-PRO-6000-GPUS-*
+  #     quota does not exist and would fail the apply.
+  # Gated per-SKU on effective_request_gpu_*_quota (NOT gpu_*_enabled) so the
+  # increase is still requested when install.sh has emptied a SKU's pools because
+  # its current quota is below the deployment's need — that SKU then runs
+  # GPU-less this install and is picked up on re-install once approved. A SKU the
+  # region doesn't offer at all has its request flag false, so no pointless
+  # request. Bare terraform: the flags follow var.enable_gpu (presets.tf).
+  gpu_quota_requests = merge(
+    local.effective_request_gpu_l4_quota ? {
+      gpu_l4_region = {
+        service       = "compute.googleapis.com"
+        quota_id      = "NVIDIA-L4-GPUS-per-project-region"
+        dimensions    = { region = var.region }
+        preferred     = local.preset.gpu_l4_max_nodes_per_shape
+        justification = "NVIDIA L4 GPUs per region. Required for Platforma GPU batch jobs (L4 SKU, up to ${local.preset.gpu_l4_max_nodes_per_shape} concurrent for deployment size ${var.deployment_size}). Default quota is often low or 0 on fresh projects."
+      }
+    } : {},
+    local.effective_request_gpu_rtx_pro_6000_quota ? {
+      gpu_rtx_pro_6000_region = {
+        service       = "compute.googleapis.com"
+        quota_id      = "GPUS-PER-GPU-FAMILY-per-project-region"
+        dimensions    = { region = var.region, gpu_family = "NVIDIA_RTX_PRO_6000" }
+        preferred     = local.preset.gpu_rtx_pro_6000_max_nodes_per_shape
+        justification = "NVIDIA RTX PRO 6000 GPUs per region (per-GPU-family quota, gpu_family=NVIDIA_RTX_PRO_6000). Required for Platforma large-VRAM GPU batch jobs (up to ${local.preset.gpu_rtx_pro_6000_max_nodes_per_shape} concurrent for deployment size ${var.deployment_size}). Default quota is often low or 0 on fresh projects."
+      }
+    } : {}
+  )
+
+  # Map of quota requests submitted on apply. GPU entries merge in per-SKU only
+  # when that SKU's effective_request_gpu_*_quota flag is set — which follows
+  # var.enable_gpu by default, but install.sh can request an increase for a SKU
+  # even when its pools are disabled (see gpu_quota_requests above). With GPU
+  # off and no per-SKU override, gpu_quota_requests is empty.
+  quota_requests = merge({
     cpus_global = {
       service       = "compute.googleapis.com"
       quota_id      = "CPUS-ALL-REGIONS-per-project"
@@ -80,7 +132,7 @@ locals {
       preferred     = local.preset.in_use_addresses_quota
       justification = "In-use external IPs per region. With private nodes + Cloud NAT, only NAT IPs (1-2) and the GKE Gateway static IP consume this quota. Default is 8; we request modest headroom."
     }
-  }
+  }, local.gpu_quota_requests)
 }
 
 resource "google_cloud_quotas_quota_preference" "platforma" {
@@ -88,8 +140,14 @@ resource "google_cloud_quotas_quota_preference" "platforma" {
     for k, v in local.quota_requests : k => v if !contains(var.skip_quota_requests, k)
   } : {}
 
-  parent        = "projects/${var.project_id}"
-  name          = "platforma-${replace(each.key, "_", "-")}"
+  parent = "projects/${var.project_id}"
+  # Region-scope the preference name. A QuotaPreference is a project-GLOBAL
+  # resource keyed by name, but the regional quotas it targets differ per region
+  # (dimensions.region). Without the suffix, two deployments in the same project
+  # but different regions (e.g. prod in euw4, farm in euw3 — or three parallel
+  # test installs) collide on the same name and silently overwrite each other's
+  # requests. The global CPU quota (no region dimension) keeps its bare name.
+  name          = "platforma-${replace(each.key, "_", "-")}${lookup(each.value.dimensions, "region", "") != "" ? "-${each.value.dimensions.region}" : ""}"
   service       = each.value.service
   quota_id      = each.value.quota_id
   contact_email = var.contact_email
@@ -117,6 +175,17 @@ resource "google_cloud_quotas_quota_preference" "platforma" {
   ignore_safety_checks = "QUOTA_DECREASE_PERCENTAGE_TOO_HIGH"
 
   lifecycle {
+    # Never rename an existing preference in place. `name` is the immutable
+    # Cloud Quotas resource path, so changing it — e.g. a deployment created
+    # before the region-suffix scheme, whose state holds the bare
+    # "platforma-n2d-cpus-region" name — would force a replace. The API has no
+    # DELETE (a QuotaPreference can only be updated, never removed), so the
+    # destroy half of that replace fails and aborts the whole apply. Ignoring
+    # name changes keeps such deployments upgradeable: existing preferences keep
+    # whatever name they were created with, while brand-new ones are still
+    # created with the region-scoped name computed above.
+    ignore_changes = [name]
+
     precondition {
       condition     = var.contact_email != ""
       error_message = "contact_email is required when enable_quota_auto_request = true (Google sends approval notifications there)."

@@ -343,8 +343,18 @@ kueue:
     cpu: 64
     memory: 256Gi
     gpuMemory: 48Gi
-    gpuCpu: 48
-    gpuRam: 64Gi
+    # gpuCpu and gpuRam are intentionally left unset: no default can be correct,
+    # because they must match the operator's actual GPU node. A too-large default
+    # lets Kueue admit a GPU job that no single node can host, and the job stays
+    # Pending forever with no error. The `fail` guard in templates/deployment.yaml
+    # stops the render until the operator sets both. Example:
+    #   gpuCpu: 20
+    #   gpuRam: 60Gi
+
+  # -- Extra attempts for a job that fails because the node was too slow to pull its
+  # software image. A slow pull is transient, so a fresh pod may land on a node that
+  # already cached the image. When unset, the backend default (2) applies; 0 disables.
+  imagePullMaxRetries: 2
 
   # -- Enable OOM retries for K8s jobs.
   # Off by default: an out-of-memory job fails immediately with its original error.
@@ -380,12 +390,36 @@ kueue:
     # Routes GPU jobs via nodeAffinity on platforma.bio/gpu-memory-gib label.
     # K8s scheduler + Cluster Autoscaler pick the cheapest node with enough VRAM.
     # One job per GPU node (nvidia.com/gpu: 1 enforces exclusive access).
+    # Disabled by default so a vanilla `helm install` works out of the box on a
+    # cluster with no GPU nodes. The AWS/GCP Terraform and CloudFormation wrappers
+    # in infrastructure/ override this via their own `enable_gpu`/`EnableGpu`
+    # switch (default true), which provisions the GPU node groups AND flips this
+    # flag together — so their default intentionally differs from this one.
     gpu:
-      enabled: true
+      enabled: false
       tolerations:
         - key: nvidia.com/gpu
           value: present
           effect: NoSchedule
+      # -- Deploy the NVIDIA device plugin DaemonSet (+ its cluster-scoped RBAC)
+      # into kube-system, advertising nvidia.com/gpu so GPU jobs get scheduled.
+      #
+      # Keep true on AWS/GKE, where the chart owns GPU enablement end to end: the
+      # DaemonSet also carries the taint-remover sidecar that clears the
+      # nvidia.com/gpu-not-ready startup taint, without which an autoscaled GPU
+      # node never becomes schedulable.
+      #
+      # Set false when something else on the cluster already advertises
+      # nvidia.com/gpu — typically an on-premises cluster running the NVIDIA GPU
+      # Operator, which ships its own device plugin and additionally gates the node
+      # via nvidia-operator-validator. Two plugins on one node both claim
+      # /var/lib/kubelet/device-plugins and fight over registration.
+      #
+      # This flag is and kueue.dedicated.createClusterResources (which also gates 
+      # this DaemonSet) lie in separate dimensions: cluster that need cluster-scoped
+      # Kueue resources may not need automatic GPU drivers control.
+      devicePlugin:
+        enabled: true
 
   # -- Prevents resource fragmentation by checking node-level capacity before
   # admitting batch jobs. Requires ProvisioningRequest CRD and Cluster Autoscaler.
@@ -422,12 +456,13 @@ kueue:
         cpu: 256
         memory: 1024Gi
       # -- GPU quota (only used when kueue.pools.gpu.enabled=true)
-      # One job per GPU node — nvidia.com/gpu: 1 enforces exclusive access.
-      # gpu count = max concurrent GPU jobs across all tiers.
+      # gpu = max concurrent GPU jobs across all tiers.
+      # The flavor's cpu/memory quota is DERIVED in kueue-clusterqueues.yaml as
+      # gpu * maxJobResources.gpuCpu and gpu * maxJobResources.gpuRam, so it
+      # always matches the per-job GPU ceiling. Do NOT set cpu/memory here —
+      # a separate value would silently drift from the ceiling and starve the queue.
       gpu:
         gpu: 8
-        cpu: 32
-        memory: 128Gi
 
   # -- Shared mode configuration
   # Point at existing Kueue resources managed outside this chart.

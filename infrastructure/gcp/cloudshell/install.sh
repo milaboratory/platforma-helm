@@ -21,6 +21,40 @@ INSTALL_TMPDIR="$(mktemp -d -t platforma-im-XXXX)"
 trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
 
 # -----------------------------------------------------------------------------
+# Normalise identifier-style inputs to lowercase (silent)
+# -----------------------------------------------------------------------------
+# GCP project IDs, IM deployment names, regions/zones, the Cloud DNS zone and
+# domain names, and the size/auth enums are lowercase-only. Silently lowercasing
+# them avoids confusing late failures — e.g. PROJECT_ID=MiLab-Foo makes 'gcloud
+# billing projects describe' return INVALID_ARGUMENT, surfacing as a bogus
+# "billing is NOT enabled". Case-sensitive inputs (secrets, LDAP DNs, OAuth
+# client IDs/secrets, htpasswd hashes, data-library blobs, the license key) are
+# deliberately excluded.
+#
+# Called TWICE (see main): once now, so any env-provided values are normalised
+# before pre-flight (PROJECT_ID feeds the billing check); and again after
+# collect_inputs, so INTERACTIVELY-PROMPTED values are normalised too — a
+# prompt-only run would otherwise bypass this and hit the late failures.
+normalize_identifier_inputs() {
+  local _lc_var _lc_val
+  for _lc_var in PROJECT_ID DNS_ZONE_PROJECT DEPLOYMENT_NAME IM_LOCATION REGION \
+                 ZONE_SUFFIX DEPLOYMENT_SIZE AUTH_METHOD DOMAIN_NAME DNS_ZONE_NAME; do
+    _lc_val="${!_lc_var:-}"
+    [[ -n "${_lc_val}" ]] && printf -v "${_lc_var}" '%s' "${_lc_val,,}"
+  done
+}
+normalize_identifier_inputs
+
+# Per-SKU GPU outcome, populated during tfvars discovery/pre-flight and read by
+# print_outputs so the final summary reports what actually happened per SKU
+# (provisioned / quota-deferred / not offered) rather than a fixed claim.
+# Initialised here so print_outputs can reference them safely under `set -u`
+# even when the GPU code path never runs (ENABLE_GPU=false).
+GPU_SKUS_PROVISIONED=()
+GPU_SKUS_DEFERRED=()
+GPU_SKUS_UNAVAILABLE=()
+
+# -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
 
@@ -175,12 +209,20 @@ preflight() {
   gcloud auth application-default set-quota-project "${PROJECT_ID}" 2>/dev/null || true
   info "ADC quota project bound to ${PROJECT_ID}"
 
-  # Enable infra-manager + cloud-quotas APIs upfront — TF will enable the rest
-  # but these two are needed for the IM call itself.
-  info "Enabling required bootstrap APIs (config, cloudquotas)…"
+  # Enable the APIs the driver itself calls BEFORE Terraform runs — TF enables
+  # the rest, but these are needed for the IM call (config, cloudquotas), the
+  # deployer-SA create (iam), and the master-secret pre-stage (secretmanager).
+  # Enabling them here is essential: without it, the first gcloud call against a
+  # disabled API prints an interactive "enable this API? (y/N)" prompt to stderr
+  # and blocks on stdin — and callers that redirect stderr (e.g. the
+  # 'gcloud secrets describe … >/dev/null 2>&1' probe) hang with no visible
+  # output.
+  info "Enabling required bootstrap APIs (config, cloudquotas, iam, secretmanager)…"
   gcloud services enable \
     config.googleapis.com \
     cloudquotas.googleapis.com \
+    iam.googleapis.com \
+    secretmanager.googleapis.com \
     --project="${PROJECT_ID}" --quiet
 
   # Provision the Infrastructure Manager service identity (
@@ -203,7 +245,21 @@ preflight() {
 
 collect_inputs() {
   bold "Deployment inputs"
-  prompt_var DEPLOYMENT_NAME "Deployment name (lowercase letters/digits/dashes)"   "platforma"
+  prompt_var DEPLOYMENT_NAME "Deployment name (lowercase letters/digits/dashes, max 17 chars)"   "platforma"
+  DEPLOYMENT_NAME="${DEPLOYMENT_NAME,,}"   # lowercase a prompted value before validating (main re-normalises the rest)
+  # The cluster is named "<DEPLOYMENT_NAME>-cluster" and the infra module caps
+  # cluster_name at 25 chars (GKE limit), so DEPLOYMENT_NAME must be <= 17 chars
+  # and lowercase-alphanumeric/hyphen starting with a letter or digit. Validate
+  # up front — otherwise a too-long name only fails ~3 min into 'terraform plan'.
+  if [[ ! "${DEPLOYMENT_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    red "DEPLOYMENT_NAME='${DEPLOYMENT_NAME}' is invalid — use lowercase letters, digits and hyphens, starting with a letter or digit."
+    exit 1
+  fi
+  if (( ${#DEPLOYMENT_NAME} > 17 )); then
+    red "DEPLOYMENT_NAME='${DEPLOYMENT_NAME}' is ${#DEPLOYMENT_NAME} chars — max 17."
+    red "  The GKE cluster is named '${DEPLOYMENT_NAME}-cluster', and the module caps that at 25 chars."
+    exit 1
+  fi
   prompt_var IM_LOCATION     "IM deployment region"                                "${IM_LOCATION_DEFAULT}"
   prompt_var REGION          "GCP region for the cluster"                          "europe-west1"
   prompt_var ZONE_SUFFIX     "Zone suffix (a/b/c/d) for zonal resources"           "b"
@@ -745,6 +801,14 @@ EOF
       red "Invalid auth_method '${AUTH_METHOD}' — must be htpasswd, ldap, google, entra or oidc."; exit 1
       ;;
   esac
+
+  # Admin users — applies to every auth method. Grants the admin role to logins
+  # matching a full-match regexp (Platforma's --admin-user flag; admin role has
+  # the same access as the controller role). For SSO the login is the email.
+  # Semicolon-separated for multiple patterns; each becomes one --admin-user
+  # flag, wired through the module's additional_extra_args (see
+  # build_tfvars_json_full). Metacharacters in a literal login must be escaped.
+  prompt_var ADMIN_USERS "Admin logins — full-match regexp, SEMICOLON-separated for multiple (e.g. alice@corp\.com;.*@admins\.corp\.com), empty for none" ""
   echo
 }
 
@@ -837,6 +901,12 @@ declare -A PRESET_N2_CPUS=(        [small]=512  [medium]=1024 [large]=2048 [xlar
 declare -A PRESET_PD_SSD_GB=(      [small]=4096 [medium]=8192 [large]=16384 [xlarge]=32768 )
 declare -A PRESET_INSTANCES=(      [small]=32   [medium]=48   [large]=64   [xlarge]=128   )
 declare -A PRESET_FILESTORE_GB=(   [small]=1024 [medium]=2048 [large]=4096 [xlarge]=8192  )
+# Per-region GPU-count quotas. Values mirror presets.tf
+# gpu_l4_max_nodes_per_shape / gpu_rtx_pro_6000_max_nodes_per_shape (each GPU
+# node carries 1 GPU, so the per-shape node ceiling is the GPU count). Only
+# requested by quotas.tf when ENABLE_GPU=true.
+declare -A PRESET_GPU_L4=(           [small]=8 [medium]=16 [large]=32 [xlarge]=64 )
+declare -A PRESET_GPU_RTX_PRO_6000=( [small]=4 [medium]=8  [large]=16 [xlarge]=32 )
 
 # Every quota preference terraform's quotas.tf creates. The TF resource names
 # them platforma-<preset-key-with-dashes> (cpus_global → platforma-cpus-global).
@@ -852,6 +922,11 @@ ALL_QUOTA_PRESET_KEYS=(
   instances_region
   filestore_zonal_region
   in_use_addresses_region
+  # GPU keys: quotas.tf only creates these when enable_gpu=true, but they are
+  # listed unconditionally so the adopt-by-skip probe finds them on re-deploy
+  # into a project that previously ran a GPU-enabled install.
+  gpu_l4_region
+  gpu_rtx_pro_6000_region
 )
 
 # What value each preset key needs for the chosen DEPLOYMENT_SIZE.
@@ -864,6 +939,8 @@ required_for_preset_key() {
     pd_ssd_region)           echo "${PRESET_PD_SSD_GB[$DEPLOYMENT_SIZE]}"     ;;
     instances_region)        echo "${PRESET_INSTANCES[$DEPLOYMENT_SIZE]}"     ;;
     filestore_zonal_region)  echo "${PRESET_FILESTORE_GB[$DEPLOYMENT_SIZE]}"  ;;
+    gpu_l4_region)           echo "${PRESET_GPU_L4[$DEPLOYMENT_SIZE]}"           ;;
+    gpu_rtx_pro_6000_region) echo "${PRESET_GPU_RTX_PRO_6000[$DEPLOYMENT_SIZE]}" ;;
   esac
 }
 
@@ -909,7 +986,13 @@ detect_existing_quota_prefs() {
   local has_warning=0 found=0
   local preset_key name desc preferred required
   for preset_key in "${ALL_QUOTA_PRESET_KEYS[@]}"; do
+    # MUST match the resource name quotas.tf computes, or the idempotency check
+    # probes a name terraform never created and a re-run then fails with
+    # "QuotaPreference ... already exist". quotas.tf appends the region to every
+    # region-dimensioned preference (all keys except the global cpus_global);
+    # here that maps exactly to the '*_region' suffix convention.
     name="platforma-${preset_key//_/-}"
+    [[ "${preset_key}" == *_region ]] && name="${name}-${REGION}"
     desc="$(gcloud beta quotas preferences describe "${name}" \
               --project="${PROJECT_ID}" --billing-project="${PROJECT_ID}" \
               --format=json 2>/dev/null)" || desc=""
@@ -969,12 +1052,19 @@ detect_existing_quota_prefs() {
 #   GCS_FORCE_DESTROY           tfvar
 #   ENABLE_DEMO                 tfvar (set via prompt_var with default 'true')
 #   LDAP_START_TLS              tfvar (set via prompt_var when AUTH_METHOD=ldap)
-#   ENABLE_GPU                  tfvar (hidden — unset = false; opt-in via env)
+#   ENABLE_GPU                  tfvar (opt-out — unset = true; set false to disable)
 #   SHOW_USER_LIST              tfvar (hidden — unset = true; opt-out via env)
 # -----------------------------------------------------------------------------
 
 normalize_boolean_inputs() {
   local var val
+
+  # GPU support is opt-out: an unset ENABLE_GPU means enabled. Apply the
+  # default here, before the generic empty-skip loop below, so an unset value
+  # normalizes to 'true' and the GPU block (zone discovery + enable_gpu tfvar)
+  # runs by default. Set ENABLE_GPU=false to opt out.
+  ENABLE_GPU="${ENABLE_GPU:-true}"
+
   for var in ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS ENABLE_GPU SHOW_USER_LIST ACCEPT_QUOTA_WARNINGS ASSUME_YES; do
     val="${!var:-}"
     [[ -z "${val}" ]] && continue
@@ -1026,7 +1116,14 @@ declare -A QUOTA_PRESET_TO_SERVICE=(
   [pd_ssd_region]="compute.googleapis.com"
   [instances_region]="compute.googleapis.com"
   [filestore_zonal_region]="file.googleapis.com"
+  [gpu_l4_region]="compute.googleapis.com"
 )
+# gpu_rtx_pro_6000_region is intentionally omitted from these pre-flight maps:
+# its quota_id is GPUS-PER-GPU-FAMILY-per-project-region, scoped by a
+# gpu_family dimension (NVIDIA_RTX_PRO_6000) that the region-only effective-
+# limit probe below can't express. quotas.tf still requests it; skipping the
+# >10% pre-check for it is harmless (same trade-off as in_use_addresses_region,
+# and the apply-time ignore_safety_checks covers the decrease case anyway).
 declare -A QUOTA_PRESET_TO_QUOTAID=(
   [cpus_global]="CPUS-ALL-REGIONS-per-project"
   [n2d_cpus_region]="N2D-CPUS-per-project-region"
@@ -1034,6 +1131,7 @@ declare -A QUOTA_PRESET_TO_QUOTAID=(
   [pd_ssd_region]="SSD-TOTAL-GB-per-project-region"
   [instances_region]="INSTANCES-per-project-region"
   [filestore_zonal_region]="EnterpriseStorageGibPerRegion"
+  [gpu_l4_region]="NVIDIA-L4-GPUS-per-project-region"
 )
 # Whether the quota's dimensions block needs region=${REGION}. Empty = global.
 declare -A QUOTA_PRESET_TO_DIMREGION=(
@@ -1043,6 +1141,7 @@ declare -A QUOTA_PRESET_TO_DIMREGION=(
   [pd_ssd_region]="1"
   [instances_region]="1"
   [filestore_zonal_region]="1"
+  [gpu_l4_region]="1"
 )
 
 # Fetch the current effective limit for a preset_key in the deployment's
@@ -1128,6 +1227,46 @@ fetch_effective_quota_for_preset_key() {
       '.dimensionsInfos[]? | select(.dimensions == null or (.dimensions | has("region") | not)) | .details.value' \
       2>/dev/null | head -1)"
     [[ -z "${v}" ]] && v="$(echo "${json}" | jq -r '.dimensionsInfos[0]?.details.value' 2>/dev/null)"
+  fi
+  echo "${v}"
+}
+
+# Current effective limit for a per-GPU-family quota (RTX PRO 6000 et al., whose
+# quota is GPUS-PER-GPU-FAMILY-per-project-region scoped by a gpu_family
+# dimension that fetch_effective_quota_for_preset_key's region-only filter can't
+# express). Echoes the numeric value for (REGION, gpu_family), or empty when
+# unreadable (caller then proceeds without gating).
+fetch_effective_gpu_family_quota() {
+  local gpu_family="$1"
+  local service="compute.googleapis.com"
+  local quota_id="GPUS-PER-GPU-FAMILY-per-project-region"
+  [[ -z "${QUOTAS_CLI:-}" ]] && return 0
+  local json
+  if [[ "${QUOTAS_CLI_FLAVOR}" == "beta" ]]; then
+    json="$(gcloud beta quotas info describe "${quota_id}" \
+      --service="${service}" \
+      --project="${PROJECT_ID}" --billing-project="${PROJECT_ID}" \
+      --format=json 2>/dev/null)" || return 0
+  else
+    json="$(gcloud quotas info describe \
+      "services/${service}/quotaInfos/${quota_id}" \
+      --project="${PROJECT_ID}" --billing-project="${PROJECT_ID}" \
+      --format=json 2>/dev/null)" || return 0
+  fi
+  [[ -z "${json}" ]] && return 0
+  # Prefer the (region, family) entry; fall back to the family-only default
+  # entry (no region dimension). details.value is often null for a premium
+  # family the project has never been granted (e.g. RTX PRO 6000 on a fresh
+  # project) — treat null as 0 so the pre-flight requests it and runs GPU-less,
+  # rather than reading it as "unreadable" and creating pools that never scale.
+  local v
+  v="$(echo "${json}" | jq -r --arg r "${REGION}" --arg f "${gpu_family}" \
+    '.dimensionsInfos[]? | select(.dimensions.region == $r and .dimensions.gpu_family == $f) | (.details.value // 0)' \
+    2>/dev/null | head -1)"
+  if [[ -z "${v}" ]]; then
+    v="$(echo "${json}" | jq -r --arg f "${gpu_family}" \
+      '.dimensionsInfos[]? | select((.dimensions | has("region") | not) and .dimensions.gpu_family == $f) | (.details.value // 0)' \
+      2>/dev/null | head -1)"
   fi
   echo "${v}"
 }
@@ -1351,6 +1490,14 @@ build_tfvars_json_full() {
        auth_method:              $auth_method
      }')"
 
+  # Cross-project Cloud DNS zone. Only set when the managed zone lives in a
+  # different project (DNS_ZONE_PROJECT); empty/unset leaves it out and TF
+  # defaults dns_zone_project to project_id (same-project zone). The infra
+  # module's dns_tls.tf keys the DNS records off this value.
+  if [[ -n "${DNS_ZONE_PROJECT:-}" ]]; then
+    doc="$(echo "${doc}" | jq --arg v "${DNS_ZONE_PROJECT}" '. + {dns_zone_project: $v}')"
+  fi
+
   # Master secret reference — install.sh always pre-stages the secret in Secret
   # Manager (see prestage_master_secret) and passes only the name. Required by
   # terraform-platforma; TF reads the latest version via the Google provider.
@@ -1419,6 +1566,16 @@ build_tfvars_json_full() {
        }')"
   fi
 
+  # Admin users → --admin-user flags. Split ADMIN_USERS on ';' into one
+  # --admin-user=<regexp> entry each and pass them through the module's
+  # additional_extra_args (appended to the server's extraArgs). jq trims each
+  # entry and JSON-escapes regexp metacharacters. Same convention as the
+  # CloudFormation AdminUsers parameter.
+  if [[ -n "${ADMIN_USERS:-}" ]]; then
+    doc="$(echo "${doc}" | jq --arg raw "${ADMIN_USERS}" \
+      '. + {additional_extra_args: ($raw | split(";") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0)) | map("--admin-user=" + .))}')"
+  fi
+
   # enable_quota_auto_request — opt out of QuotaPreference creation entirely.
   # Set ENABLE_QUOTA_AUTO_REQUEST=false on long-lived projects whose quotas
   # are already above what the deployment_size preset requests; GCP rejects
@@ -1466,19 +1623,19 @@ build_tfvars_json_full() {
     doc="$(echo "${doc}" | jq --argjson v "${SHOW_USER_LIST}" '. + {show_user_list: $v}')"
   fi
 
-  # Hidden override: provision GPU support (L4 + RTX PRO 6000 node pools +
-  # Kueue GPU pool). Set ENABLE_GPU=true to enable. Default false — GPU path
-  # stays dormant. Opt-in via env var only because the NVIDIA_*_GPUS quotas
-  # aren't auto-requested (operator must arrange them separately).
+  # Provision GPU support (L4 + RTX PRO 6000 node pools + Kueue GPU pool).
+  # ENABLE_GPU defaults to true (opt-out); set ENABLE_GPU=false to skip.
   #
-  # When enabled, also runs gcptest.sh discover for each SKU to find the
-  # zones in var.region where the full machine-type ladder is available,
-  # and embeds the resulting zone lists in gpu_l4_node_locations /
-  # gpu_rtx_pro_6000_node_locations. Discovery uses gcloud (available
-  # locally in CloudShell); IM's tf-runner doesn't ship gcloud, which is
-  # why discovery has to happen here rather than at terraform plan time.
-  # If the region has no zone with a SKU's full ladder, discover exits
-  # non-zero and we abort the deploy with a clear error.
+  # When enabled, runs gcptest.sh discover for each SKU to find, per machine
+  # shape, the zones in var.region that offer it, and embeds the result in the
+  # gpu_l4_pools / gpu_rtx_pro_6000_pools tfvars ({shape: [zones]} maps).
+  # Discovery uses gcloud (available locally / in CloudShell); IM's tf-runner
+  # doesn't ship gcloud, which is why discovery happens here, not at plan time.
+  #
+  # Adaptive + NON-fatal: a shape offered in no zone is dropped; a SKU offered
+  # nowhere is skipped (its pool map is set to {} so terraform disables just
+  # that SKU's pools). If NEITHER SKU is available, GPU is turned off and the
+  # install continues CPU-only. The cluster/CPU path never aborts over GPU.
   if [[ -n "${ENABLE_GPU:-}" ]]; then
     doc="$(echo "${doc}" | jq --argjson v "${ENABLE_GPU}" '. + {enable_gpu: $v}')"
 
@@ -1489,36 +1646,142 @@ build_tfvars_json_full() {
       fi
       local discover_stderr
       discover_stderr="$(mktemp)"
+      local gpu_skus_available=0
+      # Script-global (NOT local) so print_outputs can report the true per-SKU
+      # outcome instead of a hard-coded "L4 + RTX submitted" claim.
+      GPU_SKUS_PROVISIONED=()   # pools created (quota sufficient or unreadable)
+      GPU_SKUS_DEFERRED=()      # offered but quota short → increase requested, no pools
+      GPU_SKUS_UNAVAILABLE=()   # region doesn't offer the SKU at all
+      local sku_label
       for sku in nvidia-l4 nvidia-rtx-pro-6000; do
-        info "Discovering ${sku} zones in region ${REGION}…"
-        local discover_stdout zones_csv
-        # Use `if ! var="$(...)"` rather than a bare assignment: under `set -e` a
-        # failing command substitution in a plain assignment aborts the script
-        # immediately, so `$?` capture and the error report below never run and
-        # discover's stderr is swallowed — the script dies silently. The `if`
-        # condition suspends errexit so we can surface the real error.
-        if ! discover_stdout="$(printf '{"project":"%s","region":"%s","sku":"%s"}' "${PROJECT_ID}" "${REGION}" "${sku}" | "${gcptest}" discover 2>"${discover_stderr}")"; then
-          red "GPU zone discovery failed for ${sku} in region ${REGION}:"
-          red "$(cat "${discover_stderr}")"
-          rm -f "${discover_stderr}"
-          exit 1
-        fi
-        zones_csv="$(printf '%s' "${discover_stdout}" | jq -r .zones)"
-        if [[ -z "${zones_csv}" || "${zones_csv}" == "null" ]]; then
-          red "discover returned empty zone list for ${sku} in ${REGION}"
-          rm -f "${discover_stderr}"
-          exit 1
-        fi
-        info "  → ${sku}: ${zones_csv}"
-        local var_name
         case "${sku}" in
-          nvidia-l4)           var_name=gpu_l4_node_locations ;;
-          nvidia-rtx-pro-6000) var_name=gpu_rtx_pro_6000_node_locations ;;
+          nvidia-l4)           sku_label="NVIDIA L4" ;;
+          nvidia-rtx-pro-6000) sku_label="NVIDIA RTX PRO 6000" ;;
         esac
-        local zones_json; zones_json="$(printf '%s' "${zones_csv}" | jq -R 'split(",")')"
-        doc="$(echo "${doc}" | jq --argjson v "${zones_json}" --arg k "${var_name}" '. + {($k): $v}')"
+        info "Discovering ${sku} shapes/zones in region ${REGION}…"
+        local discover_stdout discover_rc=0 pools_json var_name
+        case "${sku}" in
+          nvidia-l4)           var_name=gpu_l4_pools ;;
+          nvidia-rtx-pro-6000) var_name=gpu_rtx_pro_6000_pools ;;
+        esac
+        # `|| discover_rc=$?` is REQUIRED: under `set -e`, a plain assignment
+        # from a failing command substitution exits the script immediately —
+        # before the rc is inspected — so the captured error never prints.
+        discover_stdout="$(printf '{"project":"%s","region":"%s","sku":"%s"}' "${PROJECT_ID}" "${REGION}" "${sku}" | "${gcptest}" discover 2>"${discover_stderr}")" || discover_rc=$?
+        pools_json="{}"
+        if [[ ${discover_rc} -eq 0 ]]; then
+          pools_json="$(printf '%s' "${discover_stdout}" | jq -c '.pools // {}')"
+        fi
+        if [[ ${discover_rc} -ne 0 || "${pools_json}" == "{}" || -z "${pools_json}" ]]; then
+          warn "${sku} not available in region ${REGION} — skipping its GPU pools."
+          [[ -s "${discover_stderr}" ]] && warn "  $(head -n1 "${discover_stderr}")"
+          # Empty map tells terraform to disable this SKU's pools (see
+          # gpu_*_enabled in terraform-infra/presets.tf).
+          doc="$(echo "${doc}" | jq --arg k "${var_name}" '. + {($k): {}}')"
+          GPU_SKUS_UNAVAILABLE+=("${sku_label}")
+          continue
+        fi
+        info "  → ${sku}: $(printf '%s' "${pools_json}" | jq -r 'to_entries|map("\(.key)[\(.value|length)z]")|join(", ")')"
+        doc="$(echo "${doc}" | jq --argjson v "${pools_json}" --arg k "${var_name}" '. + {($k): $v}')"
+        gpu_skus_available=$(( gpu_skus_available + 1 ))
       done
       rm -f "${discover_stderr}"
+
+      # --- Per-SKU GPU quota pre-flight ------------------------------------
+      # For each SKU the region offers, ALWAYS request its quota increase
+      # (request_gpu_*_quota tfvar — decoupled from pool creation in quotas.tf).
+      # Then compare current effective quota to the deployment's need: if short,
+      # run that SKU GPU-less NOW (empty its pool map) and tell the operator how
+      # to enable it once the increase lands. Unreadable quota => proceed and let
+      # the pods pend if truly short (the read is best-effort, like the CPU/RAM
+      # pre-flight). Runs before the gpuMax computation below so the ceilings
+      # reflect only the SKUs actually provisioned.
+      [[ -z "${QUOTAS_CLI:-}" ]] && resolve_quotas_cli
+      local -A gpu_l4_need=([small]=8 [medium]=16 [large]=32 [xlarge]=64)
+      local -A gpu_rtx_need=([small]=4 [medium]=8 [large]=16 [xlarge]=32)
+      # Track requests via the Cloud Quotas API, not the console: the
+      # /iam-admin/quotas "Increase requests" tab never lists these
+      # QuotaPreference objects (see the note in print_outputs).
+      local quota_track_cmd="gcloud beta quotas preferences list --project=${PROJECT_ID} --format='table(name.basename(),quotaConfig.preferredValue,dimensions,reconciling)'"
+      local pf_sku pf_var pf_flag pf_need pf_have pf_cur pf_cur_int pf_label
+      for pf_sku in nvidia-l4 nvidia-rtx-pro-6000; do
+        case "${pf_sku}" in
+          nvidia-l4)
+            pf_var=gpu_l4_pools; pf_flag=request_gpu_l4_quota; pf_label="NVIDIA L4"
+            pf_need="${gpu_l4_need[${DEPLOYMENT_SIZE}]:-8}" ;;
+          nvidia-rtx-pro-6000)
+            pf_var=gpu_rtx_pro_6000_pools; pf_flag=request_gpu_rtx_pro_6000_quota; pf_label="NVIDIA RTX PRO 6000"
+            pf_need="${gpu_rtx_need[${DEPLOYMENT_SIZE}]:-4}" ;;
+        esac
+        # Skip SKUs the region doesn't offer (empty pool map from discovery).
+        pf_have="$(printf '%s' "${doc}" | jq -r --arg k "${pf_var}" '(.[$k] // {}) | length')"
+        [[ "${pf_have}" == "0" ]] && continue
+        # SKU is offered → request its quota increase regardless of sufficiency.
+        doc="$(printf '%s' "${doc}" | jq --arg k "${pf_flag}" '. + {($k): true}')"
+        # Current effective quota (L4: dedicated per-region; RTX: per-GPU-family).
+        if [[ "${pf_sku}" == "nvidia-l4" ]]; then
+          pf_cur="$(fetch_effective_quota_for_preset_key gpu_l4_region)"
+        else
+          pf_cur="$(fetch_effective_gpu_family_quota NVIDIA_RTX_PRO_6000)"
+        fi
+        if [[ -z "${pf_cur}" ]]; then
+          info "  ${pf_sku}: current quota unreadable — proceeding (increase requested)."
+          GPU_SKUS_PROVISIONED+=("${pf_label}")
+          continue
+        fi
+        pf_cur_int="${pf_cur%.*}"   # "8.0" -> "8"
+        if (( pf_cur_int < pf_need )); then
+          warn "${pf_sku}: current GPU quota ${pf_cur_int} < needed ${pf_need} for size ${DEPLOYMENT_SIZE}."
+          warn "  → Increase requested; running WITHOUT ${pf_sku} GPU for now."
+          warn "    Track approval with:  ${quota_track_cmd}"
+          warn "    Once granted, re-run this installer to add ${pf_sku} pools (ENABLE_GPU stays on)."
+          # Empty this SKU's pools (no pool created); request_gpu_*_quota stays true.
+          doc="$(printf '%s' "${doc}" | jq --arg k "${pf_var}" '. + {($k): {}}')"
+          gpu_skus_available=$(( gpu_skus_available - 1 ))
+          GPU_SKUS_DEFERRED+=("${pf_label}")
+        else
+          info "  ${pf_sku}: quota ${pf_cur_int} ≥ needed ${pf_need} ✓"
+          GPU_SKUS_PROVISIONED+=("${pf_label}")
+        fi
+      done
+      # ---------------------------------------------------------------------
+
+      if (( gpu_skus_available == 0 )); then
+        warn "No GPU SKUs (L4 or RTX PRO 6000) are available in region ${REGION}."
+        warn "  → Continuing WITHOUT GPU. Pick a GPU-carrying region, or set"
+        warn "    ENABLE_GPU=false to silence this. CPU workloads are unaffected."
+        # Propagate to the post-install summary (print_outputs) and the doc.
+        ENABLE_GPU=false
+        doc="$(echo "${doc}" | jq '. + {enable_gpu: false}')"
+      else
+        # Derive the GPU job ceilings (kueue.maxJobResources.gpuCpu/gpuRam/
+        # gpuMemory) from the LARGEST GPU node actually provisioned above —
+        # highest per-GPU VRAM, tie-break host CPU. GPU jobs are placed by VRAM,
+        # and the highest-VRAM jobs can run only on that node, so the cpu/ram
+        # caps must fit it. cpu = vCPU-2 (headroom for GKE + nvidia DaemonSets);
+        # ram = GKE-allocatable(memory)-1GiB; memory = the node's per-GPU VRAM.
+        # The chart REQUIRES these when the GPU Kueue pool is enabled.
+        #   GPU_SHAPE_SPECS: shape -> {cpu(vCPU), mem(MiB capacity), vram(GiB/GPU)}
+        local gpu_shape_specs='{"g2-standard-4":{"cpu":4,"mem":16384,"vram":24},"g2-standard-8":{"cpu":8,"mem":32768,"vram":24},"g2-standard-12":{"cpu":12,"mem":49152,"vram":24},"g2-standard-16":{"cpu":16,"mem":65536,"vram":24},"g2-standard-32":{"cpu":32,"mem":131072,"vram":24},"g4-standard-6":{"cpu":6,"mem":22528,"vram":96},"g4-standard-12":{"cpu":12,"mem":46080,"vram":96},"g4-standard-24":{"cpu":24,"mem":92160,"vram":96},"g4-standard-48":{"cpu":48,"mem":184320,"vram":96}}'
+        local gpu_max_json
+        gpu_max_json="$(printf '%s' "${doc}" | jq -c --argjson specs "${gpu_shape_specs}" '
+          (((.gpu_l4_pools // {}) + (.gpu_rtx_pro_6000_pools // {})) | keys) as $shapes
+          | ($shapes | map($specs[.] // empty) | max_by([.vram, .cpu])) as $top
+          | if $top == null then {} else
+              ($top.mem) as $cap
+              | (0.25*([$cap,4096]|min)
+                 + 0.20*([([$cap-4096,0]|max),4096]|min)
+                 + 0.10*([([$cap-8192,0]|max),8192]|min)
+                 + 0.06*([([$cap-16384,0]|max),114688]|min)
+                 + 0.02*([$cap-131072,0]|max)) as $res
+              | ((($cap-$res-100)/1024)|floor-1) as $ramgi
+              | { gpu_max_job_cpu: ($top.cpu-2),
+                  gpu_max_job_ram: "\($ramgi)Gi",
+                  gpu_max_job_memory: "\($top.vram)Gi" }
+            end')"
+        doc="$(printf '%s' "${doc}" | jq --argjson m "${gpu_max_json}" '. + $m')"
+        info "  GPU job ceilings (largest provisioned node): $(printf '%s' "${gpu_max_json}" | jq -r '"cpu=\(.gpu_max_job_cpu) ram=\(.gpu_max_job_ram) gpuMemory=\(.gpu_max_job_memory)"')"
+      fi
     fi
   fi
 
@@ -1531,8 +1794,8 @@ build_tfvars_json_full() {
   fi
 
   # Helm chart override — when both env vars are set, the deployment pulls the
-  # chart from an OCI registry (typically the test GAR repo at
-  # europe-west3-docker.pkg.dev/mik8s-euwe3-prod-gke-project/platforma) instead
+  # chart from an OCI registry (typically a test GAR repo at
+  # europe-west3-docker.pkg.dev/<project-id>/platforma) instead
   # of the chart bundled from the local checkout. submit_deployment() skips the
   # chart-bundling step when HELM_CHART_REPOSITORY is set.
   if [[ -n "${HELM_CHART_REPOSITORY:-}" ]]; then
@@ -1599,7 +1862,8 @@ build_tfvars_json_infra() {
     ingress_enabled, domain_name, dns_zone_name, dns_zone_project,
     enable_google_batch,
     enable_quota_auto_request, contact_email, skip_quota_requests,
-    enable_gpu, gpu_l4_node_locations, gpu_rtx_pro_6000_node_locations,
+    enable_gpu, gpu_l4_pools, gpu_rtx_pro_6000_pools,
+    request_gpu_l4_quota, request_gpu_rtx_pro_6000_quota,
     kueue_max_job_cpu, kueue_max_job_memory,
     kueue_batch_queue_cpu, kueue_batch_queue_memory
   } | with_entries(select(.value != null))' "${full}" > "${out}"
@@ -1628,6 +1892,7 @@ build_tfvars_json_platforma() {
         kueue_batch_queue_cpu, kueue_batch_queue_memory,
         enable_gpu,
         kueue_gpu_queue_cpu, kueue_gpu_queue_memory, kueue_gpu_queue_count,
+        gpu_max_job_cpu, gpu_max_job_ram, gpu_max_job_memory,
         batch_pool_max_nodes_overrides, ui_pool_max_nodes, workspace_capacity_gb,
         license_key, platforma_chart_version, helm_chart_repository,
         platforma_image_override, deploy_platforma,
@@ -1640,7 +1905,8 @@ build_tfvars_json_platforma() {
         oidc_user_id_claim, oidc_groups_claim,
         ldap_server, ldap_start_tls, ldap_bind_dn,
         ldap_search_rules, ldap_search_user, ldap_search_password,
-        enable_demo_data_library, data_libraries
+        enable_demo_data_library, data_libraries,
+        additional_extra_args
       }
       | with_entries(select(.value != null))
       | . + {gcs_bucket: $gcs_bucket, filestore_instance_name: $filestore_instance}' \
@@ -1764,6 +2030,13 @@ submit_deployment() {
 EOF
   echo
 
+  # Pin the project for source staging. 'apply --local-source' uploads the
+  # bundle to gs://<project>_infra_manager_staging, and gcloud derives <project>
+  # from the ACTIVE core/project config — NOT from the deployment path. If the
+  # operator's active project differs from PROJECT_ID (e.g. they pointed it at
+  # the DNS-zone project during setup), gcloud stages into the wrong project's
+  # bucket and fails with 'storage.buckets.get denied'. Pin it for this call.
+  CLOUDSDK_CORE_PROJECT="${PROJECT_ID}" \
   gcloud infra-manager deployments apply "${deployment_path}" \
     --local-source="${work_dir}" \
     --service-account="projects/${PROJECT_ID}/serviceAccounts/${IM_SA_EMAIL}" \
@@ -1898,6 +2171,66 @@ print_outputs() {
   3. Open the Platforma Desktop App, click "Add Connection" → "Remote Server",
      enter https://${DOMAIN_NAME}, log in as 'platforma' with the password from step 2.
 EOF
+
+  # GPU status — data-driven from the per-SKU outcome recorded during tfvars
+  # build (GPU_SKUS_PROVISIONED / _DEFERRED / _UNAVAILABLE). Printed whenever any
+  # GPU work was attempted, even if ENABLE_GPU was flipped off because every
+  # offered SKU ended up quota-deferred.
+  local n_prov=${#GPU_SKUS_PROVISIONED[@]}
+  local n_def=${#GPU_SKUS_DEFERRED[@]}
+  local n_unavail=${#GPU_SKUS_UNAVAILABLE[@]}
+  if (( n_prov + n_def + n_unavail > 0 )); then
+    echo
+    bold "GPU status"
+    # Track quota requests via the Cloud Quotas API (what the installer actually
+    # submits). Deliberately NOT the console link: the /iam-admin/quotas page's
+    # "Increase requests" (qirs) tab is the LEGACY request system and never lists
+    # these QuotaPreference objects, which repeatedly sends operators looking in
+    # the wrong place. This command is the source of truth.
+    local quota_track_cmd="gcloud beta quotas preferences list --project=${PROJECT_ID} --format='table(name.basename(),quotaConfig.preferredValue,dimensions,reconciling)'"
+    if (( n_prov > 0 )); then
+      cat <<EOF
+  Provisioned (sufficient quota): $(printf '%s, ' "${GPU_SKUS_PROVISIONED[@]}" | sed 's/, $//')
+    Node pools are created scale-to-zero; a node comes up on the first GPU pod.
+EOF
+    fi
+    if (( n_def > 0 )); then
+      if [[ "${ENABLE_QUOTA_AUTO_REQUEST:-true}" != "false" ]]; then
+        cat <<EOF
+
+  Quota-deferred (increase requested): $(printf '%s, ' "${GPU_SKUS_DEFERRED[@]}" | sed 's/, $//')
+    These SKUs are offered in ${REGION} but current quota is below this
+    deployment's need, so their pools were NOT created this install. A regional
+    quota increase was submitted for each. Small bumps auto-approve in seconds;
+    larger ones need Google review (hours to a few days) — Google emails
+    ${CONTACT_EMAIL} on approval.
+    Track the request(s) with:
+      ${quota_track_cmd}
+    Once granted, RE-RUN this installer to add the pools (ENABLE_GPU stays on).
+EOF
+      else
+        cat <<EOF
+
+  Quota-deferred: $(printf '%s, ' "${GPU_SKUS_DEFERRED[@]}" | sed 's/, $//')
+    Offered in ${REGION} but current quota is too low, and quota auto-request is
+    OFF (ENABLE_QUOTA_AUTO_REQUEST=false). Request these regional GPU quotas
+    manually, then re-run the installer. Inspect current requests with:
+      ${quota_track_cmd}
+EOF
+      fi
+    fi
+    if (( n_unavail > 0 )); then
+      cat <<EOF
+
+  Not offered in ${REGION}: $(printf '%s, ' "${GPU_SKUS_UNAVAILABLE[@]}" | sed 's/, $//')
+    (no pools created, nothing requested — pick another region if you need these)
+EOF
+    fi
+    cat <<EOF
+
+  The cluster and CPU jobs are unaffected by any GPU deferral above.
+EOF
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1914,6 +2247,7 @@ main() {
   preflight
   resolve_quotas_cli
   collect_inputs
+  normalize_identifier_inputs   # re-run: normalise interactively-prompted identifiers
   normalize_boolean_inputs
   verify_dns_delegation
   verify_ldap_config
@@ -1937,6 +2271,7 @@ main() {
   DNS zone:        ${DNS_ZONE_NAME}
   Auth method:     ${AUTH_METHOD}
   Demo library:    ${ENABLE_DEMO}
+  GPU support:     ${ENABLE_GPU}  (auto-requests GPU quota; set ENABLE_GPU=false to skip)
   Contact email:   ${CONTACT_EMAIL}
   IM service acct: ${IM_SA_EMAIL}
   Source:          ${REPO_ROOT} @ ${source_ref}

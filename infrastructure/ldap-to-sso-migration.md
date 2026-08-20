@@ -9,12 +9,17 @@ SSO identities is the manual, tool-assisted procedure below.
 
 ## Why this is manual
 
-Platforma's auth method is **single-valued**. The backend ranks configured
-methods SSO > LDAP > htpasswd > token and serves exactly one — there is no
-dual-mode where LDAP and SSO logins coexist during a cutover. Switching the
-method changes how every user is identified, so user-owned data (projects,
-results) must be re-pointed from the old LDAP login to the new SSO username by
-hand.
+Switching the auth method changes how every user is identified, so user-owned data
+(projects, results) has to end up under the new identity — either by the new provider
+adopting the existing record (the route below) or by re-pointing each project by hand.
+
+> **This document predates the `auth.*` provider scheme and is only partly updated.**
+> Its "single-valued auth method" premise — that the backend ranks SSO > LDAP >
+> htpasswd > token and serves exactly one — no longer holds: `auth.*` runs any number
+> of providers, `ldap` among them, so LDAP and SSO logins *can* coexist and a cutover
+> can be incremental. The email-matching route immediately below is current; the
+> legacy `--sso-idp-*` procedure further down has not been reworked around
+> multi-provider auth.
 
 ## Risks — read before starting
 
@@ -27,6 +32,39 @@ hand.
   is reachable from the cluster before cutting over.
 - **Session loss.** Changing the auth method invalidates every existing session.
   All users must re-login.
+
+## Preferred route: keep the accounts, match them by email
+
+Re-homing every project by hand (the procedure further down) is only needed when the
+old and new identities cannot be matched. When they share an email, an `auth.*` SSO
+provider adopts each existing account at its owner's first login, and no project moves
+at all:
+
+1. **Seed the emails.** LDAP accounts have none — the LDAP driver authenticates a login
+   and never reads the directory's `mail` attribute, so the records carry an empty email
+   however well populated the directory is. Export `login,email` from the directory and
+   feed it in with `--user-provisioning` / `--user-provisioning-match-attribute=login`
+   (see `multiprovider-auth.md`, "User provisioning (CSV)"). Verify with
+   `pl-db-cli user list --format json` on a DB copy before cutting over.
+2. **Configure the provider to look users up by email**, i.e.
+   `--auth.look-up-attr=<id>=email` plus `--auth.map.email=<id>=email`.
+3. **Have each user log in.** The first login carrying a seeded email adopts that
+   account — same `user_id`, so every project, grant and root follows it — and keeps its
+   original login. Nothing is copied and nothing is deleted.
+
+Requirements and limits:
+
+- **Emails must be unique** across user records. Where two records share one, adoption
+  is refused (logged as an error) and that user signs in as a separate identity; fix the
+  duplicate, then have them log in again.
+- **A user who already signed in through the new provider has a second account** carrying
+  that same email — created before the emails were seeded. That is the duplicate case
+  above, and it is the one to avoid: **no shipped tool deletes a user record**, so the
+  pre-cutover account cannot be freed for adoption afterwards. Seed the emails *before*
+  letting anyone sign in through the new provider; for users who already have, re-home
+  their projects with the per-project procedure below.
+- If the identities cannot be matched by email at all, use the per-project procedure
+  below.
 
 ## Tools
 
@@ -42,11 +80,18 @@ sees it, then delete the original.
 
 ## Procedure
 
+The steps below name the legacy `--sso-idp-*` flags. Under the `auth.*` provider
+scheme the equivalents are `--auth.sso.issuer` / `--auth.sso.client-id`, the identity
+claim is `--auth.look-up-attr` (plus `--auth.map.login=<id>=<claim>`), and admin
+comes from `--auth.admin-user` or a `--auth.role.*` rule. The two schemes cannot be
+combined.
+
 ### Step 0 — Decide the identity mapping
 
 List every active LDAP login and the SSO username it becomes. Choose the
-`--sso-idp-user-id-claim` whose JWT value will equal that SSO username for each
-user. Without this, the rest of the procedure re-homes data to the wrong owner.
+`--sso-idp-user-id-claim` (new scheme: `--auth.look-up-attr`) whose value will equal
+that SSO username for each user. Without this, the rest of the procedure re-homes data
+to the wrong owner.
 
 ### Step 1 — (Conditional) Migrate blobs to primary storage
 

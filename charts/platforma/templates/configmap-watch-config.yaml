@@ -26,6 +26,18 @@ data:
       isRunning:   "resource?.status?.phase == 'Running'"
       isFailed:    "resource?.status?.phase == 'Failed'"
       isCompleted: "resource?.status?.phase == 'Succeeded'"
+      # Returns the {message, details} contract consumed by the backend
+      # (see FailureDetail in util/k8s/watch_config.go): `message` is the
+      # human-readable guidance shown to the user first, `details` is the raw
+      # diagnostic state. All failure-kind detection and all user-facing text
+      # live here — derived purely from the watched AppWrapper, never from pods.
+      #
+      # OOM vs infrastructure problem is told apart by whether the pods were
+      # ever observed Ready. A container the kernel OOM-kills mid-run leaves
+      # PodsReady=True (the workload started) then Unhealthy/FailedComponent. A
+      # workload killed before it ever became Ready (PodsReady never True) is an
+      # infrastructure problem, not OOM — and is indistinguishable from an
+      # "immediate kill", so we deliberately do NOT claim OOM there.
       failureDetail: |
         let conditions = resource?.status?.conditions;
         let annotations = resource?.metadata?.annotations;
@@ -34,18 +46,45 @@ data:
         let warmupGracePeriodDuration = annotations?.["workload.codeflare.dev.appwrapper/warmupGracePeriodDuration"];
         let hasWarmapGracePeriod = warmupGracePeriodDuration != nil && warmupGracePeriodDuration != "";
 
-        if (lastCondition == nil) {
-          "AppWrapper resource state is unknown. See AppWrapper logs for more details."
-        } else {
-          // Special cases handling for user-friendly error messages
-          if (lastCondition.reason == "InsufficientPodsReady") {
-            let imagePullTimeoutSuffix = hasWarmapGracePeriod ? " within "+warmupGracePeriodDuration+" after pod scheduling." : ".";
+        let podsWereReady = conditions != nil && any(conditions, {.type == "PodsReady" && .status == "True"});
+        let failedComponent = conditions != nil && any(conditions, {.type == "Unhealthy" && .status == "True" && .reason == "FailedComponent"});
 
-            "AppWrapper failed to wait for command to start.\n"+
-            "This is likely due to slow network on kubernetes node side: node failed to pull"+
-            " software docker image" + imagePullTimeoutSuffix
-          } else {
-            // In general case, return all conditions to be displayed to the user as JSON string
-            conditions
+        if (lastCondition == nil) {
+          {
+            "message": "The workload state is unknown. See the workload logs for more details.",
+            "details": conditions
+          }
+        } else if (lastCondition.reason == "InsufficientPodsReady") {
+          let imagePullTimeoutSuffix = hasWarmapGracePeriod ? " within "+warmupGracePeriodDuration+" after pod scheduling." : ".";
+          // NOTE: the substring "node failed to pull software docker image" is a
+          // stable marker matched downstream by isImagePullFailure
+          // (controllers/runner/internal/drivers/k8s/image_pull_retry.go) to
+          // trigger the image-pull retry. Keep it verbatim.
+          {
+            "message": "The workload failed to start.\n"+
+              "This is likely due to slow network on kubernetes node side: node failed to pull"+
+              " software docker image" + imagePullTimeoutSuffix,
+            "details": conditions
+          }
+        } else if (failedComponent && podsWereReady) {
+          {
+            "message": "The command most likely ran out of memory and was killed by the system (OOM). "+
+              "This usually means the step needs more RAM than was available to process the input data. "+
+              "Try increasing the memory limit for this analysis step, then run it again.",
+            "details": conditions
+          }
+        } else if (failedComponent && !podsWereReady) {
+          {
+            "message": "The workload was stopped before it ever became ready to run. "+
+              "This is most likely an infrastructure problem — for example the cluster could not place or start the container, "+
+              "or the pod was evicted or preempted — not a problem with your analysis or its memory settings. "+
+              "Please try running it again; if it keeps failing, contact your administrator.",
+            "details": conditions
+          }
+        } else {
+          // No special guidance: surface the raw conditions only.
+          {
+            "message": "",
+            "details": conditions
           }
         }

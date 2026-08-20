@@ -5,17 +5,19 @@
 {{- if ne (include "platforma.workspaceConfigured" .) "true" }}
 {{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.fsxLustre.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
 {{- end }}
-{{- $hasAuthToken := false -}}
+{{- $hasAuthArg := false -}}
 {{- range .Values.app.extraArgs -}}
-  {{- if or (eq . "--auth-token") (hasPrefix "--auth-token=" .) -}}
-    {{- $hasAuthToken = true -}}
+  {{- /* --auth-token=... (dev), or the auth.* provider scheme passed raw via extraArgs
+         (--auth.provider-id ...) which the chart does not template natively */ -}}
+  {{- if or (eq . "--auth-token") (hasPrefix "--auth-token=" .) (hasPrefix "--auth.provider-id" .) -}}
+    {{- $hasAuthArg = true -}}
   {{- end -}}
 {{- end -}}
 {{- if not (or (include "platforma.htpasswdSecretName" .)
                .Values.auth.ldap.server
                .Values.auth.sso.issuer
-               $hasAuthToken ) }}
-{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n  auth.sso.issuer              # SSO / OIDC auth\n\nFor development/testing, pass a static token via app.extraArgs:\n  - \"--auth-token=<token>\"" }}
+               $hasAuthArg ) }}
+{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n  auth.sso.issuer              # SSO / OIDC auth\n  --auth.provider-id ...       # multi-provider auth.* scheme, passed via app.extraArgs\n\nFor development/testing, pass a static token via app.extraArgs:\n  - \"--auth-token=<token>\"" }}
 {{- end }}
 {{- if and .Values.auth.htpasswd.secretName (gt (len .Values.auth.htpasswd.credentials) 0) }}
 {{- fail "ERROR: Set either auth.htpasswd.secretName or auth.htpasswd.credentials, not both." }}
@@ -53,6 +55,10 @@
        target namespace and contains the expected keys. No-op during
        `helm template` / client-side dry-run. */ -}}
 {{- include "platforma.validateSecrets" . }}
+{{- /* Verify no Kueue pool is half-configured for workload separation
+       (tolerations set, nodeSelector empty). Pure values check — also runs
+       during `helm template`. */ -}}
+{{- include "platforma.validateNodeSelectors" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -86,8 +92,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "platforma.serviceAccountName" . }}
+      # OnRootMismatch: skip the recursive chown of the mounted PVCs when the
+      # volume root already carries the fsGroup. The workspace volume holds
+      # hundreds of thousands of files, so the default (Always) adds minutes to
+      # every pod start.
       securityContext:
         fsGroup: 1010
+        fsGroupChangePolicy: OnRootMismatch
         runAsNonRoot: true
       {{- if or .Values.storage.workspace.fsxLustre.enabled
                 .Values.storage.workspace.filestore.enabled
@@ -197,6 +208,9 @@ spec:
             {{- if .Values.kueue.maxJobResources.memory }}
             - "--runner-max-ram-request={{ .Values.kueue.maxJobResources.memory }}"
             {{- end }}
+            {{- end }}
+            {{- if hasKey .Values.kueue "imagePullMaxRetries" }}
+            - "--k8s-image-pull-max-retries={{ .Values.kueue.imagePullMaxRetries }}"
             {{- end }}
             - "--runner-enable-docker"
             # GPU availability (K8s never auto-probes; explicit on/off based on the GPU pool).

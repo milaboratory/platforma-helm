@@ -415,13 +415,20 @@ GPU pools (L4 + RTX PRO 6000) are opt-in and gated on `enable_gpu`:
 ```hcl
 enable_gpu = true
 
-# Optional — override the per-SKU zone lists. The Cloud Shell installer
-# auto-discovers these via `gcptest.sh`; in the local Terraform path you
-# either set them explicitly or run gcptest.sh yourself and copy the lists.
-# L4 is multi-zone (the full machine ladder is available in most us-central1
-# and europe-west zones); RTX PRO 6000 has narrower availability.
-gpu_l4_node_locations            = ["us-central1-a", "us-central1-b", "us-central1-c"]
-gpu_rtx_pro_6000_node_locations  = ["us-central1-b"]
+# Optional — override the per-shape pool maps ({machine-shape = [zones]}). The
+# Cloud Shell installer auto-discovers these via `gcptest.sh` (one entry per
+# shape the region actually offers); in the local Terraform path set them
+# explicitly or run gcptest.sh yourself and copy the maps. A shape you omit
+# gets no pool. Leave unset (null) to fall back to the full default ladder in
+# the primary zone.
+gpu_l4_pools = {
+  "g2-standard-4"  = ["us-central1-a", "us-central1-b", "us-central1-c"]
+  "g2-standard-8"  = ["us-central1-a", "us-central1-b"]
+  "g2-standard-16" = ["us-central1-b"]
+}
+gpu_rtx_pro_6000_pools = {
+  "g4-standard-6" = ["us-central1-b"]
+}
 
 # Optional — override the Kueue GPU ClusterQueue admission caps. By default
 # these scale with `deployment_size` (see README's "GPU Kueue queue" table).
@@ -441,6 +448,20 @@ To enable GPU on an existing GPU-less deployment: add `enable_gpu = true`
 (and any zone overrides) to `terraform.tfvars`, then `tofu plan && apply`.
 The plan adds the GPU pools and Kueue GPU flavor without touching the
 existing CPU pools or batch queue.
+
+### Extra Platforma server args
+
+Append arbitrary flags to the Platforma server command line. The module always
+sets `--default-docker-registry` and `--google-artifact-registry`;
+`additional_extra_args` is concatenated after them, so use it for flags the
+module does not manage:
+
+```hcl
+additional_extra_args = ["--some-flag=value", "--another-flag"]
+```
+
+Each element must be one whole argument starting with `-` (validation rejects a
+flag and its value split across two elements).
 
 ## Updates
 

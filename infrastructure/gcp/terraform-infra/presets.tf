@@ -7,7 +7,8 @@
 #   - UI pool max size (static pool — see google_container_node_pool.ui)
 #   - Kueue ClusterQueue quotas (computed from batch_capacity)
 #   - Filestore capacity
-#   - Automated quota requests (CPUS_ALL_REGIONS, N2D_CPUS, N2_CPUS, PD SSD, Filestore)
+#   - Automated quota requests (CPUS_ALL_REGIONS, N2D_CPUS, N2_CPUS, PD SSD,
+#     Filestore, and — when enable_gpu — NVIDIA_L4_GPUS / NVIDIA_RTX_PRO_6000_GPUS)
 #
 # Per-preset envelope mirrors the AWS CloudFormation parallelism table so the
 # same label (small/medium/large/xlarge) means the same workload capacity on
@@ -114,16 +115,17 @@ locals {
       # gpu_l4_max_nodes_per_shape: each of the 5 g2-standard-* pools
       # autoscales 0..N. Total L4 ceiling = 5 × N. With N=8 a `small`
       # cluster could in theory create 40 L4 nodes; in practice the GCE
-      # NVIDIA_L4_GPUS regional quota is the binding constraint (must be
-      # arranged separately). Sized as a per-shape ceiling so any one shape
-      # alone can absorb a wave of small or mixed-RAM jobs.
+      # NVIDIA_L4_GPUS regional quota is the binding constraint (auto-requested
+      # by quotas.tf when enable_gpu, at this per-shape value). Sized as a
+      # per-shape ceiling so any one shape alone can absorb a wave of small or
+      # mixed-RAM jobs.
       #
       # gpu_rtx_pro_6000_max_nodes_per_shape: same model for the 4
       # g4-standard-* pools (each 1× RTX PRO 6000). Sized lower than L4
       # since RTX PRO 6000 is a smaller GCE inventory tier and a higher
       # per-node cost — most workloads should land on L4 unless they need
       # >24 GiB VRAM or Blackwell-class FP8/FP4. Bound by NVIDIA_RTX_PRO_6000_GPUS
-      # regional quota (must be arranged separately like L4).
+      # regional quota (auto-requested by quotas.tf when enable_gpu, like L4).
       ui_max_nodes                         = 4
       filestore_capacity_gb                = 1024
       cpus_global_quota                    = 512
@@ -213,19 +215,42 @@ locals {
   # inventory tier and a higher per-node cost; operator can raise per-cluster.
   effective_gpu_rtx_pro_6000_max_nodes_per_shape = local.preset.gpu_rtx_pro_6000_max_nodes_per_shape
 
-  # GPU node-locations — per-SKU zone list populated by install.sh at deploy
-  # time via gcptest.sh discover (in this directory; runs locally where
-  # gcloud is available). install.sh fills var.gpu_*_node_locations with the
-  # zones in var.region where each SKU's full machine-type ladder exists.
+  # GPU pools — per-shape zone map ({shape = [zones]}) populated by install.sh
+  # at deploy time via gcptest.sh discover (in this directory; runs locally
+  # where gcloud is available). For each SKU, discover returns only the shapes
+  # var.region actually offers, each mapped to the zones offering it; gke.tf
+  # creates one node pool per entry (adaptive ladder — missing shapes absent).
   #
-  # Multi-zone gives GPU scale-ups capacity diversity: GCE inventory varies
-  # independently per zone, so spreading maximises the chance any one
+  # Multi-zone per shape gives GPU scale-ups capacity diversity: GCE inventory
+  # varies independently per zone, so spreading maximises the chance any one
   # ProvisioningRequest finds stock.
   #
-  # Fallback to [local.zone] is for the bare `terraform apply` path (no
-  # install.sh) — single-zone behavior, no capacity diversity. install.sh
-  # always populates the vars when ENABLE_GPU=true, so end-users get
-  # multi-zone by default without any extra config.
-  effective_gpu_l4_node_locations           = coalesce(var.gpu_l4_node_locations, [local.zone])
-  effective_gpu_rtx_pro_6000_node_locations = coalesce(var.gpu_rtx_pro_6000_node_locations, [local.zone])
+  # Per-SKU resolution, three cases:
+  #   null      => bare `terraform apply` (no install.sh): fall back to the full
+  #                default ladder in [local.zone]. Preserves pre-adaptive Tier-3.
+  #   {}        => install.sh ran gcptest.sh discover and the SKU is NOT offered
+  #                in var.region: empty map, and gpu_*_enabled below turns that
+  #                SKU's pools off.
+  #   {s=[z..]} => discovered per-shape zones for the SKU.
+  #
+  # Default ladders are the fallback for the null case only — they MUST mirror
+  # the L4_LADDER / RTX_LADDER in gcptest.sh.
+  default_gpu_l4_ladder           = ["g2-standard-4", "g2-standard-8", "g2-standard-12", "g2-standard-16", "g2-standard-32"]
+  default_gpu_rtx_pro_6000_ladder = ["g4-standard-6", "g4-standard-12", "g4-standard-24", "g4-standard-48"]
+
+  effective_gpu_l4_pools           = var.gpu_l4_pools == null ? { for s in local.default_gpu_l4_ladder : s => [local.zone] } : var.gpu_l4_pools
+  effective_gpu_rtx_pro_6000_pools = var.gpu_rtx_pro_6000_pools == null ? { for s in local.default_gpu_rtx_pro_6000_ladder : s => [local.zone] } : var.gpu_rtx_pro_6000_pools
+
+  # A SKU's pools are created only when GPU is on AND the SKU has at least one
+  # usable shape. Lets a region with only one SKU (e.g. europe-north1 carries
+  # RTX PRO 6000 but not L4) come up with just that SKU's pools.
+  gpu_l4_enabled           = var.enable_gpu && length(local.effective_gpu_l4_pools) > 0
+  gpu_rtx_pro_6000_enabled = var.enable_gpu && length(local.effective_gpu_rtx_pro_6000_pools) > 0
+
+  # Whether to submit each SKU's GPU quota-increase request — decoupled from
+  # pool creation so install.sh can request the increase while running that SKU
+  # GPU-less (quota still below the deployment's need). null (bare terraform)
+  # follows var.enable_gpu, preserving the pre-adaptive behaviour.
+  effective_request_gpu_l4_quota           = var.request_gpu_l4_quota == null ? var.enable_gpu : var.request_gpu_l4_quota
+  effective_request_gpu_rtx_pro_6000_quota = var.request_gpu_rtx_pro_6000_quota == null ? var.enable_gpu : var.request_gpu_rtx_pro_6000_quota
 }

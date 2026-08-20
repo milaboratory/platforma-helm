@@ -1,4 +1,4 @@
-{{- if and .Values.kueue.pools.gpu.enabled (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources }}
+{{- if and .Values.kueue.pools.gpu.enabled (eq .Values.kueue.mode "dedicated") .Values.kueue.dedicated.createClusterResources .Values.kueue.pools.gpu.devicePlugin.enabled }}
 # =============================================================================
 # NVIDIA Device Plugin DaemonSet
 # =============================================================================
@@ -12,6 +12,16 @@
 # secondary installs still set kueue.pools.gpu.enabled=true to route GPU jobs
 # and enable the runner GPU flag, but must NOT re-deploy these cluster-scoped
 # objects — two releases doing so collide on the identical resource names.
+#
+# ALSO gated on kueue.pools.gpu.devicePlugin.enabled (default true), which opts
+# out of the plugin independently of the Kueue resources above. Needed on
+# on-premises clusters where the NVIDIA GPU Operator owns GPU enablement instead:
+# it ships its own device plugin, and two plugins on one node fight over
+# /var/lib/kubelet/device-plugins. Note the opt-out also drops the gpu-not-ready
+# taint-remover sidecar below — fine when NVIDIA GPU Operator controls this flag via
+# nvidia-operator-validator on cluster level with persistent nodes or nodes managed by,
+# some separate mechanisms. Setting it to 'false' on clusters with dynamic node management
+# that does not automatically prepare GPU drivers breaks GPU scheduling.
 # Based on: https://github.com/NVIDIA/k8s-device-plugin v0.17.0
 #
 # Startup taint protocol:

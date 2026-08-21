@@ -314,8 +314,8 @@ declared ids:
 
 All OIDC providers share one session store and one session manager, which routes
 every session to the provider that issued it. That shared manager is also what
-backs federated (WIF) storage access, so a user's storage credentials come from
-whichever provider they signed in with.
+backs per-user storage access, so a user's storage credentials come from whichever
+provider they signed in with.
 
 ### Federated storage with several OIDC providers
 
@@ -342,6 +342,41 @@ several providers fails closed with an explicit error.
 
 The same holds for `ldap` and `htpasswd`: declare as many ids as you need. Each
 login is evaluated only against the rules of the provider that authenticated it.
+
+### Reading a library as the user without federation
+
+When the provider is Google, its access token is already a Google credential and
+can go to Cloud Storage directly — no pool, no provider, no attribute mapping:
+
+```
+--data-library-gcs-service-account=ssopoc=authenticated-user
+--data-library-gcs-auth-provider=ssopoc=google
+```
+
+Cloud Storage then evaluates IAM for the plain `user:<email>` principal, so grants
+name the user rather than a federated principal set. The reserved
+`authenticated-user` service account selects the mode; it is not an identity, and
+it is refused for the primary store and the backup destination, whose writes have
+no signed-in user to act as. This mode and
+`--data-library-gcs-federation-audience` are mutually exclusive per library.
+
+The named provider must be Google (issuer `https://accounts.google.com`), request
+a Cloud Storage scope, and use `--auth.sso.access-type=<id>=offline`. All three are
+checked at boot. Scopes are granted at login, so after adding a storage scope every
+user must sign in again before the library works:
+
+```
+--auth.sso.scopes=google=openid profile email https://www.googleapis.com/auth/devstorage.read_only
+```
+
+### Downloads for per-user libraries
+
+A library read on behalf of the caller — federated or `authenticated-user` — cannot
+hand out presigned download URLs. A presigned URL is authorized by whoever signed
+it, so it carries the signer's identity, never the caller's; these storages hold no
+signing key by design. Browsing and importing work normally, and
+`Download.GetDownloadURL` fails with an explanation rather than returning a URL the
+cloud provider would reject.
 
 ## Custom user attributes
 

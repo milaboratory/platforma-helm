@@ -658,7 +658,7 @@ Mappings:
     EKS:
       Version: "1.35"
     Platforma:
-      Version: "4.3.2"
+      Version: "4.3.3"
 
   # region -> which GPU classes it offers (yes/no), looked up by the RegionHas*
   # Conditions via Fn::FindInMap to gate each GPU pool. Covers every AWS region

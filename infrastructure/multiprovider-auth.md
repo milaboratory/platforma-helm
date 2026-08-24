@@ -340,6 +340,20 @@ different one simply has no session for the storage rather than being handed the
 wrong provider's token. An unbound lookup that turns out to match sessions from
 several providers fails closed with an explicit error.
 
+Each federated library also declares *which* of that provider's tokens goes to the
+cloud STS endpoint, because only a JWT carrying a `sub` claim is accepted and which
+token that is depends on the IdP:
+
+```
+--data-library-gcs-federation-auth-token=onco=access_token
+--data-library-s3-federation-auth-token=archive=id_token
+```
+
+An IdP issuing JWT access tokens bound to a resource audience uses `access_token`.
+Google issues an opaque access token, so a Google-backed library uses `id_token`.
+The setting is required for every federated library; a wrong choice is otherwise
+reported by the cloud provider in terms that name neither the library nor the flag.
+
 The same holds for `ldap` and `htpasswd`: declare as many ids as you need. Each
 login is evaluated only against the rules of the provider that authenticated it.
 

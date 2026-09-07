@@ -61,27 +61,42 @@ records.
 
 ### Supported regions
 
-GPU node groups use g6f, g6, and g6e instance families which are not available in all AWS regions. Deploy in one of these regions for full GPU support:
+GPU support adapts to the deploy region automatically, so it works in **any
+region that offers a supported GPU** — you no longer pick from a fixed list.
+Each node group ("pool") corresponds to a **real GPU card**, and its
+`gpu-memory-gib` label is that card's **actual per-GPU VRAM**. A region gets
+**only the pools whose card it actually offers** — no fictional tiers, no
+under-used hardware, and the pool set tells you at a glance what a region has.
+At deploy time `GpuSubnetResolver` picks each pool's exact instance type (e.g.
+`gpu-24g` → `g6` or `g5`) and the subnets in AZs that offer it.
 
-| Region             | Location    | GPU support            |
-|--------------------|-------------|------------------------|
-| **us-east-1**      | N. Virginia | Full (all 6 GPU tiers) |
-| **us-east-2**      | Ohio        | Full                   |
-| **us-west-2**      | Oregon      | Full                   |
-| **eu-central-1**   | Frankfurt   | Full                   |
-| **eu-north-1**     | Stockholm   | Full                   |
-| **ap-northeast-1** | Tokyo       | Full                   |
+Which pools a region gets (from `gpu-instance-map.json`, refreshed by
+`generate-gpu-map.sh`):
 
-Other regions (eu-west-1, eu-west-2, ap-south-1, ca-central-1) have partial or no GPU instance availability. To deploy in those regions, set the **Enable GPU** parameter to `false` — the stack skips all GPU node groups and the Platforma backend boots with GPU disabled. CPU-only workloads work in any region.
+| Pools                          | Regions                                                                          |
+|--------------------------------|----------------------------------------------------------------------------------|
+| 3g·6g·12g·24g·48g·96g          | us-east-1, us-east-2, us-west-2, eu-central-1, eu-north-1, ap-northeast-1, ap-northeast-2, ap-south-1 |
+| 3g·6g·12g·24g                  | ap-southeast-2, ca-central-1, eu-west-2, sa-east-1                                |
+| 48g·96g *(L40S, no 24g card)*  | ap-northeast-3                                                                    |
+| 24g                            | eu-west-1, eu-west-3                                                              |
+| 16g *(T4 last-resort)*         | ap-southeast-1, us-west-1                                                         |
 
-**GPU node groups (6 tiers, all scale from zero):**
+`gpu-16g` (T4) is created **only** where no better GPU exists. Regions with no
+supported GPU at all get no pools — set **Enable GPU** to `false` there (CPU-only
+workloads run in any region). Opt-in regions absent from the map get no GPU pools
+until it is regenerated for them.
 
-| Tier     | Instance     | GPU        | VRAM     | vCPU | RAM    | $/hr    | Use case                                    |
+**GPU node groups (one per real card, all scale from zero).** The `gpu-16g` T4
+pool appears only as a last resort; the `gpu-24g` type is `g6` (L4) or `g5`
+(A10G) depending on region — both 24 GB:
+
+| Pool     | Instance     | GPU        | VRAM     | vCPU | RAM    | $/hr    | Use case                                    |
 |----------|--------------|------------|----------|------|--------|---------|---------------------------------------------|
 | gpu-3g   | g6f.xlarge   | partial L4 | 3 GB     | 4    | 16 GB  | $0.24   | Small inference, embedding lookups          |
 | gpu-6g   | g6f.2xlarge  | partial L4 | 6 GB     | 8    | 32 GB  | $0.49   | Small/medium inference, light ML            |
 | gpu-12g  | g6f.4xlarge  | partial L4 | 12 GB    | 16   | 64 GB  | $0.98   | Medium inference, smaller training jobs     |
-| gpu-24g  | g6.2xlarge   | 1× L4      | 24 GB    | 8    | 32 GB  | $0.98   | UMAP, sequence search, standard ML          |
+| gpu-16g  | g4dn.2xlarge | 1× T4      | 16 GB    | 8    | 32 GB  | $0.75   | Last-resort GPU where nothing newer exists  |
+| gpu-24g  | g6.2xlarge / g5.2xlarge | 1× L4 / A10G | 24 GB | 8 | 32 GB | $0.98 | UMAP, sequence search, standard ML          |
 | gpu-48g  | g6e.2xlarge  | 1× L40S    | 48 GB    | 8    | 64 GB  | $2.36   | Large language models, structure prediction |
 | gpu-96g  | g6e.12xlarge | 4× L40S    | 4× 48 GB | 48   | 384 GB |  $10.59 | Multi-GPU, large model complexes |
 
@@ -162,6 +177,7 @@ If you don't have a domain yet, see [How to register a domain in AWS](domain-gui
 | Htpasswd content | *(empty)*  | Pre-generated htpasswd string. When empty, the stack generates a random password and stores it in SSM Parameter Store (see Step 2). Generate manually with `htpasswd -nB username`. |
 | Sso issuer       | *(empty)*  | OIDC issuer URL, e.g. `https://idp.example.com/oidc`. Required when Auth method is `sso`. Must be `https`.                                                                          |
 | Sso client id    | *(empty)*  | Public OAuth client ID registered at the IdP as a native/public app. Required when Auth method is `sso`.                                                                           |
+| Admin users      | *(empty)*  | Grant the admin role to logins matching these full-match regexps (Platforma's `--admin-user`). Works with any auth method — for SSO the login is the email. Semicolon-separated for multiple, e.g. `alice@corp\.com;.*@admins\.corp\.com`. Escape metacharacters in a literal login (`user\.name`). |
 
 The three methods are mutually exclusive — supplying another method's fields alongside the selected one is rejected at stack-create.
 

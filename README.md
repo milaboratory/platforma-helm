@@ -378,18 +378,49 @@ Set it when a controller in the table reads it; otherwise it's harmless and forw
 
 ### Logging
 
-By default, logs stream to container stderr and are collected by the cluster log driver. To persist logs to a PVC with rotation:
+The backend writes two log files, both rotated and gzipped:
+
+| File | Contents |
+|------|----------|
+| `platforma.log` | Ordinary log records. |
+| `treechangelog.log` | **Tree changelog** — the per-transaction change summaries, and nothing else. |
+
+The summaries are split out because at production load they are the log: hundreds of variable-size JSON reports a second, enough to overwhelm a log-shipping agent. They are written to disk and never streamed. Ordinary records keep their `txID`, so the two correlate by timestamp and transaction ID.
+
+Where each one goes depends on `persistence.enabled`:
+
+| | `persistence.enabled: true` (default) | `persistence.enabled: false` |
+|---|---|---|
+| Ordinary log | `/var/log/platforma/platforma.log` on a dedicated PVC | container **stdout** — the image entrypoint sets `PL_LOG_DESTINATION=stream://stdout`, and no file is written |
+| Tree changelog | `/var/log/platforma/treechangelog.log` on the same PVC | `/data/main/log/treechangelog.log` on an `emptyDir` — **wiped on every pod restart** |
+
+Set `PL_LOG_DESTINATION` (or add `--log-dst=...` to `app.extraArgs`) to override the ordinary log's destination; the changelog is never streamed and takes a plain file path via `--log-tree-changelog-path`.
 
 ```yaml
 app:
   logging:
     persistence:
       enabled: true
-      size: 10Gi
+      size: 30Gi
       rotation:
-        size: 1Gi     # Max size per log file
-        count: 15     # Number of rotated files to keep
+        size: 1Gi     # Max size per ordinary log file
+        count: 10     # Number of rotated files to keep
+    treeChangelog:
+      enabled: true
+      maxSize: 1Gi    # Max size per changelog file
+      maxBackups: 200 # Number of rotated changelogs to keep
 ```
+
+Rotation decides how far back a failure can be investigated. Measured on a production instance, gzip takes a rotated 1Gi file down to ~92Mi, so the defaults budget the 30Gi volume as:
+
+| Stream | On disk | History |
+|---|---|---|
+| Ordinary log | 1Gi live + 10 x 92Mi ~= 1.9Gi | over a year — it fills 1Gi in ~41 days now that the summaries have left it |
+| Tree changelog | 1Gi live + 200 x 92Mi ~= 19.4Gi | ~4 days at the ~34 MiB/min measured under real block load |
+
+`rotation.count` used to be 100, which covered under three months while the summaries were still in the ordinary log; ten copies now cover longer, and free the room the changelog needs.
+
+`treeChangelog.enabled: false` does not merely mute the output — the summaries are then not built at all, so a deployment with no use for them pays nothing per transaction.
 
 ### Monitoring
 

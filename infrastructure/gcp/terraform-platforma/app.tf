@@ -454,10 +454,18 @@ resource "helm_release" "platforma" {
 
         kueue = {
           mode = "dedicated"
-          maxJobResources = {
+          # gpuCpu/gpuRam/gpuMemory are added only when GPU is enabled — the
+          # chart requires them if kueue.pools.gpu.enabled, and they mirror the
+          # largest GPU node provisioned (see effective_gpu_max_job_* in
+          # presets.tf; install.sh derives them from the discovered pools).
+          maxJobResources = merge({
             cpu    = local.effective_kueue_max_job_cpu
             memory = local.effective_kueue_max_job_memory
-          }
+            }, var.enable_gpu ? {
+            gpuCpu    = local.effective_gpu_max_job_cpu
+            gpuRam    = local.effective_gpu_max_job_ram
+            gpuMemory = local.effective_gpu_max_job_memory
+          } : {})
           pools = {
             ui = {
               nodeSelector = {
@@ -534,11 +542,12 @@ resource "helm_release" "platforma" {
           # scheduling; memory limit > request gives burst headroom before the
           # kernel OOM-kills under spikes.
           #
-          # On the default system_pool_machine_type (n2d-standard-8, ~26 GiB
-          # allocatable) the effective memory ceiling is node allocatable, not
-          # the 32 GiB limit — a single pod can't actually grow past the node.
-          # To realize the full 32 GiB burst, bump system_pool_machine_type to
-          # n2d-standard-16 (~58 GiB allocatable).
+          # The backend runs on its own dedicated node pool (role=platforma,
+          # tainted dedicated=platforma), split out from the system pool so its
+          # memory can grow into a whole node without contending with the cluster
+          # services (MILAB-6566). The default platforma_pool_machine_type is
+          # n2d-standard-16 (~58 GiB allocatable), which realizes the full 32 GiB
+          # limit below with headroom.
           resources = {
             requests = {
               cpu    = 4
@@ -549,9 +558,20 @@ resource "helm_release" "platforma" {
               memory = "32Gi"
             }
           }
+          # No zone constraint is needed here: the platforma node pool is defined
+          # in terraform-infra/gke.tf with location = local.zone, and the cluster
+          # is zonal (main.tf: zone = "${region}-${zone_suffix}"). Every node pool
+          # — and the zonal database PD — lives in that single zone, so there is no
+          # cross-AZ attach risk to pin against (unlike AWS EKS, whose pools can
+          # span AZs). role=platforma + the taint toleration are all that's needed.
           nodeSelector = {
-            role = "system"
+            role = "platforma"
           }
+          tolerations = [{
+            key    = "dedicated"
+            value  = "platforma"
+            effect = "NoSchedule"
+          }]
           # Inherit chart defaults: app.debug.enabled = false (production log
           # level, debug API still bound to localhost via chart default) and
           # app.logging.persistence.enabled = true (20Gi PVC with rotation,
@@ -572,10 +592,13 @@ resource "helm_release" "platforma" {
           # --google-artifact-registry flag lets Google Batch job VMs docker-login
           # to GAR with an SA token; it is a no-op on the GKE/Kueue path (kubelet
           # pulls with the node SA) and harmless when Batch is disabled.
-          extraArgs = [
-            "--default-docker-registry=${local.default_docker_registry}",
-            "--google-artifact-registry=${local.artifact_registry_login_host}",
-          ]
+          extraArgs = concat(
+            [
+              "--default-docker-registry=${local.default_docker_registry}",
+              "--google-artifact-registry=${local.artifact_registry_login_host}",
+            ],
+            var.additional_extra_args,
+          )
         }
       }
     ))

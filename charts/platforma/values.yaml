@@ -94,6 +94,141 @@ auth:
   # is not advertised.
   showUserList: true
 
+  # -- Multi-provider authentication (backend >= 4.3.0): any number of providers
+  # of type sso (OIDC), htpasswd or ldap, keyed by provider id. Empty (the
+  # default) keeps the flat auth.htpasswd / auth.ldap / auth.sso blocks below in
+  # charge, unchanged.
+  #
+  # Two things that fail a deploy if missed:
+  #   - Cannot be combined with those flat blocks — the chart fails the render,
+  #     because the backend refuses to start with both schemes configured.
+  #   - The provider id lands verbatim in generated volume and Secret names, so
+  #     it must be a lowercase RFC 1123 name (no dots, underscores or capitals)
+  #     of at most 40 characters. Each provider's secrets mount under
+  #     /etc/platforma/secrets/auth/<id>/.
+  #
+  # CAUTION: adding or removing a provider re-derives the JWT signing key, so
+  # every existing session is invalidated and all users sign in again.
+  #
+  # Field semantics, secret handling and worked per-IdP setups:
+  # infrastructure/multiprovider-auth.md
+  providers: {}
+  #   # --- Entra / Azure AD, public client (PKCE, no client secret) ----------
+  #   entra:
+  #     type: sso
+  #     sso:
+  #       issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+  #       clientId: "<application-client-id>"
+  #       # Space-separated. Empty = backend default
+  #       # (openid profile email offline_access).
+  #       scopes: "openid profile email offline_access"
+  #       # Entra's stable per-app subject is 'oid', not 'sub'.
+  #       userIdClaim: oid
+  #       # Loopback callback ports (RFC 8252). Every port must be registered at
+  #       # the IdP as http://127.0.0.1:<port>/callback. Empty = backend default.
+  #       redirectPorts: [8765]
+  #       # Optional OIDC knobs; empty = backend default.
+  #       resource: ""            # RFC 8707 audience, for IdPs issuing JWT access tokens
+  #       prompt: ""              # none | login | consent | select_account
+  #       accessType: ""          # online | offline (Google needs offline for a refresh token)
+  #       subjectTokenSource: ""  # access_token | id_token, for cloud STS exchanges
+  #       jwtAlgorithms: []       # allowed signing algorithms
+  #       # Confidential clients only. Mounted at
+  #       # /etc/platforma/secrets/auth/entra/<secretKey>.
+  #       clientSecret:
+  #         secretName: ""
+  #         secretKey: client-secret
+  #     # Claim -> user attribute mapping, read from the verified id_token.
+  #     map:
+  #       login: preferred_username
+  #       email: email
+  #       displayName: name
+  #       fullName: ""
+  #       externalId: ""
+  #       groups: groups
+  #     # Attribute matched to the incoming identity. Empty = login. Setting it
+  #     # to 'email' lets a login adopt an existing user record with that email.
+  #     lookUpAttr: email
+  #     # Treat an email sent WITHOUT an email_verified claim as verified. Only
+  #     # for an IdP whose emails are authoritative but which sends no claim
+  #     # (Entra ID sends none). Requires lookUpAttr: email. Never overrides an
+  #     # explicit email_verified=false.
+  #     trustUnverifiedEmail: true
+  #     # Provision a user record on first login.
+  #     createUsers: true
+  #     # Grant admin by exact login match.
+  #     adminUsers: []
+  #     #   - "first.last@example.com"
+  #     # Role rules. Every regexp is a FULL match. Roles: admin | user.
+  #     roles:
+  #       groups: []        # "<role>=<group>"  exact group name
+  #       groupRegexps: []  # "<role>=<regex>"  needs map.groups
+  #       attrRegexps: []   # "<role>=<attr>=<regex>"
+  #     # Google Workspace only: its token carries no groups claim, so group
+  #     # rules need a Cloud Identity lookup at login.
+  #     google:
+  #       groupFetch: false
+  #       # Go duration — a bare number is rejected by the backend. Omit for 5s.
+  #       apiTimeout: 5s
+  #       # Positive integer. Omit for the backend default of 2.
+  #       apiRetries: 2
+  #     # Custom user fields declared in auth.extensionFields, as <field>: <claim>.
+  #     mapFields: {}
+  #
+  #   # --- Break-glass local password file, alongside the SSO provider -------
+  #   local:
+  #     type: htpasswd
+  #     htpasswd:
+  #       # Inline credentials (chart creates the Secret), OR an existing one.
+  #       credentials: []
+  #       #   - username: "breakglass"
+  #       #     password: "changeme"
+  #       secretName: ""
+  #       secretKey: htpasswd
+  #     adminUsers:
+  #       - "breakglass"
+  #
+  #   # --- Corporate directory ----------------------------------------------
+  #   corp:
+  #     type: ldap
+  #     ldap:
+  #       url: "ldaps://ldap.example.com:636"
+  #       # Mode 1 — direct bind. '%u' is the login. Cannot read attributes or
+  #       # groups, so map.* and the group role rules need search+bind instead.
+  #       userDN: ""
+  #       # Mode 2 — search + bind. Exactly one mode per provider.
+  #       bindDN: ""
+  #       # Plaintext. For production, leave empty and inject the flag's env var
+  #       # from a Secret instead, via app.env.secretVariables:
+  #       #   - name: PL_AUTH_LDAP_BIND_PASSWORD
+  #       #     secretName: platforma-ldap
+  #       #     secretKey: bind-password        # value must be "<id>=<password>"
+  #       bindPassword: ""
+  #       baseDN: ""
+  #       userFilter: ""      # e.g. "(uid=%u)"
+  #       # Extra rules tried after baseDN/userFilter, as "<filter>|<baseDN>".
+  #       searchRules: []
+  #       # Reverse group search ('member=<userDN>') for directories that do not
+  #       # list groups on the user's memberOf attribute.
+  #       groupBaseDN: ""
+  #       startTLS: false
+  #       insecureTLS: false  # NEVER in production
+  #       trustedCASecretRef:
+  #         name: ""
+  #         key: ca.crt
+  #       clientCertSecretRef:
+  #         name: ""
+  #         certKey: tls.crt
+  #         keyKey: tls.key
+  #     lookUpAttr: email
+  #     map:
+  #       email: mail
+  #       displayName: displayName
+
+  # -- Custom user extension fields, declared once for the whole install and
+  # populated per provider through auth.providers.<id>.mapFields.
+  extensionFields: []
+
   # -- htpasswd file-based authentication
   # Two options:
   #   1. Inline credentials (simplest) — set credentials list below
@@ -343,8 +478,18 @@ kueue:
     cpu: 64
     memory: 256Gi
     gpuMemory: 48Gi
-    gpuCpu: 48
-    gpuRam: 64Gi
+    # gpuCpu and gpuRam are intentionally left unset: no default can be correct,
+    # because they must match the operator's actual GPU node. A too-large default
+    # lets Kueue admit a GPU job that no single node can host, and the job stays
+    # Pending forever with no error. The `fail` guard in templates/deployment.yaml
+    # stops the render until the operator sets both. Example:
+    #   gpuCpu: 20
+    #   gpuRam: 60Gi
+
+  # -- Extra attempts for a job that fails because the node was too slow to pull its
+  # software image. A slow pull is transient, so a fresh pod may land on a node that
+  # already cached the image. When unset, the backend default (2) applies; 0 disables.
+  imagePullMaxRetries: 2
 
   # -- Enable OOM retries for K8s jobs.
   # Off by default: an out-of-memory job fails immediately with its original error.
@@ -380,12 +525,36 @@ kueue:
     # Routes GPU jobs via nodeAffinity on platforma.bio/gpu-memory-gib label.
     # K8s scheduler + Cluster Autoscaler pick the cheapest node with enough VRAM.
     # One job per GPU node (nvidia.com/gpu: 1 enforces exclusive access).
+    # Disabled by default so a vanilla `helm install` works out of the box on a
+    # cluster with no GPU nodes. The AWS/GCP Terraform and CloudFormation wrappers
+    # in infrastructure/ override this via their own `enable_gpu`/`EnableGpu`
+    # switch (default true), which provisions the GPU node groups AND flips this
+    # flag together — so their default intentionally differs from this one.
     gpu:
-      enabled: true
+      enabled: false
       tolerations:
         - key: nvidia.com/gpu
           value: present
           effect: NoSchedule
+      # -- Deploy the NVIDIA device plugin DaemonSet (+ its cluster-scoped RBAC)
+      # into kube-system, advertising nvidia.com/gpu so GPU jobs get scheduled.
+      #
+      # Keep true on AWS/GKE, where the chart owns GPU enablement end to end: the
+      # DaemonSet also carries the taint-remover sidecar that clears the
+      # nvidia.com/gpu-not-ready startup taint, without which an autoscaled GPU
+      # node never becomes schedulable.
+      #
+      # Set false when something else on the cluster already advertises
+      # nvidia.com/gpu — typically an on-premises cluster running the NVIDIA GPU
+      # Operator, which ships its own device plugin and additionally gates the node
+      # via nvidia-operator-validator. Two plugins on one node both claim
+      # /var/lib/kubelet/device-plugins and fight over registration.
+      #
+      # This flag is and kueue.dedicated.createClusterResources (which also gates 
+      # this DaemonSet) lie in separate dimensions: cluster that need cluster-scoped
+      # Kueue resources may not need automatic GPU drivers control.
+      devicePlugin:
+        enabled: true
 
   # -- Prevents resource fragmentation by checking node-level capacity before
   # admitting batch jobs. Requires ProvisioningRequest CRD and Cluster Autoscaler.
@@ -422,12 +591,13 @@ kueue:
         cpu: 256
         memory: 1024Gi
       # -- GPU quota (only used when kueue.pools.gpu.enabled=true)
-      # One job per GPU node — nvidia.com/gpu: 1 enforces exclusive access.
-      # gpu count = max concurrent GPU jobs across all tiers.
+      # gpu = max concurrent GPU jobs across all tiers.
+      # The flavor's cpu/memory quota is DERIVED in kueue-clusterqueues.yaml as
+      # gpu * maxJobResources.gpuCpu and gpu * maxJobResources.gpuRam, so it
+      # always matches the per-job GPU ceiling. Do NOT set cpu/memory here —
+      # a separate value would silently drift from the ceiling and starve the queue.
       gpu:
         gpu: 8
-        cpu: 32
-        memory: 128Gi
 
   # -- Shared mode configuration
   # Point at existing Kueue resources managed outside this chart.
@@ -547,12 +717,50 @@ app:
     # your cluster's log driver: CloudWatch, Stackdriver, etc.).
     persistence:
       enabled: true
-      size: 20Gi
+      # Budget, from a measured production instance (gzip takes the JSON down
+      # 11.4x, and a rotated 1Gi file lands at ~92Mi):
+      #   ordinary log   1Gi live +  10 x 92Mi =  1.9Gi
+      #   tree changelog 1Gi live + 200 x 92Mi = 19.4Gi
+      #   total 21.3Gi, leaving room for the brief uncompressed spike while a
+      #   freshly rotated file is still being gzipped.
+      size: 30Gi
       storageClass: "" # "" = cluster default
       existingClaim: "" # Use pre-created PVC instead of creating one
       rotation:
         size: 1Gi # Rotate when a log file reaches this size
-        count: 100 # Number of rotated files to keep
+        # 10, not the 100 this used to be: the commit summaries that made the
+        # ordinary log large now live in the tree changelog below, so the same
+        # 1Gi file takes ~41 days to fill instead of ~21 hours. Ten copies cover
+        # over a year, where a hundred used to cover under three months.
+        count: 10 # Number of rotated files to keep
+
+    # -- Tree changelog: the per-transaction change summaries describing every
+    # resource, field and event a committed transaction touched.
+    #
+    # These records are not new - they used to ride on the ordinary log, where
+    # they were the bulk of it. They now go to a file of their own and are never
+    # streamed: at production load they are hundreds of variable-size JSON
+    # reports a second, enough to overwhelm a log-shipping agent. Ordinary
+    # records keep their txID, so a changelog record correlates with them by
+    # timestamp and transaction ID.
+    #
+    # With persistence enabled above, the changelog sits on the logs volume next
+    # to the ordinary log. Without it, the container image streams the ordinary
+    # log to stdout and writes no file at all, and the changelog lands under the
+    # main root instead - on an emptyDir, so it is wiped on every pod restart.
+    #
+    # The budget is what decides how far back a failure can be investigated:
+    # measured at ~34MiB/min under real block load, 200 x 1Gi is roughly four
+    # days of history for ~19.4Gi on disk once rotated files are gzipped. Raise
+    # maxBackups for a deeper history, and check it still fits the volume.
+    #
+    # Disabling it does not merely mute the output: the summaries are then not
+    # built at all, so a deployment with no use for them pays nothing per
+    # transaction.
+    treeChangelog:
+      enabled: true
+      maxSize: 1Gi # Rotate when the changelog reaches this size
+      maxBackups: 200 # Number of rotated changelogs to keep (gzipped)
 
   # -- Monitoring
   # Platforma exposes Prometheus metrics. To enable scraping:
@@ -609,6 +817,73 @@ jobs:
   # -- Secret mounted into every job pod
   # Contains credentials jobs need at runtime (license key, etc.).
   secretName: "platforma-license"
+
+  # -- Scratch (temporary) disk space for job commands.
+  #
+  # A block asks for scratch space with `scratchFreeSpace` in its exec resources.
+  # The backend then points TMPDIR at a volume the cluster attaches for that job
+  # and deletes with it, instead of the small temporary volume every job shares.
+  #
+  # ON AWS THIS IS ON BY DEFAULT. With `environment: aws` the chart creates a gp3
+  # StorageClass and sets the ceiling, so a block that asks for scratch space gets
+  # it without any further configuration. Set `environment: gcp` (or leave it
+  # empty) and scratch space is off until you name a StorageClass yourself.
+  #
+  # Scratch is always an optimisation, never a precondition: where no class is
+  # named the request is dropped and the command still runs. TMPDIR then points at
+  # the command's working directory, on the shared workspace storage, and TMP at the
+  # node's own small disk. Where I/O to the workspace storage is billed — EFS on AWS,
+  # Filestore on GCP — a deployment with no scratch tier can thus cost noticeably more.
+  scratchStorage:
+    network:
+      # -- Hard ceiling on a scratch request (--k8s-max-scratch-request).
+      # Larger requests are shrunk to this value, never rejected. Keep it at or below the
+      # largest volume `storageClass` can create. Unset ⇒ 16Ti on AWS (the gp3 maximum),
+      # no ceiling elsewhere.
+      maxRequest: ~
+
+      # -- maxRequest for jobs that need a GPU (--k8s-gpu-max-scratch-request).
+      # A network volume attaches to any node, so this one may share the batch ceiling:
+      # empty ⇒ GPU jobs fall back to maxRequest.
+      gpuMaxRequest: ""
+
+      # -- Floor under a scratch request (--k8s-min-scratch-request).
+      # Smaller requests are grown to this value; a job that asks for no scratch space
+      # still gets none. A volume that provisions performance has a smallest legal size:
+      # EBS gives at most 500 IOPS per GiB on gp3, so a class asking for 16000 IOPS
+      # cannot create a volume below 32Gi and a smaller request would never provision.
+      # Unset ⇒ derived from `storageClass.iops` and `storageClass.type` when this chart
+      # creates the class, empty when it does not. Set it yourself when you point `name`
+      # at a class you already have and that class provisions performance.
+      minRequest: ~
+
+      # -- StorageClass backing the scratch volumes.
+      # Every field here is unset by default and filled in from `environment`: on aws a
+      # gp3 class the chart creates, elsewhere nothing at all. Set a field to override
+      # that default; set `name` to a class you already have and `create: false` to use
+      # it instead.
+      storageClass:
+        # -- Name of the class, created or existing. EMPTY DISABLES SCRATCH SPACE: a
+        # request then falls back to the small shared volume, because a volume no class
+        # can provision would leave the job Pending for ever.
+        # Unset ⇒ "platforma-scratch" on aws, empty elsewhere.
+        name: ~
+        # -- Create the class named above. AWS only — the provisioner is the EBS CSI
+        # driver. Unset ⇒ true on aws, false elsewhere. Set false to use a class the
+        # cluster already has, which is the only option outside AWS.
+        create: ~
+        # -- EBS volume type: gp3, io2, … Governs the maximum volume size.
+        # Unset ⇒ gp3 on aws.
+        type: ~
+        # -- Provisioned IOPS and throughput (MB/s) for EVERY scratch volume the
+        # deployment creates. Both are billed above the type's baseline, so raising them
+        # raises the cost of every scratch job, not just the large ones. IOPS also set
+        # the smallest volume the class can create, and thus `minRequest` above.
+        # Unset ⇒ the gp3 maximums, 16000 and 1000.
+        iops: ~
+        throughput: ~
+        # -- Encrypt scratch volumes at rest. Unset ⇒ true.
+        encrypted: ~
 
 # =============================================================================
 # CHART-LEVEL VALIDATION. You usually don't need to change it.

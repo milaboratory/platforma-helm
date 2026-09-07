@@ -35,6 +35,12 @@ export LICENSE_KEY=E-XXXXX...
 ./install.sh
 ```
 
+Auth prompts have matching env vars too — e.g. `AUTH_METHOD`, the `LDAP_*` /
+SSO client vars, and `ADMIN_USERS` to grant the admin role to logins matching
+a full-match regexp (semicolon-separated for multiple, e.g.
+`ADMIN_USERS='alice@corp\.com;.*@admins\.corp\.com'`; works with any auth
+method — for SSO the login is the email).
+
 ## Deployment size presets
 
 `var.deployment_size` (set via the `DEPLOYMENT_SIZE` prompt) controls node-pool

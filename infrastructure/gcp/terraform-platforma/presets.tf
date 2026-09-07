@@ -208,4 +208,14 @@ locals {
   effective_kueue_gpu_queue_cpu    = coalesce(var.kueue_gpu_queue_cpu, local.gpu_capacity[var.deployment_size].cpu)
   effective_kueue_gpu_queue_memory = coalesce(var.kueue_gpu_queue_memory, "${local.gpu_capacity[var.deployment_size].memory_gi}Gi")
   effective_kueue_gpu_queue_count  = coalesce(var.kueue_gpu_queue_count, local.gpu_capacity[var.deployment_size].gpus)
+
+  # Per-GPU-job ceilings (kueue.maxJobResources.gpuCpu/gpuRam/gpuMemory). Set by
+  # install.sh from the largest GPU node actually provisioned. Fallback (bare
+  # terraform, no install.sh discovery) assumes the largest default shape,
+  # g4-standard-48: 48 vCPU − 2 headroom = 46; GKE-allocatable RAM ≈ 168 GiB;
+  # RTX PRO 6000 per-GPU VRAM = 96 GiB. In an RTX-less region the install.sh
+  # value is authoritative (this default is only for the no-discovery path).
+  effective_gpu_max_job_cpu    = coalesce(var.gpu_max_job_cpu, 46)
+  effective_gpu_max_job_ram    = coalesce(var.gpu_max_job_ram, "168Gi")
+  effective_gpu_max_job_memory = coalesce(var.gpu_max_job_memory, "96Gi")
 }

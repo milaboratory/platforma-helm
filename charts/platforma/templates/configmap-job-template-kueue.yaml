@@ -68,9 +68,14 @@ data:
                     app.kubernetes.io/managed-by: platforma
                 spec:
                   serviceAccountName: {{ include "platforma.jobServiceAccountName" . }}
+                  # OnRootMismatch: without it kubelet recursively chowns the whole
+                  # workspace PVC on every job pod start. The volume holds hundreds of
+                  # thousands of files, so that walk adds minutes of ContainerCreating
+                  # to each job and serialises across concurrent pods.
                   securityContext:
                     runAsNonRoot: true
                     fsGroup: 1010
+                    fsGroupChangePolicy: OnRootMismatch
                   restartPolicy: Never
                   <<- if eq .PlatformaQueue "ui-tasks" >>
                   {{- with .Values.kueue.pools.ui.nodeSelector }}
@@ -135,27 +140,48 @@ data:
                       image: << .Image >>
                       command: ["/bin/sh"]
                       args: ["{{ include "platforma.path.scripts" . }}/job_script.sh"]
-                      workingDir: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>
+                      workingDir: << .WorkdirAbsPath | quote >>
                       env:
+                        <<- /* Defaults come first: a block that sets any of these in its own
+                               environment must win, and K8s keeps the last entry for a name. */>>
+                        - name: TMP # MiXCR requires the existed tmp directory
+                          value: "/tmp"
+                        <<- /* TMPDIR only for a command that asked for scratch space. Pointed at
+                               the working directory it makes every mktemp write into the directory
+                               job_script.sh prunes, starting with the script's own expected-items
+                               lists; with no scratch request the command gets no TMPDIR at all. */>>
+                        <<- if .TmpdirPath >>
+                        - name: TMPDIR
+                          value: << .TmpdirPath | quote >>
+                        <<- end >>
+                        - name: HOME
+                          value: << .HomePath | quote >>
                         - name: PL_JOB_CMD_AND_ARGS
                           value: << toShellCmd .Command | quote >>
                         - name: PL_JOB_WORKDIR
-                          value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>
+                          value: << .WorkdirAbsPath >>
                         <<- if .StdOutRelativePath >>
                         - name: PL_JOB_STDOUT_PATH
-                          value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .StdOutRelativePath >>
+                          value: << .WorkdirAbsPath >>/<< .StdOutRelativePath >>
                         <<- end >>
                         <<- if .StdErrRelativePath >>
                         - name: PL_JOB_STDERR_PATH
-                          value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .StdErrRelativePath >>
+                          value: << .WorkdirAbsPath >>/<< .StdErrRelativePath >>
                         <<- end >>
-                        <<- if .ExpectedItems >>
-                        - name: PL_JOB_EXPECTED_ITEMS
-                          value: << join "\n" .ExpectedItems | quote >>
+                        <<- /* The workdir item list reaches the job by path, never by value: a
+                               single env var is capped at MAX_ARG_STRLEN (131072 bytes), which a
+                               workdir of more than ~7300 files exceeds, and execve then fails
+                               with E2BIG before the entrypoint runs. */>>
+                        <<- if .ExpectedItemsFileRelativePath >>
+                        - name: PL_JOB_EXPECTED_ITEMS_FILE
+                          value: << .WorkdirAbsPath >>/<< .ExpectedItemsFileRelativePath >>
+                        <<- end >>
+                        <<- /* The marker is independent of the item list: the runner reads its
+                               absence as an OOM kill, so a job with an empty workdir must still
+                               get one or every failure of it is misread as an OOM. */>>
                         <<- if .CompletionMarkerRelativePath >>
                         - name: PL_JOB_COMPLETION_MARKER_PATH
-                          value: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>/<< .CompletionMarkerRelativePath >>
-                        <<- end >>
+                          value: << .WorkdirAbsPath >>/<< .CompletionMarkerRelativePath >>
                         <<- end >>
                         {{- if .Values.kueue.pools.gpu.enabled }}
                         <<- if and .Resources .Resources.HasGPU >>
@@ -186,10 +212,6 @@ data:
                           value: << .Value | quote >>
                           <<- end >>
                         <<- end >>
-                        - name: TMP # MiXCR requires the existed tmp directory
-                          value: "/tmp"
-                        - name: HOME
-                          value: "/tmp"
                       securityContext:
                         runAsUser: 1010
                         runAsGroup: 1010
@@ -225,14 +247,16 @@ data:
                       <<- end >>
                       volumeMounts:
                         - name: workspace
-                          mountPath: {{ include "platforma.path.workspace" . }}/work/<< .WorkDirRelativePath >>
-                          subPath: work/<< .WorkDirRelativePath >>
+                          mountPath: << .WorkdirAbsPath >>
+                          subPath: {{ include "platforma.path.workStorageName" . }}/<< .WorkdirRelPath >>
                         - name: job-script
                           mountPath: {{ include "platforma.path.scripts" . }}/job_script.sh
                           subPath: job_script.sh
                           readOnly: true
                         - name: temp-volume
                           mountPath: /tmp
+                        - name: home-volume
+                          mountPath: << .HomePath >>
 
                   volumes:
                     - name: workspace
@@ -243,4 +267,9 @@ data:
                         name: {{ include "platforma.fullname" . }}-job-script
                         defaultMode: 0755
                     - name: temp-volume
+                      {{- include "platforma.job.scratchVolumeSource" . | nindent 22 }}
+                    # HOME lives on its own volume: dotfiles and tool caches must not compete
+                    # for the space a command's temporary data needs, and temporary data must
+                    # not end up inside a home directory.
+                    - name: home-volume
                       emptyDir: {}

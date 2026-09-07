@@ -50,12 +50,16 @@ jobs:
           role-to-assume: arn:aws:iam::511903394050:role/prod-platforma-helm-github-oidc-euce1
           aws-region: eu-central-1
 
-      - name: Upload CFN template to S3
+      # Production template at the bucket root is written only here.
+      # pl may write a TTL'd tree under pr/<version>/ only.
+      - name: Upload CFN template and deployer assets to S3
         env:
           CHART_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          CFN_FILE=./infrastructure/aws/cloudformation/cloudformation-eks-1-35.yaml
+          CFN_DIR=./infrastructure/aws/cloudformation
+          CFN_FILE="${CFN_DIR}/cloudformation-eks-1-35.yaml"
+          BUCKET=platforma-cloudformation
 
           # Fail loudly if the template is missing (e.g. moved by an upstream sync)
           # instead of silently leaving the public S3 object stale.
@@ -73,4 +77,5 @@ jobs:
             exit 1
           fi
 
-          aws s3 cp "${CFN_FILE}" s3://platforma-cloudformation/cloudformation-eks-1-35.yaml --content-type text/yaml
+          "${CFN_DIR}/publish-assets.sh"
+          aws s3 cp "${CFN_FILE}" "s3://${BUCKET}/cloudformation-eks-1-35.yaml" --content-type text/yaml

@@ -28,9 +28,30 @@ spec:
         spec:
           serviceAccountName: {{ include "platforma.serviceAccountName" . }}
           restartPolicy: OnFailure
+          # Match the server pod's non-root securityContext. Without it the
+          # alpine/k8s image runs as root, so on clusters that enforce
+          # runAsNonRoot the kubelet rejects the pod with
+          # CreateContainerConfigError ("container has runAsNonRoot and image
+          # will run as root") and the cleanup never runs.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1010
+            runAsGroup: 1010
+            fsGroup: 1010
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: cleanup
               image: alpine/k8s:1.35.4
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                # kubectl writes its discovery cache under $HOME; as a non-root
+                # uid with no home dir that would fail on "/", so point it at /tmp.
+                - name: HOME
+                  value: /tmp
               command:
                 - /bin/sh
                 - -c

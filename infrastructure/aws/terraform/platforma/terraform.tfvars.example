@@ -66,3 +66,8 @@ auth_method = "htpasswd"
 
 # MiLaboratories' read-only demo library (cross-account, embedded creds).
 enable_demo_data_library = true
+
+# --- Extra Platforma server args -----------------------------------
+# Appended after the flags this module may set based on other config
+# options (e.g. --default-docker-registry). Each element is one whole argument.
+# additional_extra_args = ["--some-flag=value"]

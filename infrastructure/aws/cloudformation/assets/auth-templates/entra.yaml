@@ -1,0 +1,15 @@
+# issuer is a full URL, or compose-auth expands a tenant GUID first.
+name: $name
+type: sso
+sso:
+  issuer: $issuer
+  clientId: $clientId
+  userIdClaim: oid
+trustUnverifiedEmail: true
+map:
+  login: preferred_username
+  email: email
+  displayName: name
+  groups: groups
+lookUpAttr: email
+createUsers: true

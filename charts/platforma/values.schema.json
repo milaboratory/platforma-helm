@@ -69,6 +69,276 @@
         "showUserList": {
           "type": "boolean"
         },
+        "providers": {
+          "description": "Auth providers, as a list. Each entry carries a name, which is the provider id, and a type of sso, htpasswd or ldap. Entries are advertised to clients in the order written here, and a client opens its login form on the first one. Earlier chart versions took a map keyed by provider id: convert each key into an entry with that key as its name.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                "maxLength": 40
+              },
+              "type": {
+                "type": "string",
+                "enum": ["sso", "htpasswd", "ldap"]
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "sso": {
+                "type": "object",
+                "properties": {
+                  "issuer": {
+                    "type": "string"
+                  },
+                  "clientId": {
+                    "type": "string"
+                  },
+                  "scopes": {
+                    "type": "string"
+                  },
+                  "resource": {
+                    "type": "string"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "enum": ["", "none", "login", "consent", "select_account"]
+                  },
+                  "accessType": {
+                    "type": "string",
+                    "enum": ["", "online", "offline"]
+                  },
+                  "userIdClaim": {
+                    "type": "string"
+                  },
+                  "subjectTokenSource": {
+                    "type": "string",
+                    "enum": ["", "access_token", "id_token"]
+                  },
+                  "redirectPorts": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    }
+                  },
+                  "jwtAlgorithms": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "clientSecret": {
+                    "type": "object",
+                    "properties": {
+                      "secretName": {
+                        "type": "string"
+                      },
+                      "secretKey": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              "htpasswd": {
+                "type": "object",
+                "properties": {
+                  "credentials": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "username": {
+                          "type": "string"
+                        },
+                        "password": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["username", "password"]
+                    }
+                  },
+                  "secretName": {
+                    "type": "string"
+                  },
+                  "secretKey": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "ldap": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  },
+                  "userDN": {
+                    "type": "string"
+                  },
+                  "bindDN": {
+                    "type": "string"
+                  },
+                  "bindPassword": {
+                    "type": "string"
+                  },
+                  "baseDN": {
+                    "type": "string"
+                  },
+                  "userFilter": {
+                    "type": "string"
+                  },
+                  "searchRules": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "groupBaseDN": {
+                    "type": "string"
+                  },
+                  "startTLS": {
+                    "type": "boolean"
+                  },
+                  "insecureTLS": {
+                    "type": "boolean"
+                  },
+                  "trustedCASecretRef": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "clientCertSecretRef": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "certKey": {
+                        "type": "string"
+                      },
+                      "keyKey": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              "lookUpAttr": {
+                "type": "string"
+              },
+              "trustUnverifiedEmail": {
+                "type": "boolean"
+              },
+              "createUsers": {
+                "type": "boolean"
+              },
+              "map": {
+                "type": "object",
+                "properties": {
+                  "login": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "fullName": {
+                    "type": "string"
+                  },
+                  "externalId": {
+                    "type": "string"
+                  },
+                  "groups": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "mapFields": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "adminUsers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "roles": {
+                "type": "object",
+                "properties": {
+                  "groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "groupRegexps": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "attrRegexps": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "google": {
+                "type": "object",
+                "properties": {
+                  "groupFetch": {
+                    "type": "boolean"
+                  },
+                  "apiTimeout": {
+                    "type": "string",
+                    "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$"
+                  },
+                  "apiRetries": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": ["name", "type"],
+            "additionalProperties": false
+          }
+        },
+        "extensionFields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "htpasswd": {
           "type": "object",
           "properties": {
@@ -512,6 +782,10 @@
           "type": "string",
           "enum": ["dedicated", "shared"]
         },
+        "imagePullMaxRetries": {
+          "type": "integer",
+          "minimum": 0
+        },
         "oomRetry": {
           "type": "boolean"
         },
@@ -522,16 +796,19 @@
               "type": ["integer", "string"]
             },
             "memory": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+Gi$"
             },
             "gpuMemory": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+Gi$"
             },
             "gpuCpu": {
               "type": ["integer", "string"]
             },
             "gpuRam": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+Gi$"
             }
           },
           "additionalProperties": false
@@ -569,6 +846,14 @@
                 },
                 "tolerations": {
                   "type": "array"
+                },
+                "devicePlugin": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  }
                 }
               }
             }
@@ -873,6 +1158,21 @@
                 }
               },
               "additionalProperties": false
+            },
+            "treeChangelog": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "maxSize": {
+                  "type": "string"
+                },
+                "maxBackups": {
+                  "type": "integer"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -936,6 +1236,51 @@
       "properties": {
         "secretName": {
           "type": "string"
+        },
+        "scratchStorage": {
+          "type": "object",
+          "properties": {
+            "network": {
+              "type": "object",
+              "properties": {
+                "maxRequest": {
+                  "type": ["string", "number", "null"]
+                },
+                "gpuMaxRequest": {
+                  "type": ["string", "number", "null"]
+                },
+                "minRequest": {
+                  "type": ["string", "number", "null"]
+                },
+                "storageClass": {
+                  "type": "object",
+                  "properties": {
+                    "create": {
+                      "type": ["boolean", "null"]
+                    },
+                    "name": {
+                      "type": ["string", "null"]
+                    },
+                    "type": {
+                      "type": ["string", "null"]
+                    },
+                    "iops": {
+                      "type": ["string", "number", "null"]
+                    },
+                    "throughput": {
+                      "type": ["string", "number", "null"]
+                    },
+                    "encrypted": {
+                      "type": ["boolean", "null"]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

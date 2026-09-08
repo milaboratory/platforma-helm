@@ -10,8 +10,10 @@
 #                   batch node's allocatable). Mirrors kueue.maxJobResources.
 #   * batch/ui_*  — total ClusterQueue quota per pool (kueue.dedicated.resources).
 #                   UI quota is fixed at 64 vCPU / 256 GiB across all sizes.
-#   * gpu_*       — GPU ClusterQueue quota (constant; mirrors CF's hardcoded
-#                   kueue.dedicated.resources.gpu = { gpu: 8, cpu: 32, mem: 128Gi }).
+#   * gpu_queue_gpu — GPU-job concurrency (nvidia.com/gpu ClusterQueue quota). The
+#                   chart DERIVES the GPU flavor cpu/memory quota from this count
+#                   times max_job_gpu_cpu/max_job_gpu_ram_gi, so those cpu/memory
+#                   quotas are no longer set here (they were the drift source).
 # =============================================================================
 
 locals {
@@ -20,16 +22,22 @@ locals {
 
   # Per-job GPU ceilings. Mirror the largest GPU node group in infra/nodegroups.tf
   # GPU jobs run on a separate node pool, so a job needing a GPU is ceiled to these
-  # instead of the batch max_job_cpu/max_job_memory_gi. CPU/RAM use the largest node's
-  # allocatable (headroom for kubelet + DaemonSets), matching the batch convention.
+  # instead of the batch max_job_cpu/max_job_memory_gi. CPU/RAM must be the largest
+  # node's *allocatable* (capacity minus kubelet kube-reserved + eviction), not raw
+  # capacity — a job clamped to capacity passes Kueue admission but its pod never
+  # schedules and sits Pending. For g6e.12xlarge (384Gi capacity), EKS's tiered
+  # kube-reserved (~4% at this size) + 100Mi eviction leaves ~369Gi allocatable.
+  # CPU already carries headroom (48 physical -> 46). Keep in sync with the CF
+  # resolver's _eks_alloc_ram_gib formula in cloudformation-eks-1-35.yaml.
   # Required when var.enable_gpu = true; unused otherwise.
   max_job_gpu_memory_gi = 48
   max_job_gpu_cpu       = 46
-  max_job_gpu_ram_gi    = 384
+  max_job_gpu_ram_gi    = 369
 
-  gpu_queue_gpu       = 8
-  gpu_queue_cpu       = 32
-  gpu_queue_memory_gi = 128
+  # GPU-job concurrency. The chart derives the GPU flavor cpu/memory quota from this
+  # count times max_job_gpu_cpu/max_job_gpu_ram_gi, so the flavor quota can never be
+  # smaller than a correctly-ceiled GPU job. Only the count is set here.
+  gpu_queue_gpu = 8
 
   deployment_sizes = {
     small = {

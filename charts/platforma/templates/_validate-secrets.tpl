@@ -79,6 +79,76 @@ query, so the entire validation block becomes a no-op offline.
                     .Release.Namespace .Values.jobs.secretName)) -}}
   {{- end -}}
 
+  {{- /* auth.providers — every Secret a provider reads its credentials from.
+         Inline htpasswd credentials are skipped: the chart creates that Secret
+         itself, so there is nothing to pre-flight. */ -}}
+  {{- $ctx := . -}}
+  {{- range $i, $p := default (list) $ctx.Values.auth.providers -}}
+    {{- $id := $p.name -}}
+    {{- if eq $p.type "htpasswd" -}}
+      {{- $h := default (dict) $p.htpasswd -}}
+      {{- if $h.secretName -}}
+        {{- $key := $h.secretKey | default "htpasswd" -}}
+        {{- include "platforma.checkSecret" (dict
+              "ctx" $ctx
+              "name" $h.secretName
+              "keys" (list $key)
+              "keyValuesPaths" (list (printf "auth.providers[%d].htpasswd.secretKey" $i))
+              "valuesPath" (printf "auth.providers[%d].htpasswd.secretName" $i)
+              "hint" (printf "htpasswd file for auth provider %q" $id)
+              "example" (printf "htpasswd -nB <username> > htpasswd && kubectl -n %s create secret generic %s --from-file=%s=./htpasswd"
+                        $ctx.Release.Namespace $h.secretName $key)) -}}
+      {{- end -}}
+    {{- end -}}
+    {{- if eq $p.type "sso" -}}
+      {{- $cs := default (dict) (default (dict) $p.sso).clientSecret -}}
+      {{- if $cs.secretName -}}
+        {{- $key := $cs.secretKey | default "client-secret" -}}
+        {{- include "platforma.checkSecret" (dict
+              "ctx" $ctx
+              "name" $cs.secretName
+              "keys" (list $key)
+              "keyValuesPaths" (list (printf "auth.providers[%d].sso.clientSecret.secretKey" $i))
+              "valuesPath" (printf "auth.providers[%d].sso.clientSecret.secretName" $i)
+              "hint" (printf "OAuth client secret for auth provider %q" $id)
+              "example" (printf "kubectl -n %s create secret generic %s --from-literal=%s=\"<client-secret>\""
+                        $ctx.Release.Namespace $cs.secretName $key)) -}}
+      {{- end -}}
+    {{- end -}}
+    {{- if eq $p.type "ldap" -}}
+      {{- $ldap := default (dict) $p.ldap -}}
+      {{- $ca := default (dict) $ldap.trustedCASecretRef -}}
+      {{- if $ca.name -}}
+        {{- $key := $ca.key | default "ca.crt" -}}
+        {{- include "platforma.checkSecret" (dict
+              "ctx" $ctx
+              "name" $ca.name
+              "keys" (list $key)
+              "keyValuesPaths" (list (printf "auth.providers[%d].ldap.trustedCASecretRef.key" $i))
+              "valuesPath" (printf "auth.providers[%d].ldap.trustedCASecretRef.name" $i)
+              "hint" (printf "LDAP trusted CA for auth provider %q" $id)
+              "example" (printf "kubectl -n %s create secret generic %s --from-file=%s=./ldap-ca.crt"
+                        $ctx.Release.Namespace $ca.name $key)) -}}
+      {{- end -}}
+      {{- $cc := default (dict) $ldap.clientCertSecretRef -}}
+      {{- if $cc.name -}}
+        {{- $certKey := $cc.certKey | default "tls.crt" -}}
+        {{- $keyKey := $cc.keyKey | default "tls.key" -}}
+        {{- include "platforma.checkSecret" (dict
+              "ctx" $ctx
+              "name" $cc.name
+              "keys" (list $certKey $keyKey)
+              "keyValuesPaths" (list
+                  (printf "auth.providers[%d].ldap.clientCertSecretRef.certKey" $i)
+                  (printf "auth.providers[%d].ldap.clientCertSecretRef.keyKey" $i))
+              "valuesPath" (printf "auth.providers[%d].ldap.clientCertSecretRef.name" $i)
+              "hint" (printf "LDAP client certificate for auth provider %q" $id)
+              "example" (printf "kubectl -n %s create secret tls %s --cert=./tls.crt --key=./tls.key"
+                        $ctx.Release.Namespace $cc.name)) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+
   {{- /* htpasswd — only when pointing at an existing Secret (inline credentials path creates the Secret itself) */ -}}
   {{- if .Values.auth.htpasswd.secretName -}}
     {{- include "platforma.checkSecret" (dict

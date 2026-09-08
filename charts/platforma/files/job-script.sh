@@ -21,32 +21,51 @@ fi
 
 # --- Prune unexpected items from workdir ---
 # Removes leftover output from OOM-killed retries so they don't consume memory.
-# PL_JOB_EXPECTED_ITEMS is a newline-separated list of relative paths.
+# The expected items are a newline-separated list of relative paths.
 # Files are plain paths (e.g. "input.txt"), directories end with "/" (e.g. "output_dir/").
 # Expected files are kept. Expected directories are kept but their unexpected contents are cleaned.
 # Unexpected files and directories are removed entirely.
-# When unset, no pruning occurs (backward compat).
-if [ -n "${PL_JOB_EXPECTED_ITEMS:-}" ] && [ -n "${PL_JOB_WORKDIR:-}" ] && [ -d "${PL_JOB_WORKDIR}" ]; then
+#
+# The list arrives as PL_JOB_EXPECTED_ITEMS_FILE, a path inside the workdir. It is never passed
+# by value: a single env var is capped at MAX_ARG_STRLEN (131072 bytes), which a workdir of more
+# than ~7300 files exceeds, and execve then fails with E2BIG before this script runs.
+# When unset, no pruning occurs. An items file that is missing or empty also means no pruning —
+# pruning against an empty list would wipe the whole workdir.
+#
+# Matching runs through awk, which holds the expected list in a hash. Spawning a grep per workdir
+# entry instead is quadratic: on the 9000-file workdir that motivated the file-based list it costs
+# ~27s of pure CPU before every job start, and again on every OOM retry. awk ships with busybox,
+# but this image comes from the user's software package, so a missing awk downgrades to no pruning
+# rather than killing the job.
+if [ -n "${PL_JOB_EXPECTED_ITEMS_FILE:-}" ] && [ -s "${PL_JOB_EXPECTED_ITEMS_FILE}" ] \
+  && [ -n "${PL_JOB_WORKDIR:-}" ] && [ -d "${PL_JOB_WORKDIR}" ] \
+  && command -v awk >/dev/null 2>&1; then
   _expected_files=$(mktemp)
   _expected_dirs=$(mktemp)
   trap 'rm -f "$_expected_files" "$_expected_dirs"' EXIT INT TERM
 
   # Split items into files and directories (dirs end with /)
-  printf '%s\n' "$PL_JOB_EXPECTED_ITEMS" | while IFS= read -r _item; do
-    case "$_item" in
-      */) printf '%s\n' "$_item" >> "$_expected_dirs" ;;
-      *)  printf '%s\n' "$_item" >> "$_expected_files" ;;
-    esac
-  done
+  awk -v files="$_expected_files" -v dirs="$_expected_dirs" '
+    $0 == "" { next }
+    /\/$/ { print > dirs; next }
+    { print > files }
+  ' "$PL_JOB_EXPECTED_ITEMS_FILE"
 
-  # Prune unexpected files
-  find "$PL_JOB_WORKDIR" -type f | while IFS= read -r _abs_path; do
-    _rel_path="${_abs_path#"${PL_JOB_WORKDIR}/"}"
-    if ! grep -qxF "$_rel_path" "$_expected_files"; then
-      echo "[job-script] Pruning unexpected file: ${_rel_path}" >&2
-      rm -f "$_abs_path"
-    fi
-  done
+  # Prune unexpected files. awk emits only the paths to remove, so the shell loop below runs
+  # once per pruned file rather than once per workdir file.
+  find "$PL_JOB_WORKDIR" -type f \
+    | awk -v prefix="${PL_JOB_WORKDIR}/" -v expected="$_expected_files" '
+        BEGIN { while ((getline _line < expected) > 0) keep[_line] = 1 }
+        {
+          _rel = (index($0, prefix) == 1) ? substr($0, length(prefix) + 1) : $0
+          if (!(_rel in keep)) print
+        }
+      ' \
+    | while IFS= read -r _abs_path; do
+        _rel_path="${_abs_path#"${PL_JOB_WORKDIR}/"}"
+        echo "[job-script] Pruning unexpected file: ${_rel_path}" >&2
+        rm -f "$_abs_path"
+      done
 
   # Prune unexpected directories (depth-first to handle nested dirs correctly)
   find "$PL_JOB_WORKDIR" -depth -type d ! -path "$PL_JOB_WORKDIR" | while IFS= read -r _abs_dir; do
@@ -58,23 +77,12 @@ if [ -n "${PL_JOB_EXPECTED_ITEMS:-}" ] && [ -n "${PL_JOB_WORKDIR:-}" ] && [ -d "
       continue
     fi
 
-    # Check if this directory is an ancestor of an expected item
-    _is_ancestor=false
-    while IFS= read -r _exp_item; do
-      case "$_exp_item" in
-        "${_rel_dir}/"*) _is_ancestor=true; break ;;
-      esac
-    done < "$_expected_files"
-
-    if [ "$_is_ancestor" = false ] && [ -s "$_expected_dirs" ]; then
-      while IFS= read -r _exp_dir; do
-        case "$_exp_dir" in
-          "${_rel_dir}/"*) _is_ancestor=true; break ;;
-        esac
-      done < "$_expected_dirs"
-    fi
-
-    if [ "$_is_ancestor" = true ]; then
+    # Check if this directory is an ancestor of an expected item. index() is a literal prefix
+    # test, so paths holding regex metacharacters compare the same way the shell case did.
+    if awk -v prefix="${_rel_dir}/" '
+         index($0, prefix) == 1 { found = 1; exit }
+         END { if (found) exit 0; exit 1 }
+       ' "$_expected_files" "$_expected_dirs"; then
       continue
     fi
 
@@ -87,6 +95,8 @@ if [ -n "${PL_JOB_EXPECTED_ITEMS:-}" ] && [ -n "${PL_JOB_WORKDIR:-}" ] && [ -d "
     fi
   done
 
+elif [ -n "${PL_JOB_EXPECTED_ITEMS_FILE:-}" ] && ! command -v awk >/dev/null 2>&1; then
+  echo "[job-script] awk not found in image: skipping workdir prune" >&2
 fi
 
 # Save 'real stdout' and 'real stderr' of current script in descriptors 3 and 4
@@ -141,7 +151,10 @@ sh -c "$PL_JOB_CMD_AND_ARGS"
 EXIT_CODE=$?
 
 # Write completion marker (signals script was NOT OOM-killed)
+# The marker lives in the workdir's reserved service directory, which the runner only creates
+# when it has an item list to write, so create it here too. Its absence is read as an OOM kill.
 if [ -n "${PL_JOB_COMPLETION_MARKER_PATH:-}" ]; then
+  mkdir -p "$(dirname "$PL_JOB_COMPLETION_MARKER_PATH")"
   echo "$EXIT_CODE" > "$PL_JOB_COMPLETION_MARKER_PATH"
 fi
 

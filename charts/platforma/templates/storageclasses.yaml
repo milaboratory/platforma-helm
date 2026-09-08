@@ -21,6 +21,33 @@ parameters:
 volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Delete
 allowVolumeExpansion: true
+{{- with (include "platforma.scratchStorage" . | fromYaml).network.storageClass }}
+{{- if and .create .name }}
+---
+# Network-tier scratch: one volume per job, created when the job starts and deleted
+# with it. WaitForFirstConsumer is mandatory — the volume must be created in the zone
+# of the node the scheduler picked, not before it.
+#
+# No allowVolumeExpansion: expansion is an operator action on a PVC that outlives the
+# thing that filled it, and this PVC dies with its pod. A job that runs out of scratch
+# space gets ENOSPC, the same as any full filesystem; the answer is a larger request,
+# not a larger volume underneath a failing job.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "platforma.labels" $ | nindent 4 }}
+provisioner: ebs.csi.aws.com
+parameters:
+  type: {{ .type | quote }}
+  iops: {{ .iops | quote }}
+  throughput: {{ .throughput | quote }}
+  encrypted: {{ .encrypted | quote }}
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+{{- end }}
+{{- end }}
 {{- if .Values.storage.workspace.efs.fileSystemId }}
 ---
 apiVersion: storage.k8s.io/v1

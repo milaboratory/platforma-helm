@@ -256,3 +256,18 @@ variable "enable_demo_data_library" {
   description = "Add MiLaboratories' read-only demo data library (milabs-demo-data). Uses MiLaboratories-owned, cross-account credentials baked into the chart values — not your IRSA roles. Mirrors CF EnableDemoLibrary (default true)."
   default     = true
 }
+
+# -----------------------------------------------------------------------------
+# Extra Platforma server args
+# -----------------------------------------------------------------------------
+
+variable "additional_extra_args" {
+  type        = list(string)
+  description = "Additional command-line flags appended to the Platforma server's extraArgs, after the flags this module always sets (--default-docker-registry). Each element is one whole argument, e.g. \"--some-flag=value\"."
+  default     = []
+
+  validation {
+    condition     = alltrue([for arg in var.additional_extra_args : startswith(arg, "-")])
+    error_message = "Each element of additional_extra_args must be a single flag starting with '-' (e.g. \"--flag=value\"); do not split a flag and its value across elements unless the server expects them separately."
+  }
+}

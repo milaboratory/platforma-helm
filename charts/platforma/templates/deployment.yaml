@@ -22,6 +22,7 @@
 {{- /* The auth.* provider scheme and the legacy flat flags cannot coexist: the
        backend rejects the combination at boot. Catch it at render instead. */ -}}
 {{- if eq (include "platforma.auth.providersEnabled" .) "true" }}
+{{- include "platforma.auth.validateProviders" . }}
 {{- $legacy := include "platforma.auth.legacyPaths" . }}
 {{- if $legacy }}
 {{- fail (printf "ERROR: auth.providers cannot be combined with the legacy auth values (%s).\n\nThe backend refuses to start when the auth.* provider scheme and the flat\n--sso-idp-* / --auth-htpasswd / --auth-ldap-* flags are both present.\nMove that configuration into auth.providers as its own provider entry, or\nremove auth.providers to stay on the legacy single-provider scheme." $legacy) }}

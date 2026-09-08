@@ -95,27 +95,37 @@ auth:
   showUserList: true
 
   # -- Multi-provider authentication (backend >= 4.3.0): any number of providers
-  # of type sso (OIDC), htpasswd or ldap, keyed by provider id. Empty (the
-  # default) keeps the flat auth.htpasswd / auth.ldap / auth.sso blocks below in
-  # charge, unchanged.
+  # of type sso (OIDC), htpasswd or ldap, as a list. Empty (the default) keeps
+  # the flat auth.htpasswd / auth.ldap / auth.sso blocks below in charge,
+  # unchanged.
   #
-  # Two things that fail a deploy if missed:
+  # ORDER IS THE ORDER USERS SEE. Providers are advertised in the order written
+  # here, and a client opens its login form on the first one — so put the method
+  # most people should use at the top.
+  #
+  # Three things that fail a deploy if missed:
   #   - Cannot be combined with those flat blocks — the chart fails the render,
   #     because the backend refuses to start with both schemes configured.
-  #   - The provider id lands verbatim in generated volume and Secret names, so
-  #     it must be a lowercase RFC 1123 name (no dots, underscores or capitals)
-  #     of at most 40 characters. Each provider's secrets mount under
-  #     /etc/platforma/secrets/auth/<id>/.
+  #   - Every entry needs a name, and no two may share one. The name is the
+  #     provider id.
+  #   - The name lands verbatim in generated volume and Secret names, so it must
+  #     be a lowercase RFC 1123 name (no dots, underscores or capitals) of at
+  #     most 40 characters. Each provider's secrets mount under
+  #     /etc/platforma/secrets/auth/<name>/.
   #
   # CAUTION: adding or removing a provider re-derives the JWT signing key, so
   # every existing session is invalidated and all users sign in again.
   #
   # Field semantics, secret handling and worked per-IdP setups:
   # infrastructure/multiprovider-auth.md
-  providers: {}
+  providers: []
   #   # --- Entra / Azure AD, public client (PKCE, no client secret) ----------
-  #   entra:
+  #   - name: entra
   #     type: sso
+  #     # Login-picker presentation. Title names the method on its button;
+  #     # description is the longer text shown beside/under it.
+  #     title: "Company SSO"
+  #     description: "Sign in with your company account"
   #     sso:
   #       issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
   #       clientId: "<application-client-id>"
@@ -176,8 +186,10 @@ auth:
   #     mapFields: {}
   #
   #   # --- Break-glass local password file, alongside the SSO provider -------
-  #   local:
+  #   - name: local
   #     type: htpasswd
+  #     title: "Local password"
+  #     description: "Break-glass login — bcrypt-hashed password file, no external directory"
   #     htpasswd:
   #       # Inline credentials (chart creates the Secret), OR an existing one.
   #       credentials: []
@@ -189,8 +201,10 @@ auth:
   #       - "breakglass"
   #
   #   # --- Corporate directory ----------------------------------------------
-  #   corp:
+  #   - name: corp
   #     type: ldap
+  #     title: "LDAP directory"
+  #     description: "Sign in with your directory (LDAP) username and password"
   #     ldap:
   #       url: "ldaps://ldap.example.com:636"
   #       # Mode 1 — direct bind. '%u' is the login. Cannot read attributes or
@@ -226,7 +240,7 @@ auth:
   #       displayName: displayName
 
   # -- Custom user extension fields, declared once for the whole install and
-  # populated per provider through auth.providers.<id>.mapFields.
+  # populated per provider through auth.providers[].mapFields.
   extensionFields: []
 
   # -- htpasswd file-based authentication

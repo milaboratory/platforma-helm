@@ -83,8 +83,8 @@ query, so the entire validation block becomes a no-op offline.
          Inline htpasswd credentials are skipped: the chart creates that Secret
          itself, so there is nothing to pre-flight. */ -}}
   {{- $ctx := . -}}
-  {{- range $id := keys (default (dict) .Values.auth.providers) | sortAlpha -}}
-    {{- $p := index $ctx.Values.auth.providers $id -}}
+  {{- range $i, $p := default (list) $ctx.Values.auth.providers -}}
+    {{- $id := $p.name -}}
     {{- if eq $p.type "htpasswd" -}}
       {{- $h := default (dict) $p.htpasswd -}}
       {{- if $h.secretName -}}
@@ -93,8 +93,8 @@ query, so the entire validation block becomes a no-op offline.
               "ctx" $ctx
               "name" $h.secretName
               "keys" (list $key)
-              "keyValuesPaths" (list (printf "auth.providers.%s.htpasswd.secretKey" $id))
-              "valuesPath" (printf "auth.providers.%s.htpasswd.secretName" $id)
+              "keyValuesPaths" (list (printf "auth.providers[%d].htpasswd.secretKey" $i))
+              "valuesPath" (printf "auth.providers[%d].htpasswd.secretName" $i)
               "hint" (printf "htpasswd file for auth provider %q" $id)
               "example" (printf "htpasswd -nB <username> > htpasswd && kubectl -n %s create secret generic %s --from-file=%s=./htpasswd"
                         $ctx.Release.Namespace $h.secretName $key)) -}}
@@ -108,8 +108,8 @@ query, so the entire validation block becomes a no-op offline.
               "ctx" $ctx
               "name" $cs.secretName
               "keys" (list $key)
-              "keyValuesPaths" (list (printf "auth.providers.%s.sso.clientSecret.secretKey" $id))
-              "valuesPath" (printf "auth.providers.%s.sso.clientSecret.secretName" $id)
+              "keyValuesPaths" (list (printf "auth.providers[%d].sso.clientSecret.secretKey" $i))
+              "valuesPath" (printf "auth.providers[%d].sso.clientSecret.secretName" $i)
               "hint" (printf "OAuth client secret for auth provider %q" $id)
               "example" (printf "kubectl -n %s create secret generic %s --from-literal=%s=\"<client-secret>\""
                         $ctx.Release.Namespace $cs.secretName $key)) -}}
@@ -124,8 +124,8 @@ query, so the entire validation block becomes a no-op offline.
               "ctx" $ctx
               "name" $ca.name
               "keys" (list $key)
-              "keyValuesPaths" (list (printf "auth.providers.%s.ldap.trustedCASecretRef.key" $id))
-              "valuesPath" (printf "auth.providers.%s.ldap.trustedCASecretRef.name" $id)
+              "keyValuesPaths" (list (printf "auth.providers[%d].ldap.trustedCASecretRef.key" $i))
+              "valuesPath" (printf "auth.providers[%d].ldap.trustedCASecretRef.name" $i)
               "hint" (printf "LDAP trusted CA for auth provider %q" $id)
               "example" (printf "kubectl -n %s create secret generic %s --from-file=%s=./ldap-ca.crt"
                         $ctx.Release.Namespace $ca.name $key)) -}}
@@ -139,9 +139,9 @@ query, so the entire validation block becomes a no-op offline.
               "name" $cc.name
               "keys" (list $certKey $keyKey)
               "keyValuesPaths" (list
-                  (printf "auth.providers.%s.ldap.clientCertSecretRef.certKey" $id)
-                  (printf "auth.providers.%s.ldap.clientCertSecretRef.keyKey" $id))
-              "valuesPath" (printf "auth.providers.%s.ldap.clientCertSecretRef.name" $id)
+                  (printf "auth.providers[%d].ldap.clientCertSecretRef.certKey" $i)
+                  (printf "auth.providers[%d].ldap.clientCertSecretRef.keyKey" $i))
+              "valuesPath" (printf "auth.providers[%d].ldap.clientCertSecretRef.name" $i)
               "hint" (printf "LDAP client certificate for auth provider %q" $id)
               "example" (printf "kubectl -n %s create secret tls %s --cert=./tls.crt --key=./tls.key"
                         $ctx.Release.Namespace $cc.name)) -}}

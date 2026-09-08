@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build the static AWS region -> GPU-pool map and inject it into the
-CloudFormation template. Invoked by generate-gpu-map.sh (which gathers the raw
+CloudFormation template. Invoked by assets/generate-gpu-map.sh (which gathers the raw
 EC2 offerings); kept as a separate file for readability.
 
 Args: <raw_offerings.jsonl> <all_regions.txt> <gpu-instance-map.json> <template.yaml> <do_inject:0|1>

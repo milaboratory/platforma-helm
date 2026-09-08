@@ -140,6 +140,51 @@ resource "google_container_node_pool" "system" {
   }
 }
 
+# Platforma backend node pool — dedicated to the Platforma server pod so its
+# memory can grow into a whole node without contending with the cluster-support
+# services on the system pool (MILAB-6566). Fixed single node (the backend is a
+# single-instance pod). Tainted dedicated=platforma:NoSchedule so nothing else
+# schedules here; the chart tolerates the taint and selects role=platforma via
+# app.nodeSelector (terraform-platforma/app.tf). Same zone as the system pool
+# (local.zone), so the zonal database PD and Filestore attach without issue.
+resource "google_container_node_pool" "platforma" {
+  name     = "platforma"
+  project  = var.project_id
+  location = local.zone
+  cluster  = google_container_cluster.primary.name
+
+  initial_node_count = var.platforma_pool_node_count
+
+  node_config {
+    machine_type = var.platforma_pool_machine_type
+    disk_type    = "pd-balanced"
+    disk_size_gb = 100
+
+    labels = {
+      role = "platforma"
+    }
+
+    taint {
+      key    = "dedicated"
+      value  = "platforma"
+      effect = "NO_SCHEDULE"
+    }
+
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform",
+    ]
+
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+  }
+
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+}
+
 resource "google_container_node_pool" "ui" {
   name     = "ui"
   project  = var.project_id
@@ -194,8 +239,9 @@ resource "google_container_node_pool" "ui" {
 # =============================================================================
 # L4 GPU node pools — one static pool per machine shape
 # =============================================================================
-# Gated on var.enable_gpu. When disabled (default), no resources are created
-# and the cluster runs identically to a pre-GPU deployment.
+# Gated on local.gpu_l4_enabled (var.enable_gpu AND L4 has usable zones). When
+# off, no resources are created and the cluster runs identically to a pre-GPU
+# deployment. See presets.tf for the per-SKU enable/locations resolution.
 #
 # Why static pools instead of a ComputeClass:
 #   GKE's Cluster Autoscaler only triggers ComputeClass scale-up when a pod
@@ -232,39 +278,33 @@ resource "google_container_node_pool" "ui" {
 # autoscaling 0..N: scale-to-zero when no GPU jobs are pending. N comes from
 # the deployment_size preset (presets.tf: gpu_l4_max_nodes_per_shape).
 locals {
-  gpu_l4_pools = var.enable_gpu ? {
-    "g2-standard-4"  = { machine_type = "g2-standard-4" }
-    "g2-standard-8"  = { machine_type = "g2-standard-8" }
-    "g2-standard-12" = { machine_type = "g2-standard-12" }
-    "g2-standard-16" = { machine_type = "g2-standard-16" }
-    "g2-standard-32" = { machine_type = "g2-standard-32" }
-  } : {}
+  # Per-shape L4 pools: map of machine shape (g2-standard-*) -> zones offering
+  # it. Comes from install.sh's gcptest.sh discovery (var.gpu_l4_pools), or the
+  # full default ladder in [local.zone] for bare terraform — see
+  # effective_gpu_l4_pools in presets.tf. Adaptive: a shape the region doesn't
+  # offer is simply absent, so no pool is created for it. Empty when L4 disabled.
+  gpu_l4_pools = local.gpu_l4_enabled ? local.effective_gpu_l4_pools : {}
 
-  # RTX PRO 6000 single-GPU shapes. All 4 carry 1× nvidia-rtx-pro-6000 with
-  # 96 GiB VRAM per GPU. Multi-GPU G4 shapes (g4-standard-96, 192, 384) are
-  # deliberately omitted — strict 1-GPU-per-node semantics across the
+  # RTX PRO 6000 single-GPU shapes, same per-shape map. Multi-GPU G4 shapes
+  # (g4-standard-96, 192, 384) are deliberately excluded from the ladder (in
+  # gcptest.sh / presets.tf) — strict 1-GPU-per-node semantics across the
   # platforma.bio/gpu-memory-gib tier; CA picks shape by host CPU/RAM fit.
-  gpu_rtx_pro_6000_pools = var.enable_gpu ? {
-    "g4-standard-6"  = { machine_type = "g4-standard-6" }
-    "g4-standard-12" = { machine_type = "g4-standard-12" }
-    "g4-standard-24" = { machine_type = "g4-standard-24" }
-    "g4-standard-48" = { machine_type = "g4-standard-48" }
-  } : {}
+  gpu_rtx_pro_6000_pools = local.gpu_rtx_pro_6000_enabled ? local.effective_gpu_rtx_pro_6000_pools : {}
 }
 
 resource "google_container_node_pool" "gpu_l4" {
   for_each = local.gpu_l4_pools
 
-  name     = "gpu-l4-${replace(each.value.machine_type, "g2-standard-", "")}"
+  name     = "gpu-l4-${replace(each.key, "g2-standard-", "")}"
   project  = var.project_id
   location = local.zone
   cluster  = google_container_cluster.primary.name
-  # Spread the pool across all L4-supporting zones in var.region by default
-  # (see local.effective_gpu_l4_node_locations). Cluster Autoscaler picks
-  # the zone with available capacity at scale-up — single-zone stockouts
-  # no longer block scheduling. In mixed regions where some zones lack L4,
-  # set var.gpu_l4_node_locations explicitly.
-  node_locations = local.effective_gpu_l4_node_locations
+  # Spread this shape's pool across the zones in var.region that offer it
+  # (each.value, discovered per shape by gcptest.sh). Cluster Autoscaler picks
+  # the zone with available capacity at scale-up — single-zone stockouts no
+  # longer block scheduling, and the pool is never placed in a zone lacking
+  # this shape.
+  node_locations = each.value
 
   initial_node_count = 0
 
@@ -274,7 +314,7 @@ resource "google_container_node_pool" "gpu_l4" {
   }
 
   node_config {
-    machine_type = each.value.machine_type
+    machine_type = each.key
     disk_type    = "pd-balanced"
     disk_size_gb = 100
 
@@ -315,7 +355,8 @@ resource "google_container_node_pool" "gpu_l4" {
 # =============================================================================
 # RTX PRO 6000 (Blackwell) GPU node pools — one static pool per machine shape
 # =============================================================================
-# Gated on var.enable_gpu (same flag as the L4 pools). Identical mechanism:
+# Gated on local.gpu_rtx_pro_6000_enabled (independent of L4 — a region may
+# carry one SKU but not the other). Identical mechanism:
 # pre-creation template-label matching against pending pod nodeAffinity. Pods
 # requesting platforma.bio/gpu-memory-gib > 24 (anything that doesn't fit on
 # an L4) land here; the L4's preferred-Lt clause and CA's least-waste expander
@@ -330,14 +371,14 @@ resource "google_container_node_pool" "gpu_l4" {
 resource "google_container_node_pool" "gpu_rtx_pro_6000" {
   for_each = local.gpu_rtx_pro_6000_pools
 
-  name     = "gpu-rtx-6000-${replace(each.value.machine_type, "g4-standard-", "")}"
+  name     = "gpu-rtx-6000-${replace(each.key, "g4-standard-", "")}"
   project  = var.project_id
   location = local.zone
   cluster  = google_container_cluster.primary.name
-  # Spread across all RTX PRO 6000-supporting zones in var.region by default
-  # (local.effective_gpu_rtx_pro_6000_node_locations). In mixed regions
-  # (us-central1 etc.) set var.gpu_rtx_pro_6000_node_locations explicitly.
-  node_locations = local.effective_gpu_rtx_pro_6000_node_locations
+  # Spread this shape's pool across the zones in var.region that offer it
+  # (each.value, discovered per shape by gcptest.sh) — never placed in a zone
+  # lacking this shape.
+  node_locations = each.value
 
   initial_node_count = 0
 
@@ -347,7 +388,7 @@ resource "google_container_node_pool" "gpu_rtx_pro_6000" {
   }
 
   node_config {
-    machine_type = each.value.machine_type
+    machine_type = each.key
     # G4 machines only support Hyperdisk-Balanced / Hyperdisk-Extreme boot
     # disks (not pd-balanced like G2/L4). Per GCP docs:
     # https://cloud.google.com/compute/docs/disks#hyperdisk-supported-machines

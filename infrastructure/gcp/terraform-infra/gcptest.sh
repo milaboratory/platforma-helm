@@ -6,16 +6,19 @@
 #   discover  — invoked by cloudshell/install.sh before submitting the IM
 #     deployment. Cannot run inside Terraform because IM's tf-runner image
 #     ships without gcloud; install.sh runs it in Cloud Shell, captures the
-#     per-SKU zone list, and embeds it into the IM input document as
-#     gpu_l4_node_locations / gpu_rtx_pro_6000_node_locations tfvars.
+#     per-shape zone map, and embeds it into the IM input document as the
+#     gpu_l4_pools / gpu_rtx_pro_6000_pools tfvars.
 #     Input (JSON via stdin):
 #       {"project": "...", "region": "...", "sku": "nvidia-l4|nvidia-rtx-pro-6000"}
 #     Output (JSON via stdout):
-#       {"zones": "zone-a,zone-b,..."}
-#     Resolves to: every zone in <region> where ALL machine shapes of the
-#     SKU's ladder exist. The ladders are hardcoded below and MUST stay in
-#     sync with local.gpu_l4_pools / local.gpu_rtx_pro_6000_pools in gke.tf.
-#     Exits non-zero with a stderr error if no zone has the full ladder.
+#       {"pools": {"g2-standard-4": ["zone-a","zone-b"], "g2-standard-8": ["zone-a"], ...}}
+#     For each shape in the SKU's ladder, lists the zones in <region> that
+#     offer it; a shape offered in no zone is omitted (adaptive ladder — a
+#     region provisions only the shapes it actually has). The ladders are
+#     hardcoded below and MUST stay in sync with the fallback defaults in
+#     gke.tf. Exits non-zero only if the accelerator type is offered in NO
+#     zone of the region (install.sh then skips that SKU entirely); otherwise
+#     exits 0, possibly with a partial (or empty) pool map.
 #
 #   probe [l4|rtx|both]  — interactive stock check (operator tool, not
 #     called by install.sh). For each SKU, sweeps every zone in GCP where
@@ -83,38 +86,27 @@ mode_discover() {
     exit 1
   fi
 
-  # For each candidate zone, check that EVERY shape in the ladder exists.
-  # A zone that has the accelerator but is missing a shape disqualifies it.
-  local good=() missing_log=""
+  # Adaptive ladder: for each shape, collect the zones (among sku_zones) that
+  # offer it. A shape offered in no zone is simply omitted — the region gets a
+  # pool for every shape it actually has, instead of all-or-nothing.
+  local pools='{}'
+  local zone zone_shapes shape
   for zone in $sku_zones; do
-    local zone_shapes; zone_shapes=$(gcloud compute machine-types list \
-                                       --project="$project" --zones="$zone" \
-                                       --format='value(name)' 2>/dev/null \
-                                     | sort -u)
-    local missing=()
+    zone_shapes=$(gcloud compute machine-types list \
+                    --project="$project" --zones="$zone" \
+                    --format='value(name)' 2>/dev/null | sort -u)
     for shape in "${ladder[@]}"; do
-      if ! grep -qFx "$shape" <<<"$zone_shapes"; then
-        missing+=("$shape")
+      if grep -qFx "$shape" <<<"$zone_shapes"; then
+        pools=$(jq --arg s "$shape" --arg z "$zone" \
+                  '.[$s] = (((.[$s] // []) + [$z]) | unique)' <<<"$pools")
       fi
     done
-    if [[ ${#missing[@]} -eq 0 ]]; then
-      good+=("$zone")
-    else
-      missing_log+="  ${zone}: missing $(IFS=,; echo "${missing[*]}")\n"
-    fi
   done
 
-  if [[ ${#good[@]} -eq 0 ]]; then
-    echo "discover: no zone in region '${region}' has the full ${sku} ladder." >&2
-    echo "         Ladder required: $(IFS=,; echo "${ladder[*]}")" >&2
-    echo "         Candidate zones (have the accelerator, missing at least one shape):" >&2
-    printf '%b' "$missing_log" >&2
-    echo "         Try a different var.region, or trim the ladder in terraform-infra/gke.tf." >&2
-    exit 1
-  fi
-
-  # terraform external data source expects string values only.
-  printf '{"zones": "%s"}' "$(IFS=,; echo "${good[*]}")"
+  # {pools:{shape:[zones]}} — possibly empty if the accelerator is offered but
+  # (unexpectedly) none of the ladder shapes are. install.sh skips a SKU whose
+  # pool map is empty.
+  jq -cn --argjson pools "$pools" '{pools: $pools}'
 }
 
 # =============================================================================

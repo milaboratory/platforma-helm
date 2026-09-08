@@ -148,7 +148,31 @@ variable "kueue_max_job_cpu" {
 
 variable "kueue_max_job_memory" {
   type        = string
-  description = "Override max memory per single job. null = preset default (500Gi)."
+  description = "Override max memory per single job. null = 484Gi (fixed across all presets; fits n2d-highmem-64 allocatable)."
+  default     = null
+}
+
+# GPU job ceilings — the largest GPU node actually provisioned in this region
+# (highest per-GPU VRAM, tie-break host CPU). Populated by install.sh from the
+# discovered gpu_*_pools; the chart maps them to kueue.maxJobResources.gpuCpu/
+# gpuRam/gpuMemory and the backend's --k8s-gpu-max-cpu/ram-request. Required by
+# the chart when the GPU Kueue pool is enabled. null = fall back to the largest
+# default shape (g4-standard-48) — see effective_gpu_max_job_* in presets.tf.
+variable "gpu_max_job_cpu" {
+  type        = number
+  description = "Max vCPU per GPU job (largest provisioned GPU node's vCPU minus headroom). null = default."
+  default     = null
+}
+
+variable "gpu_max_job_ram" {
+  type        = string
+  description = "Max RAM per GPU job (largest provisioned GPU node's allocatable RAM, e.g. 168Gi). null = default."
+  default     = null
+}
+
+variable "gpu_max_job_memory" {
+  type        = string
+  description = "Max GPU VRAM per GPU job (largest provisioned GPU node's per-GPU VRAM, e.g. 96Gi). null = default."
   default     = null
 }
 
@@ -175,7 +199,7 @@ variable "enable_gpu" {
     through both modules. See terraform-infra/variables.tf for the full
     description.
   EOT
-  default     = false
+  default     = true
 }
 
 variable "kueue_gpu_queue_cpu" {
@@ -435,4 +459,19 @@ variable "data_libraries" {
   }))
   default     = []
   description = "External read-only data libraries. Same value as passed to the infra module — that module grants GCS IAM, this one materialises K8s Secrets for S3 entries with credentials and renders the chart's dataSources values."
+}
+
+# -----------------------------------------------------------------------------
+# Extra Platforma server args
+# -----------------------------------------------------------------------------
+
+variable "additional_extra_args" {
+  type        = list(string)
+  description = "Additional command-line flags appended to the Platforma server's extraArgs, after the flags this module always sets (--default-docker-registry, --google-artifact-registry). Each element is one whole argument, e.g. \"--some-flag=value\"."
+  default     = []
+
+  validation {
+    condition     = alltrue([for arg in var.additional_extra_args : startswith(arg, "-")])
+    error_message = "Each element of additional_extra_args must be a single flag starting with '-' (e.g. \"--flag=value\"); do not split a flag and its value across elements unless the server expects them separately."
+  }
 }

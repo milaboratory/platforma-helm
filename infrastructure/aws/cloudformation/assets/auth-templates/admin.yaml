@@ -1,0 +1,8 @@
+# Always last. No parameter creates it and none switches it off.
+name: admin
+type: htpasswd
+title: Administrator
+htpasswd:
+  secretName: platforma-admin-htpasswd
+adminUsers:
+  - platforma

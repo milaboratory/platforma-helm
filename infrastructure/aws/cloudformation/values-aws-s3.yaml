@@ -118,7 +118,10 @@ kueue:
         cpu: 32
         memory: 128Gi
 
-# Platforma server runs on system nodes (not on compute nodes used for jobs).
+# Platforma server runs on its own dedicated node group (pool=platforma,
+# tainted dedicated=platforma), isolated from cluster-support services on the
+# system pool so its memory can grow into a whole node (MILAB-6566). It never
+# runs on the compute nodes used for jobs.
 app:
   resources:
     requests:
@@ -128,4 +131,8 @@ app:
       cpu: 8
       memory: 32Gi
   nodeSelector:
-    node.kubernetes.io/pool: system
+    node.kubernetes.io/pool: platforma
+  tolerations:
+    - key: dedicated
+      value: platforma
+      effect: NoSchedule

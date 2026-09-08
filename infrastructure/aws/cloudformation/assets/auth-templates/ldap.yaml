@@ -1,0 +1,13 @@
+# Empty $userDN / $bindDN / $searchRules / $map are dropped after fill.
+# $bindPassword is left unstripped: a password may start or end with spaces.
+name: $name
+type: ldap
+ldap:
+  url: $url
+  startTLS: $startTLS
+  userDN: $userDN
+  bindDN: $bindDN
+  bindPassword: $bindPassword
+  searchRules: $searchRules
+createUsers: true
+map: $map

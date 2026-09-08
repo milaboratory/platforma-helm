@@ -1,14 +1,122 @@
-# Permissions reference — replacing `roles/owner` on the deployer SA
+# Permissions reference — GCP (GKE) install / update / teardown
 
-By default `install.sh` grants the Infrastructure Manager deployer service
-account `roles/owner` on the project. That's the simplest thing that works
-end to end, but many organizations forbid `Owner` grants outside of break-glass
-accounts. This doc gives the fine-grained alternative — a precise list of
-predefined roles that covers exactly what the Terraform module provisions.
+There are **two distinct principals** involved in a deployment, and they need
+different permissions:
 
-If you're running the installer in your own dev/test project, leave
-`roles/owner` — it's fine. If you're going to a regulated GCP project, follow
-the fine-grained list below.
+| Principal | Who / what it is | Section |
+|---|---|---|
+| **The operator** | The **human Google user** (or CI principal) who runs `install.sh`, re-runs it for updates, and runs `teardown.sh` from Cloud Shell or a local terminal. | [below](#permissions-for-the-operator-the-google-user-running-the-scripts) |
+| **The deployer SA** | `platforma-im-deployer@<project>` — the service account Infrastructure Manager runs Terraform under. Provisions every GCP resource. | [Fine-grained role set for the deployer SA](#fine-grained-role-set-for-the-deployer-sa) |
+
+The split matters: **everything inside the Terraform module runs as the
+deployer SA**, not as the operator. The operator only needs permission for what
+the driver scripts (`install.sh` / `teardown.sh`) do directly via `gcloud` and
+`kubectl` — bootstrapping the deployer SA, submitting the Infrastructure Manager
+deployment, pre-staging the master secret, and (on teardown) deleting the
+chart's PVCs. The list below is derived from every `gcloud`/`kubectl` call the
+two scripts make under the operator's own credentials.
+
+## Permissions for the operator (the Google user running the scripts)
+
+Grant these on the **deployment project**. `install.sh` and re-runs (updates)
+need the same set; `teardown.sh` additionally needs the two `container.*` roles
+for the `get-credentials` + `kubectl` PVC cleanup it performs before deleting
+the deployment.
+
+| Role | Why the scripts need it | Script operation | install / update | teardown |
+|---|---|---|:--:|:--:|
+| `roles/billing.viewer` | Pre-flight check that billing is enabled on the project. | `gcloud beta billing projects describe` | ✅ | |
+| `roles/serviceusage.serviceUsageAdmin` | Enable the bootstrap APIs (`config`, `cloudquotas`) and create the Infrastructure Manager service identity. | `gcloud services enable …`; `gcloud beta services identity create` | ✅ | |
+| `roles/dns.reader` | List Cloud DNS managed zones to pick the domain, and read the zone's nameservers for the delegation pre-check. | `gcloud dns managed-zones list` / `describe` | ✅ | |
+| `roles/cloudquotas.viewer` | Detect existing quota preferences and read current effective limits (skip-collision + >10%-decrease pre-checks). | `gcloud [beta] quotas preferences/info describe` | ✅ | |
+| `roles/iam.serviceAccountAdmin` | Create the `platforma-im-deployer` service account on first run. | `gcloud iam service-accounts create` / `describe` | ✅ | |
+| `roles/resourcemanager.projectIamAdmin` | Bind the deployer SA's role(s) on the project — including the default `roles/owner` grant. **See the Owner-grant note below.** | `gcloud projects add-iam-policy-binding` | ✅ | |
+| `roles/iam.serviceAccountUser` **on the deployer SA** | `actAs` the deployer SA when submitting / deleting the IM deployment (`apply --service-account=…`). | `gcloud infra-manager deployments apply` / `delete` | ✅ | ✅ |
+| `roles/config.admin` | Create, describe, update, and delete the Infrastructure Manager deployment. | `gcloud infra-manager deployments apply` / `describe` / `delete` | ✅ | ✅ |
+| `roles/secretmanager.admin` | Pre-stage the Platforma master secret (create the secret + add the first version) — Terraform reads it as a data source, so it must exist before apply. | `gcloud secrets create` / `versions add` / `describe` / `versions list` | ✅ | |
+| `roles/storage.admin` | **Install:** list the primary GCS bucket by label for the summary (`storage.buckets.list`). **Teardown:** `teardown.sh` also *empties* the bucket before the infra destroy (recursive object list + delete), which needs `storage.objects.list` + `storage.objects.delete`. A narrower custom role must include all three. | `gcloud storage buckets list`; `gcloud storage rm -r` | ✅ | ✅ |
+| `roles/container.clusterViewer` | Fetch cluster credentials (`get-credentials`) and list clusters, so `kubectl` can reach the cluster during teardown. | `gcloud container clusters list` / `get-credentials` | | ✅ |
+| `roles/container.developer` | `kubectl` scale the Platforma Deployment to zero and delete / patch (finalizer-strip) the retained PVCs before the IM delete. Supersedes `clusterViewer`; grant `roles/container.admin` if your org's Kubernetes RBAC needs the wider scope. | `kubectl scale` / `delete pvc` / `patch pvc` | | ✅ |
+
+### Manual Helm recovery needs more than `container.developer`
+
+The documented `teardown.sh` flow is fully covered by the operator set above: the
+operator only scales the Deployment to zero and deletes the PVCs (both allowed by
+`container.developer`), while the **deployer SA** removes the chart's RBAC
+(`roles`/`rolebindings`) during `terraform destroy`. But if you ever need to
+`helm uninstall` **by hand** — e.g. to clear a failed release before
+re-installing — that deletes RBAC directly, and `container.developer` **cannot**
+delete `roles`/`rolebindings` (`container.roles.delete` /
+`container.roleBindings.delete`). Run that manual cleanup as project **Owner** or
+with `roles/container.admin`.
+
+### The `roles/owner`-grant note
+
+By default `install.sh` grants the deployer SA **`roles/owner`**. The operator
+role set above is enough to make that grant as-is — **the operator does not need
+to be a project Owner**. The deployer is a *service account*, and GCP allows
+`resourcemanager.projects.setIamPolicy` (part of `roles/resourcemanager.projectIamAdmin`,
+already in the table) to grant `roles/owner` to a service account directly. The
+stricter "grant Owner through the Console and accept an email invitation" rule
+applies only to granting Owner to **user** accounts — which the installer never
+does.
+
+Two things can still change this:
+
+- **Delegated role grants / org policy.** If your organization restricts which
+  roles a `projectIamAdmin` may hand out (the IAM *delegated role grants*
+  feature), the Owner grant can be blocked even for a service account. Then use
+  the least-privilege deployer path below.
+- **No-Owner projects (regulated).** To avoid granting Owner to the SA at all,
+  give the deployer SA the [fine-grained role set](#fine-grained-role-set-for-the-deployer-sa)
+  below *instead*. `install.sh` currently grants Owner unconditionally, so this
+  path depends on the `SKIP_DEPLOYER_SA_OWNER_GRANT` follow-up noted under
+  "Apply the fine-grained role set".
+
+### Grant the operator role set
+
+Least-privilege operator (skips Owner; pair with the fine-grained deployer SA
+role set below). Run once as a project Owner or Org Admin:
+
+```bash
+PROJECT_ID=your-project
+OPERATOR="user:you@yourcompany.com"        # or "serviceAccount:ci@..." for CI
+DEPLOYER_SA="platforma-im-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# Project-level roles the operator needs for install / update / teardown
+for role in \
+  roles/billing.viewer \
+  roles/serviceusage.serviceUsageAdmin \
+  roles/dns.reader \
+  roles/cloudquotas.viewer \
+  roles/iam.serviceAccountAdmin \
+  roles/resourcemanager.projectIamAdmin \
+  roles/config.admin \
+  roles/secretmanager.admin \
+  roles/storage.admin \
+  roles/container.clusterViewer \
+  roles/container.developer
+do
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="${OPERATOR}" --role="${role}" \
+    --condition=None --quiet >/dev/null
+done
+
+# actAs on the deployer SA (scoped to the SA, not the whole project).
+# The deployer SA must exist first — install.sh creates it, or create it
+# manually with the snippet in the deployer-SA section below.
+gcloud iam service-accounts add-iam-policy-binding "${DEPLOYER_SA}" \
+  --member="${OPERATOR}" \
+  --role=roles/iam.serviceAccountUser \
+  --project="${PROJECT_ID}" --quiet
+```
+
+> **Verification status:** this list is derived by statically tracing every
+> `gcloud`/`kubectl` call the driver scripts make under the operator's own
+> identity (`install.sh`, `teardown.sh`). Confirm against a real project by
+> running install → re-run (update) → teardown with an operator that has only
+> these roles; a `PERMISSION_DENIED` names the missing permission — add the
+> matching role and update this table.
 
 ## Two service accounts the deployer SA touches
 
@@ -115,7 +223,16 @@ gcloud projects add-iam-policy-binding "${DNS_PROJECT}" \
   --condition=None
 ```
 
-And set `dns_zone_project` in the Terraform inputs to the DNS project ID.
+Point the deployment at the DNS project:
+
+- **Tier-1 / Tier-2 (`install.sh`):** export `DNS_ZONE_PROJECT=<dns-project>`. The
+  installer forwards it to Terraform (`dns_zone_project`) and uses it for the
+  DNS-delegation pre-check.
+- **Tier-3 (local Terraform):** set `dns_zone_project` in your tfvars.
+
+The **operator** (the Google user running the scripts) also needs
+`roles/dns.reader` on the DNS project — `install.sh`'s delegation pre-check reads
+the zone's nameservers there before deploying.
 
 ## Org-level constraints to know about
 

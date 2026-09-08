@@ -37,17 +37,23 @@ Metadata:
           - PlatformaVersion
           - PlatformaImage
           - PlatformaHelmChart
+          - DeployerAssetBaseUrl
       - Label:
           default: Authentication (required when deploying Platforma)
         Parameters:
-          - AuthMethod
+          - SsoProvider
+          - EnableLocalUsers
           - ShowUserList
+          - SsoAdminUsers
+          - AuthMethod
+          - AdminUsers
       - Label:
-          default: 'htpasswd (AuthMethod=htpasswd) — static file-based users, no external IdP'
+          default: 'Local users (EnableLocalUsers=true) — static htpasswd file, no external IdP'
         Parameters:
           - HtpasswdContent
+          - LocalAdminUsers
       - Label:
-          default: 'LDAP (AuthMethod=ldap) — authenticate against an LDAP / Active Directory server'
+          default: 'LDAP (enabled by setting LdapServer) — authenticate against an LDAP / Active Directory server'
         Parameters:
           - LdapServer
           - LdapStartTLS
@@ -55,13 +61,14 @@ Metadata:
           - LdapSearchRules
           - LdapSearchUser
           - LdapSearchPassword
+          - LdapAdminUsers
       - Label:
-          default: 'Google Workspace SSO (AuthMethod=google) — OIDC login with Google accounts'
+          default: 'Google Workspace SSO (SsoProvider=google) — OIDC login with Google accounts'
         Parameters:
           - GoogleClientId
           - GoogleClientSecret
       - Label:
-          default: 'Microsoft Entra ID SSO (AuthMethod=entra) — OIDC login with an Azure AD tenant'
+          default: 'Microsoft Entra ID SSO (SsoProvider=entra) — OIDC login with an Azure AD tenant'
         Parameters:
           - EntraIssuer
           - EntraTenantId
@@ -122,26 +129,40 @@ Metadata:
         default: Custom container image (leave empty for chart default)
       PlatformaHelmChart:
         default: Custom Helm chart OCI reference (leave empty for official chart)
+      DeployerAssetBaseUrl:
+        default: 'Deployer asset base URL (empty = published public prefix)'
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       DomainName:
         default: 'Domain name (e.g. platforma.example.com)'
       HostedZoneId:
         default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
+      SsoProvider:
+        default: 'SSO / OIDC login (none, google, or entra)'
+      EnableLocalUsers:
+        default: 'Also allow local htpasswd logins (break-glass)'
       AuthMethod:
-        default: 'Authentication method (htpasswd, ldap, google, or entra)'
+        default: 'DEPRECATED single-method selector — leave empty'
       ShowUserList:
         default: 'Allow clients to list users (set false for multitenant instances)'
+      AdminUsers:
+        default: 'DEPRECATED — admin logins applied to every provider (regexp)'
+      SsoAdminUsers:
+        default: 'SSO admin logins (regexp; semicolon-separated for multiple)'
+      LdapAdminUsers:
+        default: 'LDAP admin logins (regexp; semicolon-separated for multiple)'
+      LocalAdminUsers:
+        default: 'Local (htpasswd) admin logins (regexp; semicolon-separated)'
       GoogleClientId:
-        default: 'Google OAuth client ID (required when AuthMethod=google)'
+        default: 'Google OAuth client ID (required when SsoProvider=google)'
       GoogleClientSecret:
-        default: 'Google OAuth client secret (required when AuthMethod=google)'
+        default: 'Google OAuth client secret (required when SsoProvider=google)'
       EntraIssuer:
-        default: 'Entra OIDC issuer URL (preferred when AuthMethod=entra)'
+        default: 'Entra OIDC issuer URL (preferred when SsoProvider=entra)'
       EntraTenantId:
         default: 'Entra tenant GUID (legacy fallback — issuer derived automatically)'
       EntraClientId:
-        default: 'Entra application (client) ID (required when AuthMethod=entra)'
+        default: 'Entra application (client) ID (required when SsoProvider=entra)'
       EnableDemoLibrary:
         default: 'Enable MiLaboratories demo data library'
       DataLibrary1Name:
@@ -175,9 +196,9 @@ Metadata:
       DataLibrary3SecretKey:
         default: 'Library 3 secret key'
       HtpasswdContent:
-        default: 'htpasswd file content (htpasswd mode only)'
+        default: 'htpasswd file content (local users only)'
       LdapServer:
-        default: 'LDAP server URL (ldap mode only)'
+        default: 'LDAP server URL (set to enable LDAP login)'
       LdapStartTLS:
         default: 'LDAP StartTLS'
       LdapBindDN:
@@ -258,17 +279,75 @@ Parameters:
       Custom Helm chart OCI reference (e.g. oci://123456.dkr.ecr.eu-central-1.amazonaws.com/platforma).
       Leave empty to use the official chart from ghcr.io/milaboratory/platforma-helm/platforma.
 
+  DeployerAssetBaseUrl:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(|https://platforma-cloudformation\.s3\.[a-z0-9-]+\.amazonaws\.com/.+|s3://platforma-cfn-pr-[0-9]+/pr/.+)$'
+    ConstraintDescription: >
+      Must be empty, the published platforma-cloudformation prefix, or a
+      pr/ preview prefix in a platforma-cfn-pr-<account> bucket
+    Description: >
+      Directory that holds deployer sibling files (assets/ next to this
+      template). Leave empty to use the public prefix published with the
+      template (Mappings DeployerAssets.Public.BaseUrl). Override only to
+      point at a preview prefix such as a TTL'd pr/ object. An s3:// URL is
+      read with the deployer's own credentials, so a preview prefix can live
+      in a private bucket in the account being deployed to.
+      The deployer executes what it downloads from here, so the accepted
+      values are limited to the prefixes the publishing pipeline writes:
+      an arbitrary host would run as the deployer, which holds cluster-admin.
+
   # --- Authentication ---
+  # Each login source is an independent slot, so any combination works:
+  #   SSO only            SsoProvider=google
+  #   SSO + local users   SsoProvider=google, EnableLocalUsers=true
+  #   SSO + LDAP          SsoProvider=entra,  LdapServer=ldaps://...
+  #   LDAP + local users  LdapServer=ldaps://..., EnableLocalUsers=true
+  #   all three           all of the above set
+  # One slot renders the backend's single-provider flags exactly as before.
+  # Two or more render the multi-provider auth.providers scheme (backend
+  # >= 4.3.0) with fixed provider ids: 'google'/'entra', 'corp', 'local'.
+  SsoProvider:
+    Type: String
+    Default: none
+    AllowedValues: [none, google, entra]
+    Description: >
+      SSO / OIDC login source.
+      none: no SSO.
+      google: provide GoogleClientId and GoogleClientSecret (issuer and scopes
+      are predefined).
+      entra: provide EntraIssuer (preferred) or EntraTenantId (legacy) and
+      EntraClientId.
+      Combine freely with LdapServer and EnableLocalUsers.
+
+  EnableLocalUsers:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Add a local htpasswd login source alongside whatever else is configured.
+      Typically a break-glass account that still works when the IdP or the
+      directory is unreachable. Users come from HtpasswdContent, or from an
+      auto-generated single 'platforma' account whose password is stored in SSM
+      (see the UsersPasswordSSMPath output).
+
+  # DEPRECATED. Superseded by SsoProvider / LdapServer / EnableLocalUsers,
+  # which can be combined; this one selects exactly one method and cannot.
+  # It is still honoured for stacks created before the slot parameters existed:
+  # a non-empty value takes over the whole auth configuration and renders it
+  # exactly as it did before, ignoring the slot parameters (the Rules below
+  # reject setting both). Clear it to move to the slot parameters — note that
+  # doing so re-derives the JWT signing key, so every user signs in again once.
   AuthMethod:
     Type: String
-    Default: htpasswd
-    AllowedValues: [htpasswd, ldap, google, entra]
+    Default: ''
+    AllowedValues: ['', htpasswd, ldap, google, entra]
     Description: >
-      Authentication method for Platforma. Required when DeployPlatforma=true.
-      htpasswd: provide HtpasswdContent parameter.
-      ldap: provide LdapServer and related parameters.
-      google: provide GoogleClientId (issuer/scopes are predefined).
-      entra: provide EntraIssuer (preferred) or EntraTenantId (legacy) and EntraClientId.
+      DEPRECATED — leave empty and use SsoProvider / LdapServer /
+      EnableLocalUsers instead, which support combinations such as SSO plus a
+      local break-glass account. Kept so existing stacks keep their current
+      behaviour: when non-empty it is the entire auth configuration and the
+      slot parameters must be left at their defaults.
 
   ShowUserList:
     Type: String
@@ -280,6 +359,49 @@ Parameters:
       Set to 'false' on multitenant instances so users of one tenant cannot
       enumerate users of another: AuthAPI.ListUsers returns an empty list and
       the userListing capability is not advertised.
+
+  # Admin patterns are per login source, because the backend evaluates a login
+  # only against the rules of the provider that authenticated it. All three
+  # take the same syntax: semicolon-separated full-match regular expressions
+  # over the authenticated login, e.g. 'alice@corp\.com;.*@admins\.corp\.com'.
+  # Metacharacters in a literal login must be escaped (e.g. 'user\.name').
+  # Admin role has the same access as the controller role.
+  SsoAdminUsers:
+    Type: String
+    Default: ''
+    Description: >
+      Grant admin to SSO logins matching these full-match regular expressions.
+      Semicolon-separated. The login is the email for SsoProvider=google, and
+      the 'preferred_username' claim for SsoProvider=entra.
+      Leave empty for none.
+
+  LdapAdminUsers:
+    Type: String
+    Default: ''
+    Description: >
+      Grant admin to LDAP logins matching these full-match regular expressions.
+      Semicolon-separated. The login is the username the directory
+      authenticated (the value substituted for %u). Leave empty for none.
+
+  LocalAdminUsers:
+    Type: String
+    Default: ''
+    Description: >
+      Grant admin to local htpasswd logins matching these full-match regular
+      expressions. Semicolon-separated. The login is the htpasswd username.
+      Leave empty for none.
+
+  # DEPRECATED. Applies to every configured login source, which is what the
+  # single global --admin-user flag used to mean. Prefer the per-source
+  # parameters above; anything set here is merged into all of them.
+  AdminUsers:
+    Type: String
+    Default: ''
+    Description: >
+      DEPRECATED — use SsoAdminUsers / LdapAdminUsers / LocalAdminUsers.
+      Grant the admin role to logins matching these full-match regular
+      expressions, on EVERY configured login source. Semicolon-separated.
+      Leave empty for none.
 
   HtpasswdContent:
     Type: String
@@ -310,7 +432,7 @@ Parameters:
     ConstraintDescription: 'Must be an LDAP URL (e.g. ldap://ldap.example.com:389) or empty'
     Description: >
       LDAP server URL (e.g. ldap://ldap.example.com:389).
-      Required when AuthMethod=ldap.
+      Setting this enables LDAP login; leave empty for no LDAP.
 
   LdapStartTLS:
     Type: String
@@ -356,13 +478,13 @@ Parameters:
     Default: ''
     Description: >
       Google OAuth client ID (e.g. 1234567890-abc.apps.googleusercontent.com).
-      Required when AuthMethod=google.
+      Required when SsoProvider=google.
   GoogleClientSecret:
     Type: String
     Default: ''
     NoEcho: true
     Description: >
-      Google OAuth client secret. Required when AuthMethod=google — Google's token
+      Google OAuth client secret. Required when SsoProvider=google — Google's token
       endpoint requires a client secret even for the PKCE flow. The backend forwards
       it to the desktop, which performs the token exchange. Stored as the Kubernetes
       Secret 'platforma-sso-client-secret'.
@@ -376,7 +498,7 @@ Parameters:
     ConstraintDescription: 'Must be an https issuer URL, a tenant GUID, or empty'
     Description: >
       Entra OIDC issuer URL (e.g. https://login.microsoftonline.com/{tenant-id}/v2.0).
-      Preferred when AuthMethod=entra. A bare tenant GUID is also accepted here.
+      Preferred when SsoProvider=entra. A bare tenant GUID is also accepted here.
   EntraTenantId:
     Type: String
     Default: ''
@@ -388,7 +510,7 @@ Parameters:
   EntraClientId:
     Type: String
     Default: ''
-    Description: Entra application (client) ID. Required when AuthMethod=entra.
+    Description: Entra application (client) ID. Required when SsoProvider=entra.
 
   # --- Data libraries ---
   EnableDemoLibrary:
@@ -561,9 +683,11 @@ Parameters:
       Cluster sizing profile. Controls node group scaling limits and Kueue quotas.
       All deployment sizes support the same maximum single-job size (62 vCPU / 484Gi).
       Larger sizes allow more jobs to run simultaneously.
-      GPU nodes (g6f/g6/g6e) scale from 0 — no cost when idle. Disable entirely with EnableGpu=false.
-      6 GPU tiers: 3GB (g6f.xl, $0.24/hr), 6GB (g6f.2xl, $0.49/hr), 12GB (g6f.4xl, $0.98/hr),
-      24GB (g6, $0.98/hr), 48GB (g6e, $2.36/hr), 48GB (g6e 4×GPU, $10.59/hr).
+      GPU nodes scale from 0 — no cost when idle. Disable entirely with EnableGpu=false.
+      6 GPU tiers by min VRAM (preferred type; a region-appropriate substitute is
+      chosen automatically where the preferred one is unavailable): 3GB (g6f.xl, $0.24/hr),
+      6GB (g6f.2xl, $0.49/hr), 12GB (g6f.4xl, $0.98/hr), 24GB (g6, $0.98/hr),
+      48GB (g6e, $2.36/hr), 48GB (g6e 4×GPU, $10.59/hr).
       small:  ~4 large CPU jobs or 16 small; GPU: 2/2/1/1/1/1 nodes (3g/6g/12g/24g/48g/96g).
       medium: ~8 large CPU jobs or 32 small; GPU: 4/3/2/2/2/1 nodes.
       large:  ~16 large CPU jobs or 64 small; GPU: 8/6/4/4/4/2 nodes.
@@ -575,20 +699,23 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: >
       Whether to provision GPU node groups. Default: true.
-      Set to 'false' to deploy in regions without GPU instance availability
-      (e.g. eu-west-2, eu-west-3, ap-south-1) or to skip GPU costs entirely.
+      The instance type per tier is resolved per region at deploy time from a
+      preference ladder, so partially-covered regions (e.g. eu-west-2, eu-west-3)
+      still get working GPU tiers. Set to 'false' only to skip GPU costs entirely
+      or for the rare region that offers no supported GPU instances at all.
 
   SystemNodeAZ:
     Type: String
     Default: a
     AllowedValues: [a, b, c]
     Description: >
-      Availability zone suffix (a, b, or c) for system nodes. Platforma's
-      database and log volumes (EBS) are bound to a single AZ. System nodes
-      must be in the same AZ as these volumes. For new deployments the default
-      (a) is correct. For existing deployments, set this to match the AZ where
-      your platforma-database PV resides (e.g. if volumes are in eu-west-1b,
-      choose "b").
+      Availability zone suffix (a, b, or c) for the system and Platforma backend
+      nodes. Platforma's database and log volumes (EBS) are bound to a single AZ.
+      Both the system pool and the dedicated Platforma backend pool are pinned to
+      this AZ so the backend node can always attach these volumes. For new
+      deployments the default (a) is correct. For existing deployments, set this
+      to match the AZ where your platforma-database PV resides (e.g. if volumes
+      are in eu-west-1b, choose "b").
 
   # --- Storage ---
   S3BucketName:
@@ -638,7 +765,57 @@ Mappings:
     EKS:
       Version: "1.35"
     Platforma:
-      Version: "4.2.14"
+      Version: "4.4.2"
+  # Git and the production S3 object share this unversioned /assets prefix, so
+  # a deployer left on the default reads the same files this repo holds. The
+  # publish-infra job writes a TTL'd copy under pr/<version>/ and points a
+  # preview stack at it; it must never overwrite the production object.
+  DeployerAssets:
+    Public:
+      BaseUrl: "https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/assets"
+
+  # region -> which GPU classes it offers (yes/no), looked up by the RegionHas*
+  # Conditions via Fn::FindInMap to gate each GPU pool. Covers every AWS region
+  # so the lookup never misses (no default value / AWS::LanguageExtensions
+  # needed). G6f=fractional L4 (gpu-3g/6g/12g), C24g=L4/A10G (gpu-24g),
+  # G6e=L40S (gpu-48g/96g), T4=g4dn last-resort (gpu-16g).
+  # BEGIN GENERATED GPU COVERAGE MAPPING (generate-gpu-map.sh) — do not edit by hand
+  GpuRegionCoverage:
+    af-south-1: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    ap-east-1: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    ap-east-2: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    ap-northeast-1: {G6f: "yes", C24g: "yes", G6e: "yes", T4: "no"}
+    ap-northeast-2: {G6f: "yes", C24g: "yes", G6e: "yes", T4: "no"}
+    ap-northeast-3: {G6f: "no", C24g: "no", G6e: "yes", T4: "no"}
+    ap-south-1: {G6f: "yes", C24g: "yes", G6e: "yes", T4: "no"}
+    ap-south-2: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    ap-southeast-1: {G6f: "no", C24g: "no", G6e: "no", T4: "yes"}
+    ap-southeast-2: {G6f: "yes", C24g: "yes", G6e: "no", T4: "no"}
+    ap-southeast-3: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    ap-southeast-4: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    ap-southeast-5: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    ap-southeast-6: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    ap-southeast-7: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    ca-central-1: {G6f: "yes", C24g: "yes", G6e: "no", T4: "no"}
+    ca-west-1: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    eu-central-1: {G6f: "yes", C24g: "yes", G6e: "yes", T4: "no"}
+    eu-central-2: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    eu-north-1: {G6f: "yes", C24g: "yes", G6e: "yes", T4: "no"}
+    eu-south-1: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    eu-south-2: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    eu-west-1: {G6f: "no", C24g: "yes", G6e: "no", T4: "no"}
+    eu-west-2: {G6f: "yes", C24g: "yes", G6e: "no", T4: "no"}
+    eu-west-3: {G6f: "no", C24g: "yes", G6e: "no", T4: "no"}
+    il-central-1: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    me-central-1: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    me-south-1: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    mx-central-1: {G6f: "no", C24g: "no", G6e: "no", T4: "no"}
+    sa-east-1: {G6f: "yes", C24g: "yes", G6e: "no", T4: "no"}
+    us-east-1: {G6f: "yes", C24g: "yes", G6e: "yes", T4: "no"}
+    us-east-2: {G6f: "yes", C24g: "yes", G6e: "yes", T4: "no"}
+    us-west-1: {G6f: "no", C24g: "no", G6e: "no", T4: "yes"}
+    us-west-2: {G6f: "yes", C24g: "yes", G6e: "yes", T4: "no"}
+  # END GENERATED GPU COVERAGE MAPPING
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
@@ -666,6 +843,7 @@ Mappings:
       MaxGpu6g: '2'
       MaxGpu12g: '1'
       MaxGpu24g: '1'
+      MaxGpu16g: '1'
       MaxGpu48g: '1'
       MaxGpu96g: '1'
       MaxUi: '4'
@@ -684,6 +862,7 @@ Mappings:
       MaxGpu6g: '3'
       MaxGpu12g: '2'
       MaxGpu24g: '2'
+      MaxGpu16g: '2'
       MaxGpu48g: '2'
       MaxGpu96g: '1'
       MaxUi: '8'
@@ -702,6 +881,7 @@ Mappings:
       MaxGpu6g: '6'
       MaxGpu12g: '4'
       MaxGpu24g: '4'
+      MaxGpu16g: '4'
       MaxGpu48g: '4'
       MaxGpu96g: '2'
       MaxUi: '16'
@@ -720,6 +900,7 @@ Mappings:
       MaxGpu6g: '12'
       MaxGpu12g: '8'
       MaxGpu24g: '8'
+      MaxGpu16g: '8'
       MaxGpu48g: '8'
       MaxGpu96g: '4'
       MaxUi: '16'
@@ -732,6 +913,22 @@ Conditions:
   AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
   HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
   GpuEnabled: !Equals [!Ref EnableGpu, 'true']
+  # Per-region GPU coverage. Each GPU pool exists only where its card is offered,
+  # so these gate the node groups below. RegionHas* look up the GpuRegionCoverage
+  # Mapping (generated from live EC2 offerings by assets/generate-gpu-map.sh, covering
+  # every region so the lookup never misses); Gpu*Enabled combine them with
+  # GpuEnabled. Regions the generator could not probe are "no" (no GPU pools).
+  RegionHasG6f: !Equals [!FindInMap [GpuRegionCoverage, !Ref 'AWS::Region', G6f], 'yes']
+  RegionHas24g: !Equals [!FindInMap [GpuRegionCoverage, !Ref 'AWS::Region', C24g], 'yes']
+  RegionHasG6e: !Equals [!FindInMap [GpuRegionCoverage, !Ref 'AWS::Region', G6e], 'yes']
+  RegionHas16g: !Equals [!FindInMap [GpuRegionCoverage, !Ref 'AWS::Region', T4], 'yes']
+  Gpu3gEnabled: !And [!Condition GpuEnabled, !Condition RegionHasG6f]
+  Gpu6gEnabled: !And [!Condition GpuEnabled, !Condition RegionHasG6f]
+  Gpu12gEnabled: !And [!Condition GpuEnabled, !Condition RegionHasG6f]
+  Gpu24gEnabled: !And [!Condition GpuEnabled, !Condition RegionHas24g]
+  Gpu48gEnabled: !And [!Condition GpuEnabled, !Condition RegionHasG6e]
+  Gpu96gEnabled: !And [!Condition GpuEnabled, !Condition RegionHasG6e]
+  Gpu16gEnabled: !And [!Condition GpuEnabled, !Condition RegionHas16g]
   HasLibrary1: !Not [!Equals [!Ref DataLibrary1Bucket, '']]
   HasLibrary1Irsa: !And
     - !Not [!Equals [!Ref DataLibrary1Bucket, '']]
@@ -746,7 +943,17 @@ Conditions:
     - !Equals [!Ref DataLibrary3AccessKey, '']
   UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
   UseDefaultHelmChart: !Equals [!Ref PlatformaHelmChart, '']
-  IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
+  UseDefaultAssetBase: !Equals [!Ref DeployerAssetBaseUrl, '']
+  # 's3' is what splitting an s3:// URL on '://' leaves in front of the scheme
+  # separator; an https:// base or the empty default yields 'https' or ''.
+  HasS3AssetBase: !Equals [!Select [0, !Split ['://', !Ref DeployerAssetBaseUrl]], 's3']
+  # True whenever a local htpasswd login source is configured: explicitly via
+  # EnableLocalUsers, or through the deprecated AuthMethod=htpasswd.
+  IsHtpasswd: !Or
+    - !Equals [!Ref AuthMethod, 'htpasswd']
+    - !And
+      - !Equals [!Ref AuthMethod, '']
+      - !Equals [!Ref EnableLocalUsers, 'true']
   SystemAZa: !Equals [!Ref SystemNodeAZ, 'a']
   SystemAZb: !Equals [!Ref SystemNodeAZ, 'b']
 
@@ -759,35 +966,113 @@ Rules:
     Assertions:
       - Assert: !Not [!Equals [!Ref LicenseKey, '']]
         AssertDescription: LicenseKey is required when DeployPlatforma is true
-  LdapServerRequired:
-    RuleCondition: !And
-      - !Equals [!Ref DeployPlatforma, 'true']
-      - !Equals [!Ref AuthMethod, 'ldap']
-    Assertions:
-      - Assert: !Not [!Equals [!Ref LdapServer, '']]
-        AssertDescription: LdapServer is required when AuthMethod is ldap
+  # --- Per-source requirements (slot parameters) ---------------------------
+  # Each login source validates only its own fields, so any combination of
+  # sources is accepted. The deprecated AuthMethod is handled separately below.
   GoogleConfigRequired:
     RuleCondition: !And
       - !Equals [!Ref DeployPlatforma, 'true']
-      - !Equals [!Ref AuthMethod, 'google']
+      - !Or
+        - !Equals [!Ref SsoProvider, 'google']
+        - !Equals [!Ref AuthMethod, 'google']
     Assertions:
       - Assert: !Not [!Equals [!Ref GoogleClientId, '']]
-        AssertDescription: GoogleClientId is required when AuthMethod is google
+        AssertDescription: GoogleClientId is required for Google SSO
       - Assert: !Not [!Equals [!Ref GoogleClientSecret, '']]
-        AssertDescription: GoogleClientSecret is required when AuthMethod is google
+        AssertDescription: GoogleClientSecret is required for Google SSO
   EntraConfigRequired:
     RuleCondition: !And
       - !Equals [!Ref DeployPlatforma, 'true']
-      - !Equals [!Ref AuthMethod, 'entra']
+      - !Or
+        - !Equals [!Ref SsoProvider, 'entra']
+        - !Equals [!Ref AuthMethod, 'entra']
     Assertions:
       - Assert: !Or
           - !Not [!Equals [!Ref EntraIssuer, '']]
           - !Not [!Equals [!Ref EntraTenantId, '']]
-        AssertDescription: EntraIssuer or EntraTenantId is required when AuthMethod is entra
+        AssertDescription: EntraIssuer or EntraTenantId is required for Entra SSO
       - Assert: !Not [!Equals [!Ref EntraClientId, '']]
-        AssertDescription: EntraClientId is required when AuthMethod is entra
-  # Each method must leave the other methods' enabling fields empty, so a stray
-  # value pasted into the wrong group cannot silently change behaviour.
+        AssertDescription: EntraClientId is required for Entra SSO
+  # An LDAP service-account DN without its password would bind anonymously and
+  # silently fall back to a directory-wide search.
+  LdapSearchPasswordRequired:
+    RuleCondition: !Not [!Equals [!Ref LdapSearchUser, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref LdapSearchPassword, '']]
+        AssertDescription: LdapSearchPassword is required when LdapSearchUser is set
+  # SSO fields belong to the SSO source; a value left behind after switching
+  # SsoProvider back to none would otherwise look configured but do nothing.
+  SsoFieldsNeedSsoProvider:
+    RuleCondition: !And
+      - !Equals [!Ref AuthMethod, '']
+      - !Equals [!Ref SsoProvider, 'none']
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref GoogleClientId, '']
+          - !Equals [!Ref GoogleClientSecret, '']
+          - !Equals [!Ref EntraIssuer, '']
+          - !Equals [!Ref EntraTenantId, '']
+          - !Equals [!Ref EntraClientId, '']
+          - !Equals [!Ref SsoAdminUsers, '']
+        AssertDescription: >-
+          SsoProvider is none, so leave every Google/Entra field and
+          SsoAdminUsers empty (set SsoProvider to google or entra to use them)
+  # Google and Entra are one slot, so only one IdP's fields may be filled in.
+  SsoProviderGoogleExclusive:
+    RuleCondition: !And
+      - !Equals [!Ref AuthMethod, '']
+      - !Equals [!Ref SsoProvider, 'google']
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref EntraIssuer, '']
+          - !Equals [!Ref EntraTenantId, '']
+          - !Equals [!Ref EntraClientId, '']
+        AssertDescription: When SsoProvider is google, leave the Entra fields empty
+  SsoProviderEntraExclusive:
+    RuleCondition: !And
+      - !Equals [!Ref AuthMethod, '']
+      - !Equals [!Ref SsoProvider, 'entra']
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref GoogleClientId, '']
+          - !Equals [!Ref GoogleClientSecret, '']
+        AssertDescription: When SsoProvider is entra, leave the Google fields empty
+  # Direct bind (a DN template) and search+bind (a service account that looks
+  # the user up) are different modes; the backend refuses to start with both.
+  LdapBindModeExclusive:
+    RuleCondition: !Not [!Equals [!Ref LdapBindDN, '']]
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref LdapSearchRules, '']
+          - !Equals [!Ref LdapSearchUser, '']
+        AssertDescription: >-
+          LdapBindDN (direct bind) cannot be combined with LdapSearchRules /
+          LdapSearchUser (search + bind) — pick one mode
+  # Per-source admin patterns need their source configured, or they are inert.
+  LdapAdminUsersNeedLdap:
+    RuleCondition: !Equals [!Ref LdapServer, '']
+    Assertions:
+      - Assert: !Equals [!Ref LdapAdminUsers, '']
+        AssertDescription: LdapAdminUsers has no effect without LdapServer
+  # --- Deprecated AuthMethod: exclusive with the slot parameters -----------
+  # A non-empty AuthMethod is the entire auth configuration, so the slot
+  # parameters must stay at their defaults. Mixing the two would silently drop
+  # one of them rather than deploying what the operator asked for.
+  AuthMethodExclusiveWithSlots:
+    RuleCondition: !Not [!Equals [!Ref AuthMethod, '']]
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref SsoProvider, 'none']
+          - !Equals [!Ref EnableLocalUsers, 'false']
+          - !Equals [!Ref SsoAdminUsers, '']
+          - !Equals [!Ref LdapAdminUsers, '']
+          - !Equals [!Ref LocalAdminUsers, '']
+        AssertDescription: >-
+          AuthMethod is deprecated and cannot be combined with SsoProvider /
+          EnableLocalUsers / the per-source admin parameters. Clear AuthMethod
+          and configure the login sources instead, or leave the new parameters
+          at their defaults.
+  # Within the deprecated selector the old one-method-only rules still hold.
   AuthMethodHtpasswdExclusive:
     RuleCondition: !Equals [!Ref AuthMethod, 'htpasswd']
     Assertions:
@@ -802,6 +1087,8 @@ Rules:
   AuthMethodLdapExclusive:
     RuleCondition: !Equals [!Ref AuthMethod, 'ldap']
     Assertions:
+      - Assert: !Not [!Equals [!Ref LdapServer, '']]
+        AssertDescription: LdapServer is required when AuthMethod is ldap
       - Assert: !And
           - !Equals [!Ref HtpasswdContent, '']
           - !Equals [!Ref GoogleClientId, '']
@@ -1879,22 +2166,88 @@ Resources:
               - Key: platforma
                 Value: !Ref ClusterName
 
-  SystemNodeGroupV4:
+  # ---------------------------------------------------------------------------
+  # Node group creation waves
+  # ---------------------------------------------------------------------------
+  # EKS makes one ec2:RunInstances call to validate each node group it creates.
+  # EC2 limits how many RunInstances calls an account can make per second, in a
+  # token bucket that is shared by the whole account and region. The bucket does
+  # not look at the instance type, so all node groups drain the same bucket.
+  #
+  # A region with full GPU coverage has 14 node groups. CloudFormation created
+  # all of them at the same time, which made 13 RunInstances calls in one second
+  # and emptied the bucket. EKS retries a few times, then gives up:
+  #   "Request limit exceeded ... throttled on ec2:RunInstances"
+  # One node group then fails and the whole stack rolls back.
+  #
+  # The DependsOn lines below cut the fan-out into 4 waves. No wave starts more
+  # than 5 node groups, and the first wave starts only 4. Waves after the first
+  # spread out on their own, because node groups take different times to create.
+  #
+  # Each row below is one DependsOn chain. Each column is one wave: the node
+  # groups in a column start at the same time.
+  #
+  #   track      wave 1          wave 2          wave 3         wave 4
+  #   ------------------------------------------------------------------
+  #   system     System       -> Ui
+  #   backend    Platforma
+  #   batch a    Batch16c64   -> Batch32c128  -> Batch64c256
+  #   gpu 24g                                 -> Gpu24g
+  #   gpu g6f                 -> Gpu3g        -> Gpu6g       -> Gpu12g
+  #   gpu t4                  -> Gpu16g
+  #   batch b    Batch32c256  -> Batch64c512
+  #   gpu g6e                 -> Gpu48g       -> Gpu96g
+  #   ------------------------------------------------------------------
+  #   concurrency   4               5               4              1
+  #
+  # Empty cells for a track mean it waits for the nearest node group above it
+  # in that column (the gpu g6f track waits for Batch16c64 of wave 1, and the
+  # gpu 24g track waits for Batch32c128 of wave 2).
+  # The gpu t4 track and the other GPU tracks never appear in the same region,
+  # so wave 2 never starts more than 5 in parallel.
+  #
+  # Row order is important. When you add node groups or change dependencies,
+  # update this table.
+  #
+  # Two rules the chains must keep:
+  #
+  # 1. DependsOn must name a resource that exists. CloudFormation rejects the
+  #    whole template with "Unresolved resource dependencies" if the target is
+  #    removed by a false Condition, and DependsOn does not accept Fn::If. So a
+  #    conditional GPU pool never waits for a pool of a different GPU card. It
+  #    waits either for a pool of the same card (same Condition, so both exist
+  #    or neither does) or for a batch node group, which has no Condition and is
+  #    therefore present in every region.
+  # 2. System and Platforma stay in wave 1. The backend deploy waits for both
+  #    (TriggerPlatformaDeploy -> PlatformaNodeGroupV1, and the CSI addons ->
+  #    SystemNodeGroupV5), so a delay there would delay the whole application.
+  #    Nothing waits for the batch or GPU pools, and all of them start at size 0,
+  #    so the waves only add a few minutes to the stack, not to the backend.
+  #
+  # System nodes host cluster-support / service pods only: Kueue, AppWrapper,
+  # Cluster Autoscaler, ALB Controller, External DNS, CoreDNS, metrics-server and
+  # the CSI controllers. The Platforma backend runs on its own dedicated node
+  # group (PlatformaNodeGroupV1) so the server pod and the cluster services never
+  # contend for memory or CPU — this lets the backend grow into a whole node.
+  # Services are light, so m7i.2xlarge (8 vCPU / 32 GiB) is ample.
+  # Renamed system-v4 -> system-v5 because the InstanceTypes change forces a
+  # node group replacement, and the name is immutable.
+  SystemNodeGroupV5:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: system-v4
+      NodegroupName: system-v5
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       InstanceTypes:
-        - m7i.4xlarge
+        - m7i.2xlarge
       ScalingConfig:
         DesiredSize: 1
         MinSize: 1
-        MaxSize: 4
-      # Pin system nodes to a single AZ. Platforma's EBS volumes (database, logs)
-      # are AZ-bound; spreading system nodes across AZs risks scheduling failures
-      # when a node lands in a different AZ than its PVs.
+        MaxSize: 3
+      # Pin system nodes to the same single AZ as the Platforma backend node and
+      # its AZ-bound EBS volumes, keeping the CSI controllers and backend
+      # co-located.
       Subnets: !If
         - CreateNewVpc
         - - !If [SystemAZa, !Ref PrivateSubnet1, !If [SystemAZb, !Ref PrivateSubnet2, !Ref PrivateSubnet3]]
@@ -1908,8 +2261,50 @@ Resources:
         nodegroup-type: system
         platforma: !Sub "${ClusterName}"
 
+  # Platforma backend node group — dedicated to the Platforma server pod so its
+  # memory can grow without contending with the cluster-support services on the
+  # system pool. Tainted dedicated=platforma:NoSchedule so nothing else
+  # schedules here; the backend tolerates the taint and selects this pool
+  # via app.nodeSelector (node.kubernetes.io/pool: platforma) in the deployer
+  # values. Pinned to the same single AZ (SystemNodeAZ) as the backend's database
+  # and logs PersistentVolumes (zonal EBS gp3), which can only attach to a node in
+  # their own AZ. Single node (MinSize=MaxSize=1): the backend is a single-replica
+  # Deployment with a Recreate strategy, so the pool never scales past one node.
+  # m7i.4xlarge (16 vCPU / 64 GiB) gives the backend (16 GiB request / 32 GiB
+  # limit) generous headroom to grow.
+  PlatformaNodeGroupV1:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: platforma-v1
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - m7i.4xlarge
+      ScalingConfig:
+        DesiredSize: 1
+        MinSize: 1
+        MaxSize: 1
+      Subnets: !If
+        - CreateNewVpc
+        - - !If [SystemAZa, !Ref PrivateSubnet1, !If [SystemAZb, !Ref PrivateSubnet2, !Ref PrivateSubnet3]]
+        - - !If [SystemAZa, !Select [0, !Ref PrivateSubnetIds], !If [SystemAZb, !Select [1, !Ref PrivateSubnetIds], !Select [2, !Ref PrivateSubnetIds]]]
+      LaunchTemplate:
+        Id: !Ref SmallNodeLaunchTemplate
+        Version: !GetAtt SmallNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: platforma
+      Taints:
+        - Key: dedicated
+          Value: platforma
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: platforma
+        platforma: !Sub "${ClusterName}"
+
   UiNodeGroupV2:
     Type: AWS::EKS::Nodegroup
+    DependsOn: SystemNodeGroupV5
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: ui-v2
@@ -1974,6 +2369,7 @@ Resources:
 
   Batch32c128gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
+    DependsOn: Batch16c64gNodeGroupV2
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-32c-128g-v2
@@ -2006,6 +2402,7 @@ Resources:
 
   Batch64c256gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
+    DependsOn: Batch32c128gNodeGroupV2
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-64c-256g-v2
@@ -2070,6 +2467,7 @@ Resources:
 
   Batch64c512gNodeGroupV2:
     Type: AWS::EKS::Nodegroup
+    DependsOn: Batch32c256gNodeGroupV2
     Properties:
       ClusterName: !Ref EksCluster
       NodegroupName: batch-64c-512g-v2
@@ -2101,19 +2499,30 @@ Resources:
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
-  # 4b. GPU node groups — 6 VRAM tiers, scale from 0
+  # 4b. GPU node groups — one pool per real GPU card, scale from 0
   # ---------------------------------------------------------------------------
   # All GPU resources (launch template + node groups) are gated by EnableGpu.
-  # Set EnableGpu=false to deploy in regions without GPU instance availability.
+  # Set EnableGpu=false to skip GPU costs entirely.
   #
-  # gpu-3g:   g6f.xlarge   (partial L4,   3 GB VRAM,  4 vCPU,  16 GiB RAM, $0.24/hr)
-  # gpu-6g:   g6f.2xlarge  (partial L4,   6 GB VRAM,  8 vCPU,  32 GiB RAM, $0.49/hr)
-  # gpu-12g:  g6f.4xlarge  (partial L4,  12 GB VRAM, 16 vCPU,  64 GiB RAM, $0.98/hr)
-  # gpu-24g:  g6.2xlarge   (1× L4,       24 GB VRAM,  8 vCPU,  32 GiB RAM, $0.98/hr)
-  # gpu-48g:  g6e.2xlarge  (1× L40S,     48 GB VRAM,  8 vCPU,  32 GiB RAM, $2.36/hr)
-  # gpu-96g:  g6e.12xlarge (4× L40S,    4x48 GB VRAM, 48 vCPU, 384 GiB RAM, $10.59/hr)
+  # Each pool corresponds to a REAL GPU card, and its gpu-memory-gib label equals
+  # that card's actual per-GPU VRAM. A region gets ONLY the pools whose card it
+  # actually offers (gated by the RegionHas* Conditions above, generated by
+  # assets/generate-gpu-map.sh) — no fallback substitution, so a label never lies and
+  # hardware is never under-used. See gpu-instance-map.json for the per-region
+  # pool set. The GpuSubnetResolver Lambda picks each pool's exact instance type
+  # (e.g. gpu-24g -> g6 or g5) and the subnets in AZs that offer it.
   #
-  # Available in: us-east-1, us-east-2, us-west-2, eu-central-1, eu-north-1, ap-northeast-1
+  # pool     card                 label  instance      created where
+  # gpu-3g   L4 fractional (g6f)  3      g6f.xlarge    g6f offered
+  # gpu-6g   L4 fractional (g6f)  6      g6f.2xlarge   g6f offered
+  # gpu-12g  L4 fractional (g6f)  12     g6f.4xlarge   g6f offered
+  # gpu-24g  L4 / A10G            24     g6.2xlarge|g5.2xlarge   g6 or g5 offered
+  # gpu-48g  L40S (g6e)           48     g6e.2xlarge   g6e offered
+  # gpu-96g  4× L40S (g6e)        48     g6e.12xlarge  g6e offered
+  # gpu-16g  T4 (g4dn)            16     g4dn.2xlarge  ONLY where nothing better
+  #
+  # gpu-16g (T4) is a last resort: it is created only in regions that offer no
+  # better GPU, so it never appears next to the L4/A10G/L40S pools.
 
   GpuNodeLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
@@ -2136,22 +2545,28 @@ Resources:
               - Key: platforma
                 Value: !Ref ClusterName
 
-  # GPU node groups scale from zero, so their instance type is only launched at
-  # autoscale time. A managed node group hands its ASG every subnet it is given;
-  # if a subnet's AZ does not offer the node group's instance type, the ASG's
-  # launch attempt in that AZ fails ("Unsupported ... not supported in your
-  # requested Availability Zone") and the scale-up stalls. GPU instance types
-  # (g6f/g6/g6e) are offered in only a subset of a region's AZs, and the subset
-  # differs per type, so the correct subnet list cannot be hardcoded per region.
+  # GpuSubnetResolver resolves, per pool and per region, BOTH the GPU instance
+  # type and the subnets to launch it in — the two things that vary by region.
+  # Which pools EXIST is decided at parse time by the RegionHas* Conditions, so
+  # the resolver is only consulted for pools whose card the region offers.
   #
-  # GpuSubnetResolver queries EC2 at deploy time for the AZs that actually offer
-  # each GPU instance type and returns, per tier, only the subnets in those AZs.
-  # Each GPU node group consumes its own filtered list via
-  # !Split [",", !GetAtt GpuSubnetResolver.<Tier>], keeping the template region-
-  # and AZ-agnostic. If a type is offered in none of the cluster's AZs the
-  # resolver falls back to all subnets (no worse than the pre-resolver behaviour:
-  # that tier only fails at scale-up time, and only if actually requested) rather
-  # than blocking the whole stack.
+  # Type: most pools map to one card (g6f/g6e/g4dn); gpu-24g may be g6 (L4) or g5
+  # (A10G) depending on the region — both 24 GiB. The resolver reads the chosen
+  # type from the embedded STATIC_MAP.
+  #
+  # Subnets: a managed node group hands its ASG every subnet it is given; if a
+  # subnet's AZ does not offer the chosen type, the ASG's launch in that AZ fails
+  # ("Unsupported ... not supported in your requested Availability Zone") and the
+  # scale-up stalls. Offerings differ per AZ within a region, so the resolver
+  # returns only the subnets in AZs that offer the pool's card (matched by
+  # account-stable AZ ID). If none match it falls back to all subnets rather than
+  # blocking the stack.
+  #
+  # Each GPU node group consumes its pool's results via
+  #   InstanceTypes: [ !GetAtt GpuSubnetResolver.<AttrKey>Type ]
+  #   Subnets: !Split [",", !GetAtt GpuSubnetResolver.<AttrKey>Subnets]
+  # keeping the template region- and AZ-agnostic. Refresh the embedded map with
+  # assets/generate-gpu-map.sh; a stack update re-runs the resolver.
   GpuSubnetResolverRole:
     Type: AWS::IAM::Role
     Condition: GpuEnabled
@@ -2171,12 +2586,12 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # Neither action supports resource-level permissions; both are
-              # read-only region-scoped describes.
+              # Read-only region-scoped describe; maps subnets to their AZ IDs so
+              # the resolver can filter each pool's subnets by the AZs offering its
+              # card. Does not support resource-level permissions.
               - Effect: Allow
                 Action:
                   - ec2:DescribeSubnets
-                  - ec2:DescribeInstanceTypeOfferings
                 Resource: '*'
       Tags:
         - Key: platforma
@@ -2196,7 +2611,36 @@ Resources:
           Value: !Ref ClusterName
       Code:
         ZipFile: |
-          import boto3, json, urllib.request
+          import boto3, json, os, urllib.request
+          # STATIC_MAP is the committed region -> GPU-pool map, embedded here so
+          # the template stays a single self-contained file. Generated (and this
+          # block rewritten) by assets/generate-gpu-map.sh from live EC2 offerings; the
+          # standalone gpu-instance-map.json is the human-auditable copy. Shape:
+          #   {"poolMemGib": {pool: gib},
+          #    "regions": {region: {pool: {"type": t, "azIds": [azId, ...]}}}}
+          # A pool is present only where its real GPU card is offered, and its node
+          # group is gated by a matching RegionHas* Condition — so every pool this
+          # resolver is asked about exists in the region's map.
+          # AZ IDs (euw2-az1) are account-stable, unlike AZ names (eu-west-2a).
+          # BEGIN GENERATED GPU MAP (generate-gpu-map.sh) — do not edit by hand
+          STATIC_MAP = json.loads(r'''{"poolMemGib":{"gpu-12g":12,"gpu-16g":16,"gpu-24g":24,"gpu-3g":3,"gpu-48g":48,"gpu-6g":6,"gpu-96g":48},"regions":{"ap-northeast-1":{"gpuMax":{"cpu":46,"gpuGi":48,"ramGi":384},"pools":{"gpu-12g":{"azIds":["apne1-az1","apne1-az4"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["apne1-az1","apne1-az4"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["apne1-az1","apne1-az4"],"memGib":3,"type":"g6f.xlarge"},"gpu-48g":{"azIds":["apne1-az1","apne1-az4"],"memGib":48,"type":"g6e.2xlarge"},"gpu-6g":{"azIds":["apne1-az1","apne1-az4"],"memGib":6,"type":"g6f.2xlarge"},"gpu-96g":{"azIds":["apne1-az1","apne1-az4"],"memGib":48,"type":"g6e.12xlarge"}}},"ap-northeast-2":{"gpuMax":{"cpu":46,"gpuGi":48,"ramGi":384},"pools":{"gpu-12g":{"azIds":["apne2-az1","apne2-az3","apne2-az4"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["apne2-az1","apne2-az3","apne2-az4"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["apne2-az1","apne2-az3","apne2-az4"],"memGib":3,"type":"g6f.xlarge"},"gpu-48g":{"azIds":["apne2-az1","apne2-az2"],"memGib":48,"type":"g6e.2xlarge"},"gpu-6g":{"azIds":["apne2-az1","apne2-az3","apne2-az4"],"memGib":6,"type":"g6f.2xlarge"},"gpu-96g":{"azIds":["apne2-az1","apne2-az2"],"memGib":48,"type":"g6e.12xlarge"}}},"ap-northeast-3":{"gpuMax":{"cpu":46,"gpuGi":48,"ramGi":384},"pools":{"gpu-48g":{"azIds":["apne3-az1","apne3-az2"],"memGib":48,"type":"g6e.2xlarge"},"gpu-96g":{"azIds":["apne3-az1","apne3-az2"],"memGib":48,"type":"g6e.12xlarge"}}},"ap-south-1":{"gpuMax":{"cpu":46,"gpuGi":48,"ramGi":384},"pools":{"gpu-12g":{"azIds":["aps1-az1","aps1-az3"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["aps1-az1","aps1-az3"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["aps1-az1","aps1-az3"],"memGib":3,"type":"g6f.xlarge"},"gpu-48g":{"azIds":["aps1-az1","aps1-az3"],"memGib":48,"type":"g6e.2xlarge"},"gpu-6g":{"azIds":["aps1-az1","aps1-az3"],"memGib":6,"type":"g6f.2xlarge"},"gpu-96g":{"azIds":["aps1-az1","aps1-az3"],"memGib":48,"type":"g6e.12xlarge"}}},"ap-southeast-1":{"gpuMax":{"cpu":6,"gpuGi":16,"ramGi":32},"pools":{"gpu-16g":{"azIds":["apse1-az1","apse1-az2","apse1-az3"],"memGib":16,"type":"g4dn.2xlarge"}}},"ap-southeast-2":{"gpuMax":{"cpu":6,"gpuGi":24,"ramGi":32},"pools":{"gpu-12g":{"azIds":["apse2-az1","apse2-az2"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["apse2-az1","apse2-az2","apse2-az3"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["apse2-az1","apse2-az2"],"memGib":3,"type":"g6f.xlarge"},"gpu-6g":{"azIds":["apse2-az1","apse2-az2"],"memGib":6,"type":"g6f.2xlarge"}}},"ca-central-1":{"gpuMax":{"cpu":6,"gpuGi":24,"ramGi":32},"pools":{"gpu-12g":{"azIds":["cac1-az1","cac1-az2"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["cac1-az1","cac1-az2","cac1-az4"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["cac1-az1","cac1-az2"],"memGib":3,"type":"g6f.xlarge"},"gpu-6g":{"azIds":["cac1-az1","cac1-az2"],"memGib":6,"type":"g6f.2xlarge"}}},"eu-central-1":{"gpuMax":{"cpu":46,"gpuGi":48,"ramGi":384},"pools":{"gpu-12g":{"azIds":["euc1-az2","euc1-az3"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["euc1-az1","euc1-az2","euc1-az3"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["euc1-az2","euc1-az3"],"memGib":3,"type":"g6f.xlarge"},"gpu-48g":{"azIds":["euc1-az1","euc1-az2","euc1-az3"],"memGib":48,"type":"g6e.2xlarge"},"gpu-6g":{"azIds":["euc1-az2","euc1-az3"],"memGib":6,"type":"g6f.2xlarge"},"gpu-96g":{"azIds":["euc1-az1","euc1-az2","euc1-az3"],"memGib":48,"type":"g6e.12xlarge"}}},"eu-north-1":{"gpuMax":{"cpu":46,"gpuGi":48,"ramGi":384},"pools":{"gpu-12g":{"azIds":["eun1-az1","eun1-az2"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["eun1-az1","eun1-az2"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["eun1-az1","eun1-az2"],"memGib":3,"type":"g6f.xlarge"},"gpu-48g":{"azIds":["eun1-az1","eun1-az2"],"memGib":48,"type":"g6e.2xlarge"},"gpu-6g":{"azIds":["eun1-az1","eun1-az2"],"memGib":6,"type":"g6f.2xlarge"},"gpu-96g":{"azIds":["eun1-az1","eun1-az2"],"memGib":48,"type":"g6e.12xlarge"}}},"eu-west-1":{"gpuMax":{"cpu":6,"gpuGi":24,"ramGi":32},"pools":{"gpu-24g":{"azIds":["euw1-az1","euw1-az2","euw1-az3"],"memGib":24,"type":"g5.2xlarge"}}},"eu-west-2":{"gpuMax":{"cpu":6,"gpuGi":24,"ramGi":32},"pools":{"gpu-12g":{"azIds":["euw2-az2","euw2-az3"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["euw2-az1","euw2-az2","euw2-az3"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["euw2-az2","euw2-az3"],"memGib":3,"type":"g6f.xlarge"},"gpu-6g":{"azIds":["euw2-az2","euw2-az3"],"memGib":6,"type":"g6f.2xlarge"}}},"eu-west-3":{"gpuMax":{"cpu":6,"gpuGi":24,"ramGi":32},"pools":{"gpu-24g":{"azIds":["euw3-az2","euw3-az3"],"memGib":24,"type":"g6.2xlarge"}}},"sa-east-1":{"gpuMax":{"cpu":6,"gpuGi":24,"ramGi":32},"pools":{"gpu-12g":{"azIds":["sae1-az1","sae1-az2"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["sae1-az1","sae1-az2"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["sae1-az1","sae1-az2"],"memGib":3,"type":"g6f.xlarge"},"gpu-6g":{"azIds":["sae1-az1","sae1-az2"],"memGib":6,"type":"g6f.2xlarge"}}},"us-east-1":{"gpuMax":{"cpu":46,"gpuGi":48,"ramGi":384},"pools":{"gpu-12g":{"azIds":["use1-az1","use1-az2","use1-az4","use1-az6"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["use1-az1","use1-az2","use1-az4","use1-az5","use1-az6"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["use1-az1","use1-az2","use1-az4","use1-az6"],"memGib":3,"type":"g6f.xlarge"},"gpu-48g":{"azIds":["use1-az1","use1-az2","use1-az4","use1-az6"],"memGib":48,"type":"g6e.2xlarge"},"gpu-6g":{"azIds":["use1-az1","use1-az2","use1-az4","use1-az6"],"memGib":6,"type":"g6f.2xlarge"},"gpu-96g":{"azIds":["use1-az1","use1-az2","use1-az4","use1-az6"],"memGib":48,"type":"g6e.12xlarge"}}},"us-east-2":{"gpuMax":{"cpu":46,"gpuGi":48,"ramGi":384},"pools":{"gpu-12g":{"azIds":["use2-az1","use2-az2","use2-az3"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["use2-az1","use2-az2","use2-az3"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["use2-az1","use2-az2","use2-az3"],"memGib":3,"type":"g6f.xlarge"},"gpu-48g":{"azIds":["use2-az1","use2-az2","use2-az3"],"memGib":48,"type":"g6e.2xlarge"},"gpu-6g":{"azIds":["use2-az1","use2-az2","use2-az3"],"memGib":6,"type":"g6f.2xlarge"},"gpu-96g":{"azIds":["use2-az1","use2-az2","use2-az3"],"memGib":48,"type":"g6e.12xlarge"}}},"us-west-1":{"gpuMax":{"cpu":6,"gpuGi":16,"ramGi":32},"pools":{"gpu-16g":{"azIds":["usw1-az1","usw1-az3"],"memGib":16,"type":"g4dn.2xlarge"}}},"us-west-2":{"gpuMax":{"cpu":46,"gpuGi":48,"ramGi":384},"pools":{"gpu-12g":{"azIds":["usw2-az1","usw2-az2","usw2-az3","usw2-az4"],"memGib":12,"type":"g6f.4xlarge"},"gpu-24g":{"azIds":["usw2-az1","usw2-az2","usw2-az3","usw2-az4"],"memGib":24,"type":"g6.2xlarge"},"gpu-3g":{"azIds":["usw2-az1","usw2-az2","usw2-az3","usw2-az4"],"memGib":3,"type":"g6f.xlarge"},"gpu-48g":{"azIds":["usw2-az1","usw2-az2","usw2-az3","usw2-az4"],"memGib":48,"type":"g6e.2xlarge"},"gpu-6g":{"azIds":["usw2-az1","usw2-az2","usw2-az3","usw2-az4"],"memGib":6,"type":"g6f.2xlarge"},"gpu-96g":{"azIds":["usw2-az1","usw2-az2","usw2-az3","usw2-az4"],"memGib":48,"type":"g6e.12xlarge"}}}}}''')
+          # END GENERATED GPU MAP
+          def _eks_alloc_ram_gib(cap_gib):
+            # The GPU map's ramGi is the instance's RAM *capacity*. A GPU job is
+            # clamped to this value, but a pod requesting full capacity never
+            # schedules (kubelet kube-reserved + eviction). Convert to allocatable
+            # using EKS's tiered kube-reserved memory formula (same one the EKS AL2
+            # AMI applies) plus the 100Mi hard-eviction threshold, floored to GiB so
+            # the ceiling is always <= a real node's allocatable. Reserve is ~4% on
+            # 384GiB nodes, ~11% on 32GiB nodes — a flat margin would be wrong.
+            mib = int(cap_gib) * 1024
+            r = min(mib, 4096) * 0.25
+            r += max(0, min(mib, 8192) - 4096) * 0.20
+            r += max(0, min(mib, 16384) - 8192) * 0.10
+            r += max(0, min(mib, 131072) - 16384) * 0.06
+            r += max(0, mib - 131072) * 0.02
+            r += 100
+            return max(0, int((mib - r) // 1024))
           def handler(event, context):
             pid = 'gpu-subnet-resolver'
             try:
@@ -2205,34 +2649,46 @@ Resources:
                 return
               props = event['ResourceProperties']
               subnet_ids = props['SubnetIds']
-              tiers = props['InstanceTypes']  # {tier: instance_type}
+              # {AttrKey: pool}, e.g. {"Gpu3g": "gpu-3g"}. AttrKey must be dot-free
+              # so node groups can !GetAtt <AttrKey>Type / <AttrKey>Subnets.
+              pools = props['Pools']
+              region = os.environ['AWS_REGION']
               ec2 = boto3.client('ec2')
-              # subnet -> AZ lookup; stable output order is enforced later by
-              # iterating subnet_ids in the keep list-comprehension.
-              az_by_subnet = {}
+              # subnet -> AZ ID. AZ IDs are account-stable, so they match the
+              # STATIC_MAP keys regardless of which account this stack runs in.
+              azid_by_subnet = {}
               for s in ec2.describe_subnets(SubnetIds=subnet_ids)['Subnets']:
-                az_by_subnet[s['SubnetId']] = s['AvailabilityZone']
-              offered = {}  # instance_type -> set(AZ), cached across tiers
+                azid_by_subnet[s['SubnetId']] = s['AvailabilityZoneId']
+              region_map = STATIC_MAP.get('regions', {}).get(region, {})
+              pools_map = region_map.get('pools', {})
+              # Per-region GPU job ceilings, from the region's highest-VRAM GPU
+              # node (one real node, so cpu/ram/vram are self-consistent).
+              # Consumed by the deployer as the backend's --k8s-gpu-max-cpu-request
+              # / --k8s-gpu-max-ram-request and the kueue gpuMemory. Strings so CF
+              # env vars can pass them verbatim.
+              gpu_max = region_map.get('gpuMax', {})
               data = {}
-              for tier, itype in tiers.items():
-                if itype not in offered:
-                  azs = set()
-                  pager = ec2.get_paginator('describe_instance_type_offerings')
-                  for page in pager.paginate(
-                      LocationType='availability-zone',
-                      Filters=[{'Name': 'instance-type', 'Values': [itype]}]):
-                    for o in page['InstanceTypeOfferings']:
-                      azs.add(o['Location'])
-                  offered[itype] = azs
-                keep = [sid for sid in subnet_ids
-                        if az_by_subnet.get(sid) in offered[itype]]
+              data['GpuMaxCpu'] = str(gpu_max.get('cpu', 0))
+              # ramGi in the map is capacity; clamp GPU jobs to node *allocatable*.
+              data['GpuMaxRamGi'] = str(_eks_alloc_ram_gib(gpu_max.get('ramGi', 0)))
+              data['GpuMaxGpuGi'] = str(gpu_max.get('gpuGi', 0))
+              for attr, pool in pools.items():
+                pick = pools_map.get(pool)
+                if not pick:
+                  # Pool not offered in this region; its node group is disabled by
+                  # a false RegionHas* Condition, so these outputs are never read.
+                  data[attr + 'Type'] = ''
+                  data[attr + 'Subnets'] = ','.join(subnet_ids)
+                  continue
+                azids = set(pick['azIds'])
+                keep = [sid for sid in subnet_ids if azid_by_subnet.get(sid) in azids]
                 if not keep:
-                  print(f'WARNING: {itype} ({tier}) offered in none of '
-                        f'{sorted(az_by_subnet.values())}; falling back to all '
-                        f'subnets')
+                  print(f'WARNING: {pick["type"]} ({pool}) offered in none of '
+                        f'{sorted(set(azid_by_subnet.values()))}; using all subnets')
                   keep = list(subnet_ids)
-                data[tier] = ','.join(keep)
-              print('resolved subnets: ' + json.dumps(data))
+                data[attr + 'Type'] = pick['type']
+                data[attr + 'Subnets'] = ','.join(keep)
+              print('resolved GPU pools: ' + json.dumps(data))
               send(event, 'SUCCESS', data, pid)
             except Exception as e:
               print(f'ERROR: {e}')
@@ -2266,41 +2722,53 @@ Resources:
       ServiceToken: !GetAtt GpuSubnetResolverFunction.Arn
       # CF re-invokes this resource whenever any property changes, so subnet
       # changes re-resolve automatically. A plain stack update also re-runs it,
-      # which is how to pick up AZ-offering changes (EC2 does not notify on them).
+      # which re-reads the embedded static map — how to pick up offering changes
+      # after a map refresh (regenerate with assets/generate-gpu-map.sh).
       SubnetIds: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
           - !Ref PrivateSubnet2
           - !Ref PrivateSubnet3
         - !Ref PrivateSubnetIds
-      # Keys become GpuSubnetResolver attributes referenced via !GetAtt; keep
-      # them dot-free so the short !GetAtt form resolves. Values must match each
-      # tier's InstanceTypes below.
-      InstanceTypes:
-        Gpu3g: g6f.xlarge
-        Gpu6g: g6f.2xlarge
-        Gpu12g: g6f.4xlarge
-        Gpu24g: g6.2xlarge
-        Gpu48g: g6e.2xlarge
-        Gpu96g: g6e.12xlarge
+      # AttrKey -> pool name. Each AttrKey yields two GpuSubnetResolver attributes:
+      # <AttrKey>Type (the region's instance type for that pool) and
+      # <AttrKey>Subnets (subnets in AZs that offer it), consumed by the matching
+      # node group. Keep AttrKeys dot-free so the short !GetAtt form resolves.
+      # Pool names must match STATIC_MAP. A node group only reads these when its
+      # RegionHas* Condition is true, i.e. when the pool exists in the region.
+      Pools:
+        Gpu3g: gpu-3g
+        Gpu6g: gpu-6g
+        Gpu12g: gpu-12g
+        Gpu16g: gpu-16g
+        Gpu24g: gpu-24g
+        Gpu48g: gpu-48g
+        Gpu96g: gpu-96g
 
+  # GPU node group names carry a "-v2" suffix (like system-v4 / ui-v2 / batch-*-v2).
+  # InstanceTypes and Subnets are immutable on AWS::EKS::Nodegroup, and both now come
+  # from GpuSubnetResolver, so changing them forces replacement. A replacement that
+  # keeps the same NodegroupName fails create-before-delete with a 409 "already exists"
+  # (the un-suffixed gpu-3g pools of pre-4.2.0 stacks hit exactly this). The suffix
+  # lets CloudFormation create the new pool under a fresh name, then delete the old.
   Gpu3gNodeGroup:
     Type: AWS::EKS::Nodegroup
-    Condition: GpuEnabled
+    DependsOn: Batch16c64gNodeGroupV2
+    Condition: Gpu3gEnabled
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: gpu-3g
+      NodegroupName: gpu-3g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       AmiType: AL2023_x86_64_NVIDIA
       InstanceTypes:
-        - g6f.xlarge
+        - !GetAtt GpuSubnetResolver.Gpu3gType
       CapacityType: ON_DEMAND
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu3g]
-      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu3g]
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu3gSubnets]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2320,21 +2788,22 @@ Resources:
 
   Gpu6gNodeGroup:
     Type: AWS::EKS::Nodegroup
-    Condition: GpuEnabled
+    DependsOn: Gpu3gNodeGroup
+    Condition: Gpu6gEnabled
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: gpu-6g
+      NodegroupName: gpu-6g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       AmiType: AL2023_x86_64_NVIDIA
       InstanceTypes:
-        - g6f.2xlarge
+        - !GetAtt GpuSubnetResolver.Gpu6gType
       CapacityType: ON_DEMAND
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu6g]
-      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu6g]
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu6gSubnets]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2354,21 +2823,22 @@ Resources:
 
   Gpu12gNodeGroup:
     Type: AWS::EKS::Nodegroup
-    Condition: GpuEnabled
+    DependsOn: Gpu6gNodeGroup
+    Condition: Gpu12gEnabled
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: gpu-12g
+      NodegroupName: gpu-12g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       AmiType: AL2023_x86_64_NVIDIA
       InstanceTypes:
-        - g6f.4xlarge
+        - !GetAtt GpuSubnetResolver.Gpu12gType
       CapacityType: ON_DEMAND
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu12g]
-      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu12g]
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu12gSubnets]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2388,21 +2858,22 @@ Resources:
 
   Gpu24gNodeGroup:
     Type: AWS::EKS::Nodegroup
-    Condition: GpuEnabled
+    DependsOn: Batch32c128gNodeGroupV2
+    Condition: Gpu24gEnabled
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: gpu-24g
+      NodegroupName: gpu-24g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       AmiType: AL2023_x86_64_NVIDIA
       InstanceTypes:
-        - g6.2xlarge
+        - !GetAtt GpuSubnetResolver.Gpu24gType
       CapacityType: ON_DEMAND
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu24g]
-      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu24g]
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu24gSubnets]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2422,21 +2893,22 @@ Resources:
 
   Gpu48gNodeGroup:
     Type: AWS::EKS::Nodegroup
-    Condition: GpuEnabled
+    DependsOn: Batch32c256gNodeGroupV2
+    Condition: Gpu48gEnabled
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: gpu-48g
+      NodegroupName: gpu-48g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       AmiType: AL2023_x86_64_NVIDIA
       InstanceTypes:
-        - g6e.2xlarge
+        - !GetAtt GpuSubnetResolver.Gpu48gType
       CapacityType: ON_DEMAND
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu48g]
-      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu48g]
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu48gSubnets]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2456,21 +2928,22 @@ Resources:
 
   Gpu96gNodeGroup:
     Type: AWS::EKS::Nodegroup
-    Condition: GpuEnabled
+    DependsOn: Gpu48gNodeGroup
+    Condition: Gpu96gEnabled
     Properties:
       ClusterName: !Ref EksCluster
-      NodegroupName: gpu-96g
+      NodegroupName: gpu-96g-v2
       Version: !FindInMap [Constants, EKS, Version]
       NodeRole: !GetAtt NodeGroupRole.Arn
       AmiType: AL2023_x86_64_NVIDIA
       InstanceTypes:
-        - g6e.12xlarge
+        - !GetAtt GpuSubnetResolver.Gpu96gType
       CapacityType: ON_DEMAND
       ScalingConfig:
         DesiredSize: 0
         MinSize: 0
         MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu96g]
-      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu96g]
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu96gSubnets]
       LaunchTemplate:
         Id: !Ref GpuNodeLaunchTemplate
         Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
@@ -2486,6 +2959,44 @@ Resources:
       Tags:
         nodegroup-type: gpu-96g
         k8s.io/cluster-autoscaler/node-template/label/platforma.bio/gpu-memory-gib: "48"
+        platforma: !Sub "${ClusterName}"
+
+  # gpu-16g is the T4 (g4dn) last-resort pool: created (via Gpu16gEnabled) ONLY in
+  # regions that offer no better GPU than T4, so it never appears alongside the
+  # L4/A10G/L40S pools. 16 GiB per-GPU VRAM.
+  Gpu16gNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn: Batch16c64gNodeGroupV2
+    Condition: Gpu16gEnabled
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: gpu-16g-v2
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      AmiType: AL2023_x86_64_NVIDIA
+      InstanceTypes:
+        - !GetAtt GpuSubnetResolver.Gpu16gType
+      CapacityType: ON_DEMAND
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxGpu16g]
+      Subnets: !Split [",", !GetAtt GpuSubnetResolver.Gpu16gSubnets]
+      LaunchTemplate:
+        Id: !Ref GpuNodeLaunchTemplate
+        Version: !GetAtt GpuNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        platforma.bio/gpu-memory-gib: "16"
+      Taints:
+        - Key: nvidia.com/gpu
+          Value: present
+          Effect: NO_SCHEDULE
+        - Key: nvidia.com/gpu-not-ready
+          Value: "true"
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: gpu-16g
+        k8s.io/cluster-autoscaler/node-template/label/platforma.bio/gpu-memory-gib: "16"
         platforma: !Sub "${ClusterName}"
 
   # ---------------------------------------------------------------------------
@@ -2516,7 +3027,7 @@ Resources:
 
   CoreDnsAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV4
+    DependsOn: SystemNodeGroupV5
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: coredns
@@ -2525,10 +3036,10 @@ Resources:
         - Key: platforma
           Value: !Ref ClusterName
 
-  # CSI drivers (DependsOn: SystemNodeGroupV4 for running pods)
+  # CSI drivers (DependsOn: SystemNodeGroupV5 for running pods)
   EbsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV4
+    DependsOn: SystemNodeGroupV5
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-ebs-csi-driver
@@ -2540,7 +3051,7 @@ Resources:
 
   EfsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV4
+    DependsOn: SystemNodeGroupV5
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: aws-efs-csi-driver
@@ -2564,7 +3075,7 @@ Resources:
   # section.
   MetricsServerAddon:
     Type: AWS::EKS::Addon
-    DependsOn: SystemNodeGroupV4
+    DependsOn: SystemNodeGroupV5
     Properties:
       ClusterName: !Ref EksCluster
       AddonName: metrics-server
@@ -2655,9 +3166,23 @@ Resources:
                   - ecr:BatchGetImage
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchCheckLayerAvailability
-                # Region wildcard: custom PlatformaHelmChart/PlatformaImage may live in a
-                # different region than the cluster (e.g. an eu-central-1 chart on an eu-west-1 cluster).
-                Resource: !Sub 'arn:aws:ecr:*:${AWS::AccountId}:repository/*'
+                # Region and account wildcards: a custom PlatformaHelmChart or
+                # PlatformaImage may live in another region than the cluster, or in
+                # another account entirely. Cross-account reads stay gated by the
+                # repository policy on the other side.
+                Resource: 'arn:aws:ecr:*:*:repository/*'
+              # Read deployer assets when DeployerAssetBaseUrl is an s3:// prefix.
+              # Scoped to that prefix's own bucket, so it grants nothing when the
+              # parameter is left at the published https default.
+              - !If
+                - HasS3AssetBase
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                  Resource: !Sub
+                    - 'arn:aws:s3:::${AssetBucket}/*'
+                    - AssetBucket: !Select [0, !Split ['/', !Select [1, !Split ['s3://', !Ref DeployerAssetBaseUrl]]]]
+                - !Ref 'AWS::NoValue'
               # Tag GPU ASGs for Cluster Autoscaler scale-from-zero
               - Effect: Allow
                 Action:
@@ -3037,6 +3562,11 @@ Resources:
               - UseDefaultHelmChart
               - 'oci://ghcr.io/milaboratory/platforma-helm/platforma'
               - !Ref PlatformaHelmChart
+          - Name: DEPLOYER_ASSET_BASE
+            Value: !If
+              - UseDefaultAssetBase
+              - !FindInMap [DeployerAssets, Public, BaseUrl]
+              - !Ref DeployerAssetBaseUrl
           - Name: DEPLOY_PLATFORMA
             Value: !Ref DeployPlatforma
           - Name: DOMAIN_NAME
@@ -3065,10 +3595,32 @@ Resources:
             Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchMemoryGi]
           - Name: GPU_ENABLED
             Value: !Ref EnableGpu
+          # GPU job ceilings for the region's biggest GPU node (from
+          # GpuSubnetResolver). Fed to the backend's --k8s-gpu-max-cpu/ram-request
+          # and kueue gpuMemory so GPU jobs are shrunk to what a real GPU node in
+          # this region provides. '0' when GPU is disabled (resolver absent).
+          - Name: GPU_MAX_CPU
+            Value: !If [GpuEnabled, !GetAtt GpuSubnetResolver.GpuMaxCpu, '0']
+          - Name: GPU_MAX_RAM_GI
+            Value: !If [GpuEnabled, !GetAtt GpuSubnetResolver.GpuMaxRamGi, '0']
+          - Name: GPU_MAX_GPU_GI
+            Value: !If [GpuEnabled, !GetAtt GpuSubnetResolver.GpuMaxGpuGi, '0']
           - Name: AUTH_METHOD
             Value: !Ref AuthMethod
+          - Name: SSO_PROVIDER
+            Value: !Ref SsoProvider
+          - Name: ENABLE_LOCAL_USERS
+            Value: !Ref EnableLocalUsers
           - Name: SHOW_USER_LIST
             Value: !Ref ShowUserList
+          - Name: ADMIN_USERS
+            Value: !Ref AdminUsers
+          - Name: SSO_ADMIN_USERS
+            Value: !Ref SsoAdminUsers
+          - Name: LDAP_ADMIN_USERS
+            Value: !Ref LdapAdminUsers
+          - Name: LOCAL_ADMIN_USERS
+            Value: !Ref LocalAdminUsers
           - Name: HTPASSWD_CONTENT
             Value: !Ref HtpasswdContent
           - Name: LDAP_SERVER
@@ -3229,6 +3781,9 @@ Resources:
                   aws ssm delete-parameter \
                     --name "/${CLUSTER_NAME}/platforma/master-secret" \
                     --region $REGION 2>/dev/null || true
+                  aws ssm delete-parameter \
+                    --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                    --region $REGION 2>/dev/null || true
                   echo "Platforma teardown complete."
                   exit 0
 
@@ -3260,14 +3815,26 @@ Resources:
                     --from-literal=MI_LICENSE="$LICENSE_KEY" \
                     --dry-run=client -o yaml | kubectl apply -f -
 
-                  if [ -n "$GOOGLE_CLIENT_SECRET" ]; then
+                  # Sibling script under assets/; fetched so this buildspec
+                  # stays under CodeBuild's 25600-character inline cap. An
+                  # s3:// base is read with this role's credentials, which is
+                  # what lets a preview prefix stay private; the published
+                  # https base stays an unsigned fetch.
+                  if [ "${DEPLOYER_ASSET_BASE#s3://}" != "$DEPLOYER_ASSET_BASE" ]; then
+                    aws s3 cp "${DEPLOYER_ASSET_BASE%/}/compose-auth.py" /tmp/compose-auth.py
+                  else
+                    curl -fsSL "${DEPLOYER_ASSET_BASE%/}/compose-auth.py" -o /tmp/compose-auth.py
+                  fi
+                  python3 /tmp/compose-auth.py
+                  . /tmp/auth-env.sh
+                  if [ -n "$SSO_CLIENT_SECRET" ]; then
                     kubectl create secret generic platforma-sso-client-secret \
                       -n $NAMESPACE \
-                      --from-literal=client-secret="$GOOGLE_CLIENT_SECRET" \
+                      --from-literal=client-secret="$SSO_CLIENT_SECRET" \
                       --dry-run=client -o yaml | kubectl apply -f -
                   fi
 
-                  if [ "$AUTH_METHOD" = "htpasswd" ]; then
+                  if [ -n "$LOCAL_ID" ]; then
                     HTPASSWD_TRIMMED=$(echo "$HTPASSWD_CONTENT" | tr -d '[:space:]')
                     HTPASSWD_CONTENT=$(echo "$HTPASSWD_CONTENT" | tr ' ' '\n')
 
@@ -3377,6 +3944,46 @@ Resources:
                     --from-literal=master-secret="$MASTER_SECRET" \
                     --dry-run=client -o yaml | kubectl apply -f -
 
+                  # The admin credential is always on: no parameter creates it, none
+                  # switches it off. Re-read from SSM before generating a fresh one — a
+                  # new password on every deploy would rotate the credential and churn
+                  # the Secret on every no-op run.
+                  ADMIN_PASSWORD=$(aws ssm get-parameter \
+                    --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                    --with-decryption --query Parameter.Value --output text \
+                    --region $REGION 2>/dev/null) || ADMIN_PASSWORD=""
+                  if [ -z "$ADMIN_PASSWORD" ]; then
+                    echo "No admin password in SSM — generating a random one"
+                    ADMIN_PASSWORD=$(openssl rand -base64 12)
+                    aws ssm put-parameter \
+                      --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                      --type SecureString \
+                      --value "$ADMIN_PASSWORD" \
+                      --region $REGION
+                    echo "Admin password stored in SSM: /${CLUSTER_NAME}/platforma/admin-password"
+                  else
+                    echo "Using existing admin password from SSM: /${CLUSTER_NAME}/platforma/admin-password"
+                  fi
+                  # Reuse the existing hash's salt, exactly as the platforma-htpasswd block
+                  # above does. A fresh salt on an unchanged password would still rewrite the
+                  # Secret every build, the churn that the SSM re-read avoids.
+                  ADMIN_EXISTING_APR1=$(kubectl -n $NAMESPACE get secret platforma-admin-htpasswd \
+                    -o jsonpath='{.data.htpasswd}' 2>/dev/null | base64 -d 2>/dev/null \
+                    | grep -oE '\$apr1\$[^:]+' | head -1)
+                  ADMIN_EXISTING_SALT=""
+                  if [ -n "$ADMIN_EXISTING_APR1" ]; then
+                    ADMIN_EXISTING_SALT=$(echo "$ADMIN_EXISTING_APR1" | cut -d'$' -f3)
+                  fi
+                  if [ -n "$ADMIN_EXISTING_SALT" ]; then
+                    ADMIN_HASH=$(openssl passwd -apr1 -salt "$ADMIN_EXISTING_SALT" "$ADMIN_PASSWORD")
+                  else
+                    ADMIN_HASH=$(openssl passwd -apr1 "$ADMIN_PASSWORD")
+                  fi
+                  kubectl create secret generic platforma-admin-htpasswd \
+                    -n $NAMESPACE \
+                    --from-literal=htpasswd="platforma:${ADMIN_HASH}" \
+                    --dry-run=client -o yaml | kubectl apply -f -
+
                   DATASOURCES_YAML=""
                   for LIB_NUM in 1 2 3; do
                     eval "LIB_NAME=\${DATA_LIBRARY_${LIB_NUM}_NAME:-}"
@@ -3438,6 +4045,10 @@ Resources:
                   ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/quay-${CLUSTER_NAME}/milaboratories/pl-containers"
                   APP_EXTRA_ARGS="[\"--default-docker-registry=${ECR_REGISTRY}\"]"
 
+                  # Admin patterns are per login source, because the backend
+                  # evaluates a login only against the rules of the provider
+                  # that authenticated it. The deprecated global ADMIN_USERS
+                  # keeps its old meaning by being merged into every source.
                   cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
                   environment: aws
                   storage:
@@ -3479,14 +4090,13 @@ Resources:
                     maxJobResources:
                       cpu: 62
                       memory: 484Gi
-                      # gpuMemory/gpuCpu/gpuRam mirror the largest GPU node group
-                      # provisioned by the CF stack (gpu-96g → g6e.12xlarge:
-                      # 48 vCPU / 384 GiB RAM / 48 GiB VRAM via 4 x L40S only one is assignable).
-                      # GPU jobs are ceiled to these instead of cpu/memory;
-                      # CPU/RAM use the node's allocatable. Consumed when GPU_ENABLED=true.
-                      gpuMemory: 48Gi
-                      gpuCpu: 46
-                      gpuRam: 384Gi
+                      # gpuMemory/gpuCpu/gpuRam mirror the region's highest-VRAM GPU
+                      # node (one real node, computed by GpuSubnetResolver from the
+                      # GPU ladder) and passed in via GPU_MAX_* env vars. GPU jobs
+                      # are ceiled to these so they land on a real GPU node here.
+                      gpuMemory: ${GPU_MAX_GPU_GI}Gi
+                      gpuCpu: ${GPU_MAX_CPU}
+                      gpuRam: ${GPU_MAX_RAM_GI}Gi
                     mode: dedicated
                     pools:
                       ui:
@@ -3520,9 +4130,9 @@ Resources:
                           cpu: $BATCH_QUEUE_CPU
                           memory: ${BATCH_QUEUE_MEMORY_GI}Gi
                         gpu:
+                          # cpu/memory are DERIVED by the chart from gpu × maxJobResources.gpuCpu/gpuRam;
+                          # only the GPU-job concurrency count is set here.
                           gpu: 8
-                          cpu: 32
-                          memory: 128Gi
                   app:
                     resources:
                       requests:
@@ -3531,78 +4141,22 @@ Resources:
                       limits:
                         cpu: 8
                         memory: 32Gi
+                    # The backend runs on its own dedicated node group
+                    # (PlatformaNodeGroupV1), isolated from cluster-support
+                    # services on the system pool, so its memory can grow into a
+                    # whole node. Select the platforma pool and tolerate its
+                    # dedicated taint.
                     nodeSelector:
-                      node.kubernetes.io/pool: system
+                      node.kubernetes.io/pool: platforma
+                    tolerations:
+                      - key: dedicated
+                        value: platforma
+                        effect: NoSchedule
                     extraArgs: ${APP_EXTRA_ARGS:-[]}
                   dataSources: ${DATASOURCES_YAML:-[]}
                   PLATFORMA_VALUES
 
-                  if [ "$AUTH_METHOD" = "htpasswd" ]; then
-                    cat >> /tmp/platforma-values.yaml << AUTH_VALUES
-                  auth:
-                    htpasswd:
-                      secretName: platforma-htpasswd
-                  AUTH_VALUES
-                  elif [ "$AUTH_METHOD" = "ldap" ]; then
-                    EFFECTIVE_START_TLS="${LDAP_START_TLS}"
-                    if echo "$LDAP_SERVER" | grep -qi '^ldaps://'; then
-                      EFFECTIVE_START_TLS="false"
-                    fi
-                    cat >> /tmp/platforma-values.yaml << LDAP_BLOCK
-                  auth:
-                    ldap:
-                      server: "${LDAP_SERVER}"
-                      startTLS: ${EFFECTIVE_START_TLS}
-                  LDAP_BLOCK
-                    if [ -n "$LDAP_BIND_DN" ]; then
-                      cat >> /tmp/platforma-values.yaml << LDAP_BIND
-                      bindDN: "${LDAP_BIND_DN}"
-                  LDAP_BIND
-                    fi
-                    if [ -n "$LDAP_SEARCH_USER" ]; then
-                      cat >> /tmp/platforma-values.yaml << LDAP_SEARCH
-                      searchUser: "${LDAP_SEARCH_USER}"
-                      searchPassword: "${LDAP_SEARCH_PASSWORD}"
-                  LDAP_SEARCH
-                    fi
-                    if [ -n "$LDAP_SEARCH_RULES" ]; then
-                      echo "    searchRules:" >> /tmp/platforma-values.yaml
-                      OLD_IFS="$IFS"
-                      IFS=";"
-                      for rule in $LDAP_SEARCH_RULES; do
-                        IFS="$OLD_IFS"
-                        rule=$(echo "$rule" | xargs)
-                        [ -z "$rule" ] && { IFS=";"; continue; }
-                        echo "      - \"${rule}\"" >> /tmp/platforma-values.yaml
-                        IFS=";"
-                      done
-                      IFS="$OLD_IFS"
-                    fi
-                  elif [ "$AUTH_METHOD" = "google" ]; then
-                    cat >> /tmp/platforma-values.yaml << GOOGLE_BLOCK
-                  auth:
-                    sso:
-                      issuer: "https://accounts.google.com"
-                      clientId: "${GOOGLE_CLIENT_ID}"
-                      scopes: "openid profile email"
-                      prompt: "consent"
-                      accessType: "offline"
-                      clientSecret:
-                        secretName: platforma-sso-client-secret
-                  GOOGLE_BLOCK
-                  elif [ "$AUTH_METHOD" = "entra" ]; then
-                    if [ -z "$ENTRA_ISSUER" ] && [ -n "$ENTRA_TENANT_ID" ]; then
-                      ENTRA_ISSUER="https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0"
-                    elif echo "$ENTRA_ISSUER" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
-                      ENTRA_ISSUER="https://login.microsoftonline.com/${ENTRA_ISSUER}/v2.0"
-                    fi
-                    cat >> /tmp/platforma-values.yaml << ENTRA_BLOCK
-                  auth:
-                    sso:
-                      issuer: "${ENTRA_ISSUER}"
-                      clientId: "${ENTRA_CLIENT_ID}"
-                  ENTRA_BLOCK
-                  fi
+                  V=/tmp/platforma-values.yaml
 
                   cat >> /tmp/platforma-values.yaml << MASTER_SECRET_VALUES
                   masterSecret:
@@ -3629,6 +4183,7 @@ Resources:
                     --version $PLATFORMA_VERSION \
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
+                    -f /tmp/auth-values.json \
                     --set auth.showUserList=${SHOW_USER_LIST:-true} \
                     --atomic --timeout 15m
             post_build:
@@ -3770,6 +4325,10 @@ Resources:
     Type: AWS::CloudFormation::CustomResource
     DependsOn:
       - TriggerHelmDeploy
+      # The backend pins to the dedicated platforma pool (app.nodeSelector +
+      # toleration); the helm install is --atomic, so the node must exist first
+      # or the deploy rolls back.
+      - PlatformaNodeGroupV1
       - EfsMountTarget1
       - EfsMountTarget2
       - EfsMountTarget3
@@ -3781,7 +4340,22 @@ Resources:
       # Properties below trigger re-deployment when changed during stack update.
       # CF re-invokes this custom resource (and thus re-runs the platforma
       # deployer CodeBuild) whenever ANY property value here changes.
-      ForceUpdatePlatforma: "4"  # Bump to force Platforma re-deployment
+      ForceUpdatePlatforma: "5" # Bump to force Platforma re-deployment
+      DeployerAssetBaseUrl: !If
+        - UseDefaultAssetBase
+        - !FindInMap [DeployerAssets, Public, BaseUrl]
+        - !Ref DeployerAssetBaseUrl
+      # GPU inputs mirror the platforma-deployer env vars (GPU_ENABLED /
+      # GPU_MAX_*). Watching them here means flipping EnableGpu — or a change to
+      # the region's resolved GPU ceilings — re-triggers a Platforma deploy so
+      # the backend's gpu.enabled and --k8s-gpu-max-* flags actually update.
+      # Without these, toggling EnableGpu only adds/removes the GPU node groups
+      # (via the Gpu*Enabled Conditions) while the backend flags silently go
+      # stale until the next unrelated deploy or a manual ForceUpdatePlatforma bump.
+      EnableGpu:   !Ref EnableGpu
+      GpuMaxCpu:   !If [GpuEnabled, !GetAtt GpuSubnetResolver.GpuMaxCpu,   '0']
+      GpuMaxRamGi: !If [GpuEnabled, !GetAtt GpuSubnetResolver.GpuMaxRamGi, '0']
+      GpuMaxGpuGi: !If [GpuEnabled, !GetAtt GpuSubnetResolver.GpuMaxGpuGi, '0']
       # Resolved sizing values mirror the platforma-deployer env vars. Watching
       # them here means a change to the DeploymentSize Mappings (e.g.
       # BatchMemoryGi 4000 -> 3872 when we tightened the per-node ceiling)
@@ -3804,6 +4378,11 @@ Resources:
       LicenseKey: !Ref LicenseKey
       AuthMethod: !Ref AuthMethod
       HtpasswdContent: !Ref HtpasswdContent
+      SsoProvider: !Ref SsoProvider
+      EnableLocalUsers: !Ref EnableLocalUsers
+      SsoAdminUsers: !Ref SsoAdminUsers
+      LdapAdminUsers: !Ref LdapAdminUsers
+      LocalAdminUsers: !Ref LocalAdminUsers
       LdapServer: !Ref LdapServer
       LdapStartTLS: !Ref LdapStartTLS
       LdapBindDN: !Ref LdapBindDN
@@ -4017,13 +4596,16 @@ Outputs:
   DefaultUsername:
     Condition: IsHtpasswd
     Description: >
-      Default username for Platforma login (htpasswd mode, auto-generated password).
+      Username of the auto-generated local account. Present whenever local
+      (htpasswd) logins are enabled, including alongside SSO or LDAP, and only
+      meaningful when HtpasswdContent was left empty.
     Value: platforma
 
   UsersPasswordSSMPath:
     Condition: IsHtpasswd
     Description: >
-      SSM Parameter containing auto-generated users password (htpasswd mode only).
+      SSM Parameter containing the auto-generated local account password.
+      Only populated when local logins are enabled and HtpasswdContent is empty.
       Retrieve with: aws ssm get-parameter --name /<ClusterName>/platforma/users-password --with-decryption --query Parameter.Value --output text
     Value: !Sub '/${ClusterName}/platforma/users-password'
 
@@ -4033,6 +4615,24 @@ Outputs:
       Click to open the SSM Parameter with the auto-generated users password.
       Click "Show" on the parameter page to reveal the value.
     Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/systems-manager/parameters/%2F${ClusterName}%2Fplatforma%2Fusers-password/description?region=${AWS::Region}'
+
+  AdminUsername:
+    Description: >
+      Administrator login for Platforma. Present on every install, whatever
+      login sources are configured.
+    Value: platforma
+
+  AdminPasswordSSMPath:
+    Description: >
+      SSM Parameter holding the generated administrator password. Retrieve with:
+      aws ssm get-parameter --name /<ClusterName>/platforma/admin-password --with-decryption --query Parameter.Value --output text
+    Value: !Sub '/${ClusterName}/platforma/admin-password'
+
+  AdminPasswordSSMConsole:
+    Description: >
+      Click to open the SSM Parameter holding the administrator password.
+      Click "Show" on the parameter page to reveal the value.
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/systems-manager/parameters/%2F${ClusterName}%2Fplatforma%2Fadmin-password/description?region=${AWS::Region}'
 
   ClusterName:
     Description: >

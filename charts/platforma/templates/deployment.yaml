@@ -5,17 +5,42 @@
 {{- if ne (include "platforma.workspaceConfigured" .) "true" }}
 {{- fail "ERROR: Workspace storage must have exactly ONE option configured.\n\nConfigure ONE of the following in values.yaml:\n  - storage.workspace.existingClaim: \"your-pvc-name\"\n  - storage.workspace.efs.enabled: true (AWS)\n  - storage.workspace.fsxLustre.enabled: true (AWS)\n  - storage.workspace.filestore.enabled: true (GCP)\n  - storage.workspace.nfs.enabled: true (generic)\n  - storage.workspace.pvc.enabled: true (generic StorageClass)\n\nIf you enabled multiple options, keep only one.\nSee infrastructure/aws/ or infrastructure/gcp/ for examples." }}
 {{- end }}
-{{- $hasAuthToken := false -}}
+{{- /* Auth can also arrive through app.extraArgs: --auth-token=... (dev-only
+       static token, a legacy single-provider mode) or a hand-written
+       --auth.provider-id, which the chart now renders from auth.providers
+       instead. They are tracked apart so each gets an accurate error. */ -}}
+{{- $hasTokenArg := false -}}
+{{- $hasProviderArg := false -}}
 {{- range .Values.app.extraArgs -}}
   {{- if or (eq . "--auth-token") (hasPrefix "--auth-token=" .) -}}
-    {{- $hasAuthToken = true -}}
+    {{- $hasTokenArg = true -}}
+  {{- end -}}
+  {{- if hasPrefix "--auth.provider-id" . -}}
+    {{- $hasProviderArg = true -}}
   {{- end -}}
 {{- end -}}
+{{- /* The auth.* provider scheme and the legacy flat flags cannot coexist: the
+       backend rejects the combination at boot. Catch it at render instead. */ -}}
+{{- if eq (include "platforma.auth.providersEnabled" .) "true" }}
+{{- include "platforma.auth.validateProviders" . }}
+{{- $legacy := include "platforma.auth.legacyPaths" . }}
+{{- if $legacy }}
+{{- fail (printf "ERROR: auth.providers cannot be combined with the legacy auth values (%s).\n\nThe backend refuses to start when the auth.* provider scheme and the flat\n--sso-idp-* / --auth-htpasswd / --auth-ldap-* flags are both present.\nMove that configuration into auth.providers as its own provider entry, or\nremove auth.providers to stay on the legacy single-provider scheme." $legacy) }}
+{{- end }}
+{{- if $hasTokenArg }}
+{{- fail "ERROR: auth.providers cannot be combined with --auth-token in app.extraArgs.\n\nThe static token is a legacy single-provider auth mode, and the backend refuses\nto start when it is combined with the auth.* provider scheme. Drop the token, or\nremove auth.providers." }}
+{{- end }}
+{{- if $hasProviderArg }}
+{{- fail "ERROR: auth.providers is set and app.extraArgs also passes --auth.provider-id.\n\nThe chart now renders the auth.* provider flags from auth.providers; passing\nthem raw as well duplicates every flag. Remove the --auth.* entries from\napp.extraArgs and keep the configuration in auth.providers." }}
+{{- end }}
+{{- end }}
 {{- if not (or (include "platforma.htpasswdSecretName" .)
                .Values.auth.ldap.server
                .Values.auth.sso.issuer
-               $hasAuthToken ) }}
-{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n  auth.sso.issuer              # SSO / OIDC auth\n\nFor development/testing, pass a static token via app.extraArgs:\n  - \"--auth-token=<token>\"" }}
+               (eq (include "platforma.auth.providersEnabled" .) "true")
+               $hasTokenArg
+               $hasProviderArg ) }}
+{{- fail "ERROR: Authentication is required.\n\nConfigure one of:\n  auth.htpasswd.credentials    # inline credentials (simplest)\n  auth.htpasswd.secretName     # existing htpasswd secret\n  auth.ldap.server             # LDAP auth\n  auth.sso.issuer              # SSO / OIDC auth\n  auth.providers               # multi-provider auth (sso / htpasswd / ldap, any number)\n\nFor development/testing, pass a static token via app.extraArgs:\n  - \"--auth-token=<token>\"" }}
 {{- end }}
 {{- if and .Values.auth.htpasswd.secretName (gt (len .Values.auth.htpasswd.credentials) 0) }}
 {{- fail "ERROR: Set either auth.htpasswd.secretName or auth.htpasswd.credentials, not both." }}
@@ -53,6 +78,10 @@
        target namespace and contains the expected keys. No-op during
        `helm template` / client-side dry-run. */ -}}
 {{- include "platforma.validateSecrets" . }}
+{{- /* Verify no Kueue pool is half-configured for workload separation
+       (tolerations set, nodeSelector empty). Pure values check — also runs
+       during `helm template`. */ -}}
+{{- include "platforma.validateNodeSelectors" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -86,8 +115,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "platforma.serviceAccountName" . }}
+      # OnRootMismatch: skip the recursive chown of the mounted PVCs when the
+      # volume root already carries the fsGroup. The workspace volume holds
+      # hundreds of thousands of files, so the default (Always) adds minutes to
+      # every pod start.
       securityContext:
         fsGroup: 1010
+        fsGroupChangePolicy: OnRootMismatch
         runAsNonRoot: true
       {{- if or .Values.storage.workspace.fsxLustre.enabled
                 .Values.storage.workspace.filestore.enabled
@@ -159,7 +193,7 @@ spec:
             # Storage paths
             - "--main-root=/data/main"
             - "--db-dir=/data/database"
-            - "--work-dir=/data/workspace/work"
+            - "--work-dir={{ include "platforma.path.workStorage" . }}"
             - "--packages-dir=/data/workspace/packages"
             - "--use-symlinks=never"
             {{- if eq $mainType "s3" }}
@@ -197,6 +231,20 @@ spec:
             {{- if .Values.kueue.maxJobResources.memory }}
             - "--runner-max-ram-request={{ .Values.kueue.maxJobResources.memory }}"
             {{- end }}
+            {{- end }}
+            {{- with (include "platforma.scratchStorage" . | fromYaml).network }}
+            {{- if .maxRequest }}
+            - "--k8s-max-scratch-request={{ .maxRequest }}"
+            {{- end }}
+            {{- if .minRequest }}
+            - "--k8s-min-scratch-request={{ .minRequest }}"
+            {{- end }}
+            {{- if and $.Values.kueue.pools.gpu.enabled .gpuMaxRequest }}
+            - "--k8s-gpu-max-scratch-request={{ .gpuMaxRequest }}"
+            {{- end }}
+            {{- end }}
+            {{- if hasKey .Values.kueue "imagePullMaxRetries" }}
+            - "--k8s-image-pull-max-retries={{ .Values.kueue.imagePullMaxRetries }}"
             {{- end }}
             - "--runner-enable-docker"
             # GPU availability (K8s never auto-probes; explicit on/off based on the GPU pool).
@@ -240,10 +288,29 @@ spec:
             - "--log-rotation-backups={{ .Values.app.logging.persistence.rotation.count }}"
             {{- end }}
             {{- end }}
+            # Tree changelog: per-transaction change summaries. Always a local file,
+            # never streamed - see the values.yaml comment for where it lands.
+            {{- if .Values.app.logging.treeChangelog.enabled }}
+            {{- if .Values.app.logging.persistence.enabled }}
+            # Onto the logs volume, where --log-dst above points. Without this the
+            # changelog would default to the main-root log dir and miss the volume.
+            - "--log-tree-changelog-path=/var/log/platforma/treechangelog.log"
+            {{- end }}
+            {{- if .Values.app.logging.treeChangelog.maxSize }}
+            - "--log-tree-changelog-max-size={{ .Values.app.logging.treeChangelog.maxSize }}"
+            {{- end }}
+            {{- if .Values.app.logging.treeChangelog.maxBackups }}
+            - "--log-tree-changelog-max-backups={{ .Values.app.logging.treeChangelog.maxBackups }}"
+            {{- end }}
+            {{- else }}
+            - "--no-log-tree-changelog"
+            {{- end }}
             # License file (always mounted from secret)
             - "--license-file={{ include "platforma.path.license" . }}/{{ .Values.license.secretKey }}"
             # Authentication
-            {{- if include "platforma.htpasswdSecretName" . }}
+            {{- if eq (include "platforma.auth.providersEnabled" .) "true" }}
+            {{- include "platforma.auth.providerArgs" . | nindent 12 }}
+            {{- else if include "platforma.htpasswdSecretName" . }}
             - "--auth-htpasswd=/etc/platforma/secrets/htpasswd"
             {{- else if .Values.auth.ldap.server }}
             - "--auth-ldap-server={{ .Values.auth.ldap.server }}"
@@ -490,6 +557,9 @@ spec:
               mountPath: {{ include "platforma.path.secrets" . }}
               readOnly: true
             {{- end }}
+            {{- if eq (include "platforma.auth.providersEnabled" .) "true" }}
+            {{- include "platforma.auth.providerVolumeMounts" . | nindent 12 }}
+            {{- end }}
             {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.caSecretRef.name }}
             - name: ldap-ca
               mountPath: {{ include "platforma.path.secrets" . }}/ldap-ca
@@ -550,6 +620,9 @@ spec:
             items:
               - key: {{ .Values.auth.htpasswd.secretKey }}
                 path: htpasswd
+        {{- end }}
+        {{- if eq (include "platforma.auth.providersEnabled" .) "true" }}
+        {{- include "platforma.auth.providerVolumes" . | nindent 8 }}
         {{- end }}
         {{- if and .Values.auth.ldap.server .Values.auth.ldap.tls.caSecretRef.name }}
         - name: ldap-ca

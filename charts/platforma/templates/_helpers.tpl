@@ -299,9 +299,27 @@ collide on a file name.
 {{- printf "%s/%s" (include "platforma.path.authSecrets" .ctx) .id -}}
 {{- end }}
 
+{{/*
+Guards what map keys used to ensure. auth.providers is now a list, so the name
+field must enforce uniqueness and presence. A missing or repeated name fails the
+render rather than producing a broken Deployment.
+*/}}
+{{- define "platforma.auth.validateProviders" -}}
+{{- $seen := dict -}}
+{{- range $i, $p := default (list) .Values.auth.providers -}}
+  {{- if not $p.name -}}
+    {{- fail (printf "ERROR: auth.providers[%d] has no name.\n\nEvery provider entry needs a name — it is the provider id the backend is given\nand the name the chart builds its Kubernetes objects from:\n  auth:\n    providers:\n      - name: google\n        type: sso" $i) -}}
+  {{- end -}}
+  {{- if hasKey $seen $p.name -}}
+    {{- fail (printf "ERROR: auth.providers names %q more than once.\n\nProvider names are ids: two entries sharing one name would collide on their\nflags and on their Secret and volume names. Give each entry its own name." $p.name) -}}
+  {{- end -}}
+  {{- $seen = set $seen $p.name true -}}
+{{- end -}}
+{{- end }}
+
 {{/* "true" when the multi-provider scheme is in use. */}}
 {{- define "platforma.auth.providersEnabled" -}}
-{{- if gt (len (default (dict) .Values.auth.providers)) 0 -}}true{{- end -}}
+{{- if gt (len (default (list) .Values.auth.providers)) 0 -}}true{{- end -}}
 {{- end }}
 
 {{/*
@@ -345,10 +363,10 @@ Every `--auth.*` flag for every configured provider, as a YAML list of args.
 The args are accumulated into a list and emitted with toYaml rather than
 hand-quoted: role rules carry regexps (auth.role.attr-regex,
 auth.role.group-regex) whose backslashes are an invalid escape inside a
-hand-written double-quoted YAML scalar, and toYaml escapes them correctly.
+hand-written double-quoted YAML scalar.
 
-Providers are emitted in sorted id order so the rendered Deployment is stable
-and does not churn the pod template hash between upgrades.
+Providers are advertised in the order values list them. The render is
+deterministic.
 */}}
 {{- define "platforma.auth.providerArgs" -}}
 {{- $ctx := . -}}
@@ -357,8 +375,7 @@ and does not churn the pod template hash between upgrades.
        is one by definition - so they are collected from mapFields rather than asked for twice.
        auth.extensionFields stays for a field declared ahead of anything mapping it. */ -}}
 {{- $extensionFields := default (list) .Values.auth.extensionFields -}}
-{{- range $id := keys (default (dict) .Values.auth.providers) | sortAlpha -}}
-  {{- $p := index $ctx.Values.auth.providers $id -}}
+{{- range $p := default (list) $ctx.Values.auth.providers -}}
   {{- range $field, $claim := default (dict) $p.mapFields -}}
     {{- $extensionFields = append $extensionFields $field -}}
   {{- end -}}
@@ -366,11 +383,11 @@ and does not churn the pod template hash between upgrades.
 {{- range $f := $extensionFields | uniq | sortAlpha -}}
   {{- $args = append $args (printf "--auth.extension-field=%s" $f) -}}
 {{- end -}}
-{{- range $id := keys (default (dict) .Values.auth.providers) | sortAlpha -}}
-  {{- $p := index $ctx.Values.auth.providers $id -}}
+{{- range $i, $p := default (list) $ctx.Values.auth.providers -}}
+  {{- $id := $p.name -}}
   {{- $dir := include "platforma.auth.providerPath" (dict "ctx" $ctx "id" $id) -}}
   {{- if not $p.type -}}
-    {{- fail (printf "ERROR: auth.providers.%s.type is required. One of: sso, htpasswd, ldap." $id) -}}
+    {{- fail (printf "ERROR: auth.providers entry %q has no type. One of: sso, htpasswd, ldap." $id) -}}
   {{- end -}}
   {{- $args = append $args (printf "--auth.provider-id=%s" $id) -}}
   {{- $args = append $args (printf "--auth.provider-type=%s=%s" $id $p.type) -}}
@@ -379,10 +396,10 @@ and does not churn the pod template hash between upgrades.
   {{- if eq $p.type "sso" -}}
     {{- $sso := default (dict) $p.sso -}}
     {{- if not $sso.issuer -}}
-      {{- fail (printf "ERROR: auth.providers.%s.sso.issuer is required for a provider of type sso." $id) -}}
+      {{- fail (printf "ERROR: auth.providers[%d].sso.issuer is required for a provider of type sso." $i) -}}
     {{- end -}}
     {{- if not $sso.clientId -}}
-      {{- fail (printf "ERROR: auth.providers.%s.sso.clientId is required for a provider of type sso." $id) -}}
+      {{- fail (printf "ERROR: auth.providers[%d].sso.clientId is required for a provider of type sso." $i) -}}
     {{- end -}}
     {{- $args = append $args (printf "--auth.sso.issuer=%s=%s" $id $sso.issuer) -}}
     {{- $args = append $args (printf "--auth.sso.client-id=%s=%s" $id $sso.clientId) -}}
@@ -407,7 +424,7 @@ and does not churn the pod template hash between upgrades.
   {{- /* ---- htpasswd connection ---- */ -}}
   {{- if eq $p.type "htpasswd" -}}
     {{- if not (include "platforma.auth.providerHtpasswdSecretName" (dict "ctx" $ctx "id" $id "provider" $p)) -}}
-      {{- fail (printf "ERROR: auth.providers.%s is type htpasswd but has no password file.\n\nSet either:\n  auth.providers.%s.htpasswd.credentials  # inline, chart creates the Secret\n  auth.providers.%s.htpasswd.secretName   # existing Secret holding an htpasswd file" $id $id $id) -}}
+      {{- fail (printf "ERROR: auth.providers[%d] (%q) is type htpasswd but has no password file.\n\nSet either:\n  auth.providers[%d].htpasswd.credentials  # inline, chart creates the Secret\n  auth.providers[%d].htpasswd.secretName   # existing Secret holding an htpasswd file" $i $id $i $i) -}}
     {{- end -}}
     {{- $args = append $args (printf "--auth.htpasswd.file=%s=%s/htpasswd" $id $dir) -}}
   {{- end -}}
@@ -416,7 +433,7 @@ and does not churn the pod template hash between upgrades.
   {{- if eq $p.type "ldap" -}}
     {{- $ldap := default (dict) $p.ldap -}}
     {{- if not $ldap.url -}}
-      {{- fail (printf "ERROR: auth.providers.%s.ldap.url is required for a provider of type ldap." $id) -}}
+      {{- fail (printf "ERROR: auth.providers[%d].ldap.url is required for a provider of type ldap." $i) -}}
     {{- end -}}
     {{- $args = append $args (printf "--auth.ldap.url=%s=%s" $id $ldap.url) -}}
     {{- if $ldap.userDN -}}{{- $args = append $args (printf "--auth.ldap.user-dn=%s=%s" $id $ldap.userDN) -}}{{- end -}}
@@ -439,6 +456,10 @@ and does not churn the pod template hash between upgrades.
       {{- $args = append $args (printf "--auth.ldap.client-cert=%s=%s/ldap-client/%s,%s/ldap-client/%s" $id $dir ($cc.certKey | default "tls.crt") $dir ($cc.keyKey | default "tls.key")) -}}
     {{- end -}}
   {{- end -}}
+
+  {{- /* ---- title / description (all types) ---- */ -}}
+  {{- if $p.title -}}{{- $args = append $args (printf "--auth.title=%s=%s" $id $p.title) -}}{{- end -}}
+  {{- if $p.description -}}{{- $args = append $args (printf "--auth.description=%s=%s" $id $p.description) -}}{{- end -}}
 
   {{- /* ---- identity matching, mapping and provisioning (all types) ---- */ -}}
   {{- if $p.lookUpAttr -}}{{- $args = append $args (printf "--auth.look-up-attr=%s=%s" $id $p.lookUpAttr) -}}{{- end -}}
@@ -490,8 +511,8 @@ under the provider's own directory.
 */}}
 {{- define "platforma.auth.providerVolumeMounts" -}}
 {{- $ctx := . -}}
-{{- range $id := keys (default (dict) .Values.auth.providers) | sortAlpha }}
-{{- $p := index $ctx.Values.auth.providers $id }}
+{{- range $p := default (list) $ctx.Values.auth.providers }}
+{{- $id := $p.name }}
 {{- $dir := include "platforma.auth.providerPath" (dict "ctx" $ctx "id" $id) }}
 {{- if eq $p.type "htpasswd" }}
 - name: auth-{{ $id }}-htpasswd
@@ -527,8 +548,8 @@ volumes backing platforma.auth.providerVolumeMounts.
 */}}
 {{- define "platforma.auth.providerVolumes" -}}
 {{- $ctx := . -}}
-{{- range $id := keys (default (dict) .Values.auth.providers) | sortAlpha }}
-{{- $p := index $ctx.Values.auth.providers $id }}
+{{- range $p := default (list) $ctx.Values.auth.providers }}
+{{- $id := $p.name }}
 {{- if eq $p.type "htpasswd" }}
 {{- $h := default (dict) $p.htpasswd }}
 - name: auth-{{ $id }}-htpasswd

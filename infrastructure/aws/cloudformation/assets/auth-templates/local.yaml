@@ -1,0 +1,4 @@
+name: $name
+type: htpasswd
+htpasswd:
+  secretName: platforma-htpasswd

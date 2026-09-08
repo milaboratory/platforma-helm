@@ -37,18 +37,23 @@ Metadata:
           - PlatformaVersion
           - PlatformaImage
           - PlatformaHelmChart
+          - DeployerAssetBaseUrl
       - Label:
           default: Authentication (required when deploying Platforma)
         Parameters:
-          - AuthMethod
+          - SsoProvider
+          - EnableLocalUsers
           - ShowUserList
+          - SsoAdminUsers
+          - AuthMethod
           - AdminUsers
       - Label:
-          default: 'htpasswd (AuthMethod=htpasswd) — static file-based users, no external IdP'
+          default: 'Local users (EnableLocalUsers=true) — static htpasswd file, no external IdP'
         Parameters:
           - HtpasswdContent
+          - LocalAdminUsers
       - Label:
-          default: 'LDAP (AuthMethod=ldap) — authenticate against an LDAP / Active Directory server'
+          default: 'LDAP (enabled by setting LdapServer) — authenticate against an LDAP / Active Directory server'
         Parameters:
           - LdapServer
           - LdapStartTLS
@@ -56,13 +61,14 @@ Metadata:
           - LdapSearchRules
           - LdapSearchUser
           - LdapSearchPassword
+          - LdapAdminUsers
       - Label:
-          default: 'Google Workspace SSO (AuthMethod=google) — OIDC login with Google accounts'
+          default: 'Google Workspace SSO (SsoProvider=google) — OIDC login with Google accounts'
         Parameters:
           - GoogleClientId
           - GoogleClientSecret
       - Label:
-          default: 'Microsoft Entra ID SSO (AuthMethod=entra) — OIDC login with an Azure AD tenant'
+          default: 'Microsoft Entra ID SSO (SsoProvider=entra) — OIDC login with an Azure AD tenant'
         Parameters:
           - EntraIssuer
           - EntraTenantId
@@ -123,28 +129,40 @@ Metadata:
         default: Custom container image (leave empty for chart default)
       PlatformaHelmChart:
         default: Custom Helm chart OCI reference (leave empty for official chart)
+      DeployerAssetBaseUrl:
+        default: 'Deployer asset base URL (empty = published public prefix)'
       S3BucketName:
         default: S3 bucket name (auto-generate if empty)
       DomainName:
         default: 'Domain name (e.g. platforma.example.com)'
       HostedZoneId:
         default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
+      SsoProvider:
+        default: 'SSO / OIDC login (none, google, or entra)'
+      EnableLocalUsers:
+        default: 'Also allow local htpasswd logins (break-glass)'
       AuthMethod:
-        default: 'Authentication method (htpasswd, ldap, google, or entra)'
+        default: 'DEPRECATED single-method selector — leave empty'
       ShowUserList:
         default: 'Allow clients to list users (set false for multitenant instances)'
       AdminUsers:
-        default: 'Admin logins (regexp; semicolon-separated for multiple)'
+        default: 'DEPRECATED — admin logins applied to every provider (regexp)'
+      SsoAdminUsers:
+        default: 'SSO admin logins (regexp; semicolon-separated for multiple)'
+      LdapAdminUsers:
+        default: 'LDAP admin logins (regexp; semicolon-separated for multiple)'
+      LocalAdminUsers:
+        default: 'Local (htpasswd) admin logins (regexp; semicolon-separated)'
       GoogleClientId:
-        default: 'Google OAuth client ID (required when AuthMethod=google)'
+        default: 'Google OAuth client ID (required when SsoProvider=google)'
       GoogleClientSecret:
-        default: 'Google OAuth client secret (required when AuthMethod=google)'
+        default: 'Google OAuth client secret (required when SsoProvider=google)'
       EntraIssuer:
-        default: 'Entra OIDC issuer URL (preferred when AuthMethod=entra)'
+        default: 'Entra OIDC issuer URL (preferred when SsoProvider=entra)'
       EntraTenantId:
         default: 'Entra tenant GUID (legacy fallback — issuer derived automatically)'
       EntraClientId:
-        default: 'Entra application (client) ID (required when AuthMethod=entra)'
+        default: 'Entra application (client) ID (required when SsoProvider=entra)'
       EnableDemoLibrary:
         default: 'Enable MiLaboratories demo data library'
       DataLibrary1Name:
@@ -178,9 +196,9 @@ Metadata:
       DataLibrary3SecretKey:
         default: 'Library 3 secret key'
       HtpasswdContent:
-        default: 'htpasswd file content (htpasswd mode only)'
+        default: 'htpasswd file content (local users only)'
       LdapServer:
-        default: 'LDAP server URL (ldap mode only)'
+        default: 'LDAP server URL (set to enable LDAP login)'
       LdapStartTLS:
         default: 'LDAP StartTLS'
       LdapBindDN:
@@ -261,17 +279,75 @@ Parameters:
       Custom Helm chart OCI reference (e.g. oci://123456.dkr.ecr.eu-central-1.amazonaws.com/platforma).
       Leave empty to use the official chart from ghcr.io/milaboratory/platforma-helm/platforma.
 
+  DeployerAssetBaseUrl:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(|https://platforma-cloudformation\.s3\.[a-z0-9-]+\.amazonaws\.com/.+|s3://platforma-cfn-pr-[0-9]+/pr/.+)$'
+    ConstraintDescription: >
+      Must be empty, the published platforma-cloudformation prefix, or a
+      pr/ preview prefix in a platforma-cfn-pr-<account> bucket
+    Description: >
+      Directory that holds deployer sibling files (assets/ next to this
+      template). Leave empty to use the public prefix published with the
+      template (Mappings DeployerAssets.Public.BaseUrl). Override only to
+      point at a preview prefix such as a TTL'd pr/ object. An s3:// URL is
+      read with the deployer's own credentials, so a preview prefix can live
+      in a private bucket in the account being deployed to.
+      The deployer executes what it downloads from here, so the accepted
+      values are limited to the prefixes the publishing pipeline writes:
+      an arbitrary host would run as the deployer, which holds cluster-admin.
+
   # --- Authentication ---
+  # Each login source is an independent slot, so any combination works:
+  #   SSO only            SsoProvider=google
+  #   SSO + local users   SsoProvider=google, EnableLocalUsers=true
+  #   SSO + LDAP          SsoProvider=entra,  LdapServer=ldaps://...
+  #   LDAP + local users  LdapServer=ldaps://..., EnableLocalUsers=true
+  #   all three           all of the above set
+  # One slot renders the backend's single-provider flags exactly as before.
+  # Two or more render the multi-provider auth.providers scheme (backend
+  # >= 4.3.0) with fixed provider ids: 'google'/'entra', 'corp', 'local'.
+  SsoProvider:
+    Type: String
+    Default: none
+    AllowedValues: [none, google, entra]
+    Description: >
+      SSO / OIDC login source.
+      none: no SSO.
+      google: provide GoogleClientId and GoogleClientSecret (issuer and scopes
+      are predefined).
+      entra: provide EntraIssuer (preferred) or EntraTenantId (legacy) and
+      EntraClientId.
+      Combine freely with LdapServer and EnableLocalUsers.
+
+  EnableLocalUsers:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Add a local htpasswd login source alongside whatever else is configured.
+      Typically a break-glass account that still works when the IdP or the
+      directory is unreachable. Users come from HtpasswdContent, or from an
+      auto-generated single 'platforma' account whose password is stored in SSM
+      (see the UsersPasswordSSMPath output).
+
+  # DEPRECATED. Superseded by SsoProvider / LdapServer / EnableLocalUsers,
+  # which can be combined; this one selects exactly one method and cannot.
+  # It is still honoured for stacks created before the slot parameters existed:
+  # a non-empty value takes over the whole auth configuration and renders it
+  # exactly as it did before, ignoring the slot parameters (the Rules below
+  # reject setting both). Clear it to move to the slot parameters — note that
+  # doing so re-derives the JWT signing key, so every user signs in again once.
   AuthMethod:
     Type: String
-    Default: htpasswd
-    AllowedValues: [htpasswd, ldap, google, entra]
+    Default: ''
+    AllowedValues: ['', htpasswd, ldap, google, entra]
     Description: >
-      Authentication method for Platforma. Required when DeployPlatforma=true.
-      htpasswd: provide HtpasswdContent parameter.
-      ldap: provide LdapServer and related parameters.
-      google: provide GoogleClientId (issuer/scopes are predefined).
-      entra: provide EntraIssuer (preferred) or EntraTenantId (legacy) and EntraClientId.
+      DEPRECATED — leave empty and use SsoProvider / LdapServer /
+      EnableLocalUsers instead, which support combinations such as SSO plus a
+      local break-glass account. Kept so existing stacks keep their current
+      behaviour: when non-empty it is the entire auth configuration and the
+      slot parameters must be left at their defaults.
 
   ShowUserList:
     Type: String
@@ -284,17 +360,48 @@ Parameters:
       enumerate users of another: AuthAPI.ListUsers returns an empty list and
       the userListing capability is not advertised.
 
+  # Admin patterns are per login source, because the backend evaluates a login
+  # only against the rules of the provider that authenticated it. All three
+  # take the same syntax: semicolon-separated full-match regular expressions
+  # over the authenticated login, e.g. 'alice@corp\.com;.*@admins\.corp\.com'.
+  # Metacharacters in a literal login must be escaped (e.g. 'user\.name').
+  # Admin role has the same access as the controller role.
+  SsoAdminUsers:
+    Type: String
+    Default: ''
+    Description: >
+      Grant admin to SSO logins matching these full-match regular expressions.
+      Semicolon-separated. The login is the email for SsoProvider=google, and
+      the 'preferred_username' claim for SsoProvider=entra.
+      Leave empty for none.
+
+  LdapAdminUsers:
+    Type: String
+    Default: ''
+    Description: >
+      Grant admin to LDAP logins matching these full-match regular expressions.
+      Semicolon-separated. The login is the username the directory
+      authenticated (the value substituted for %u). Leave empty for none.
+
+  LocalAdminUsers:
+    Type: String
+    Default: ''
+    Description: >
+      Grant admin to local htpasswd logins matching these full-match regular
+      expressions. Semicolon-separated. The login is the htpasswd username.
+      Leave empty for none.
+
+  # DEPRECATED. Applies to every configured login source, which is what the
+  # single global --admin-user flag used to mean. Prefer the per-source
+  # parameters above; anything set here is merged into all of them.
   AdminUsers:
     Type: String
     Default: ''
     Description: >
+      DEPRECATED — use SsoAdminUsers / LdapAdminUsers / LocalAdminUsers.
       Grant the admin role to logins matching these full-match regular
-      expressions (Platforma's --admin-user flag; admin role has the same
-      access as the controller role). Works with any AuthMethod — the pattern
-      is matched against the authenticated login (email for SSO). Semicolon-
-      separated for multiple patterns, each becomes one --admin-user flag,
-      e.g. 'alice@corp\.com;.*@admins\.corp\.com'. Regexp metacharacters in a
-      literal login must be escaped (e.g. 'user\.name'). Leave empty for none.
+      expressions, on EVERY configured login source. Semicolon-separated.
+      Leave empty for none.
 
   HtpasswdContent:
     Type: String
@@ -325,7 +432,7 @@ Parameters:
     ConstraintDescription: 'Must be an LDAP URL (e.g. ldap://ldap.example.com:389) or empty'
     Description: >
       LDAP server URL (e.g. ldap://ldap.example.com:389).
-      Required when AuthMethod=ldap.
+      Setting this enables LDAP login; leave empty for no LDAP.
 
   LdapStartTLS:
     Type: String
@@ -371,13 +478,13 @@ Parameters:
     Default: ''
     Description: >
       Google OAuth client ID (e.g. 1234567890-abc.apps.googleusercontent.com).
-      Required when AuthMethod=google.
+      Required when SsoProvider=google.
   GoogleClientSecret:
     Type: String
     Default: ''
     NoEcho: true
     Description: >
-      Google OAuth client secret. Required when AuthMethod=google — Google's token
+      Google OAuth client secret. Required when SsoProvider=google — Google's token
       endpoint requires a client secret even for the PKCE flow. The backend forwards
       it to the desktop, which performs the token exchange. Stored as the Kubernetes
       Secret 'platforma-sso-client-secret'.
@@ -391,7 +498,7 @@ Parameters:
     ConstraintDescription: 'Must be an https issuer URL, a tenant GUID, or empty'
     Description: >
       Entra OIDC issuer URL (e.g. https://login.microsoftonline.com/{tenant-id}/v2.0).
-      Preferred when AuthMethod=entra. A bare tenant GUID is also accepted here.
+      Preferred when SsoProvider=entra. A bare tenant GUID is also accepted here.
   EntraTenantId:
     Type: String
     Default: ''
@@ -403,7 +510,7 @@ Parameters:
   EntraClientId:
     Type: String
     Default: ''
-    Description: Entra application (client) ID. Required when AuthMethod=entra.
+    Description: Entra application (client) ID. Required when SsoProvider=entra.
 
   # --- Data libraries ---
   EnableDemoLibrary:
@@ -658,7 +765,14 @@ Mappings:
     EKS:
       Version: "1.35"
     Platforma:
-      Version: "4.4.1"
+      Version: "4.4.2"
+  # Git and the production S3 object share this unversioned /assets prefix, so
+  # a deployer left on the default reads the same files this repo holds. The
+  # publish-infra job writes a TTL'd copy under pr/<version>/ and points a
+  # preview stack at it; it must never overwrite the production object.
+  DeployerAssets:
+    Public:
+      BaseUrl: "https://platforma-cloudformation.s3.eu-central-1.amazonaws.com/assets"
 
   # region -> which GPU classes it offers (yes/no), looked up by the RegionHas*
   # Conditions via Fn::FindInMap to gate each GPU pool. Covers every AWS region
@@ -801,7 +915,7 @@ Conditions:
   GpuEnabled: !Equals [!Ref EnableGpu, 'true']
   # Per-region GPU coverage. Each GPU pool exists only where its card is offered,
   # so these gate the node groups below. RegionHas* look up the GpuRegionCoverage
-  # Mapping (generated from live EC2 offerings by generate-gpu-map.sh, covering
+  # Mapping (generated from live EC2 offerings by assets/generate-gpu-map.sh, covering
   # every region so the lookup never misses); Gpu*Enabled combine them with
   # GpuEnabled. Regions the generator could not probe are "no" (no GPU pools).
   RegionHasG6f: !Equals [!FindInMap [GpuRegionCoverage, !Ref 'AWS::Region', G6f], 'yes']
@@ -829,7 +943,17 @@ Conditions:
     - !Equals [!Ref DataLibrary3AccessKey, '']
   UseDefaultPlatformaVersion: !Equals [!Ref PlatformaVersion, '']
   UseDefaultHelmChart: !Equals [!Ref PlatformaHelmChart, '']
-  IsHtpasswd: !Equals [!Ref AuthMethod, 'htpasswd']
+  UseDefaultAssetBase: !Equals [!Ref DeployerAssetBaseUrl, '']
+  # 's3' is what splitting an s3:// URL on '://' leaves in front of the scheme
+  # separator; an https:// base or the empty default yields 'https' or ''.
+  HasS3AssetBase: !Equals [!Select [0, !Split ['://', !Ref DeployerAssetBaseUrl]], 's3']
+  # True whenever a local htpasswd login source is configured: explicitly via
+  # EnableLocalUsers, or through the deprecated AuthMethod=htpasswd.
+  IsHtpasswd: !Or
+    - !Equals [!Ref AuthMethod, 'htpasswd']
+    - !And
+      - !Equals [!Ref AuthMethod, '']
+      - !Equals [!Ref EnableLocalUsers, 'true']
   SystemAZa: !Equals [!Ref SystemNodeAZ, 'a']
   SystemAZb: !Equals [!Ref SystemNodeAZ, 'b']
 
@@ -842,35 +966,113 @@ Rules:
     Assertions:
       - Assert: !Not [!Equals [!Ref LicenseKey, '']]
         AssertDescription: LicenseKey is required when DeployPlatforma is true
-  LdapServerRequired:
-    RuleCondition: !And
-      - !Equals [!Ref DeployPlatforma, 'true']
-      - !Equals [!Ref AuthMethod, 'ldap']
-    Assertions:
-      - Assert: !Not [!Equals [!Ref LdapServer, '']]
-        AssertDescription: LdapServer is required when AuthMethod is ldap
+  # --- Per-source requirements (slot parameters) ---------------------------
+  # Each login source validates only its own fields, so any combination of
+  # sources is accepted. The deprecated AuthMethod is handled separately below.
   GoogleConfigRequired:
     RuleCondition: !And
       - !Equals [!Ref DeployPlatforma, 'true']
-      - !Equals [!Ref AuthMethod, 'google']
+      - !Or
+        - !Equals [!Ref SsoProvider, 'google']
+        - !Equals [!Ref AuthMethod, 'google']
     Assertions:
       - Assert: !Not [!Equals [!Ref GoogleClientId, '']]
-        AssertDescription: GoogleClientId is required when AuthMethod is google
+        AssertDescription: GoogleClientId is required for Google SSO
       - Assert: !Not [!Equals [!Ref GoogleClientSecret, '']]
-        AssertDescription: GoogleClientSecret is required when AuthMethod is google
+        AssertDescription: GoogleClientSecret is required for Google SSO
   EntraConfigRequired:
     RuleCondition: !And
       - !Equals [!Ref DeployPlatforma, 'true']
-      - !Equals [!Ref AuthMethod, 'entra']
+      - !Or
+        - !Equals [!Ref SsoProvider, 'entra']
+        - !Equals [!Ref AuthMethod, 'entra']
     Assertions:
       - Assert: !Or
           - !Not [!Equals [!Ref EntraIssuer, '']]
           - !Not [!Equals [!Ref EntraTenantId, '']]
-        AssertDescription: EntraIssuer or EntraTenantId is required when AuthMethod is entra
+        AssertDescription: EntraIssuer or EntraTenantId is required for Entra SSO
       - Assert: !Not [!Equals [!Ref EntraClientId, '']]
-        AssertDescription: EntraClientId is required when AuthMethod is entra
-  # Each method must leave the other methods' enabling fields empty, so a stray
-  # value pasted into the wrong group cannot silently change behaviour.
+        AssertDescription: EntraClientId is required for Entra SSO
+  # An LDAP service-account DN without its password would bind anonymously and
+  # silently fall back to a directory-wide search.
+  LdapSearchPasswordRequired:
+    RuleCondition: !Not [!Equals [!Ref LdapSearchUser, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref LdapSearchPassword, '']]
+        AssertDescription: LdapSearchPassword is required when LdapSearchUser is set
+  # SSO fields belong to the SSO source; a value left behind after switching
+  # SsoProvider back to none would otherwise look configured but do nothing.
+  SsoFieldsNeedSsoProvider:
+    RuleCondition: !And
+      - !Equals [!Ref AuthMethod, '']
+      - !Equals [!Ref SsoProvider, 'none']
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref GoogleClientId, '']
+          - !Equals [!Ref GoogleClientSecret, '']
+          - !Equals [!Ref EntraIssuer, '']
+          - !Equals [!Ref EntraTenantId, '']
+          - !Equals [!Ref EntraClientId, '']
+          - !Equals [!Ref SsoAdminUsers, '']
+        AssertDescription: >-
+          SsoProvider is none, so leave every Google/Entra field and
+          SsoAdminUsers empty (set SsoProvider to google or entra to use them)
+  # Google and Entra are one slot, so only one IdP's fields may be filled in.
+  SsoProviderGoogleExclusive:
+    RuleCondition: !And
+      - !Equals [!Ref AuthMethod, '']
+      - !Equals [!Ref SsoProvider, 'google']
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref EntraIssuer, '']
+          - !Equals [!Ref EntraTenantId, '']
+          - !Equals [!Ref EntraClientId, '']
+        AssertDescription: When SsoProvider is google, leave the Entra fields empty
+  SsoProviderEntraExclusive:
+    RuleCondition: !And
+      - !Equals [!Ref AuthMethod, '']
+      - !Equals [!Ref SsoProvider, 'entra']
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref GoogleClientId, '']
+          - !Equals [!Ref GoogleClientSecret, '']
+        AssertDescription: When SsoProvider is entra, leave the Google fields empty
+  # Direct bind (a DN template) and search+bind (a service account that looks
+  # the user up) are different modes; the backend refuses to start with both.
+  LdapBindModeExclusive:
+    RuleCondition: !Not [!Equals [!Ref LdapBindDN, '']]
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref LdapSearchRules, '']
+          - !Equals [!Ref LdapSearchUser, '']
+        AssertDescription: >-
+          LdapBindDN (direct bind) cannot be combined with LdapSearchRules /
+          LdapSearchUser (search + bind) — pick one mode
+  # Per-source admin patterns need their source configured, or they are inert.
+  LdapAdminUsersNeedLdap:
+    RuleCondition: !Equals [!Ref LdapServer, '']
+    Assertions:
+      - Assert: !Equals [!Ref LdapAdminUsers, '']
+        AssertDescription: LdapAdminUsers has no effect without LdapServer
+  # --- Deprecated AuthMethod: exclusive with the slot parameters -----------
+  # A non-empty AuthMethod is the entire auth configuration, so the slot
+  # parameters must stay at their defaults. Mixing the two would silently drop
+  # one of them rather than deploying what the operator asked for.
+  AuthMethodExclusiveWithSlots:
+    RuleCondition: !Not [!Equals [!Ref AuthMethod, '']]
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref SsoProvider, 'none']
+          - !Equals [!Ref EnableLocalUsers, 'false']
+          - !Equals [!Ref SsoAdminUsers, '']
+          - !Equals [!Ref LdapAdminUsers, '']
+          - !Equals [!Ref LocalAdminUsers, '']
+        AssertDescription: >-
+          AuthMethod is deprecated and cannot be combined with SsoProvider /
+          EnableLocalUsers / the per-source admin parameters. Clear AuthMethod
+          and configure the login sources instead, or leave the new parameters
+          at their defaults.
+  # Within the deprecated selector the old one-method-only rules still hold.
   AuthMethodHtpasswdExclusive:
     RuleCondition: !Equals [!Ref AuthMethod, 'htpasswd']
     Assertions:
@@ -885,6 +1087,8 @@ Rules:
   AuthMethodLdapExclusive:
     RuleCondition: !Equals [!Ref AuthMethod, 'ldap']
     Assertions:
+      - Assert: !Not [!Equals [!Ref LdapServer, '']]
+        AssertDescription: LdapServer is required when AuthMethod is ldap
       - Assert: !And
           - !Equals [!Ref HtpasswdContent, '']
           - !Equals [!Ref GoogleClientId, '']
@@ -2303,7 +2507,7 @@ Resources:
   # Each pool corresponds to a REAL GPU card, and its gpu-memory-gib label equals
   # that card's actual per-GPU VRAM. A region gets ONLY the pools whose card it
   # actually offers (gated by the RegionHas* Conditions above, generated by
-  # generate-gpu-map.sh) — no fallback substitution, so a label never lies and
+  # assets/generate-gpu-map.sh) — no fallback substitution, so a label never lies and
   # hardware is never under-used. See gpu-instance-map.json for the per-region
   # pool set. The GpuSubnetResolver Lambda picks each pool's exact instance type
   # (e.g. gpu-24g -> g6 or g5) and the subnets in AZs that offer it.
@@ -2362,7 +2566,7 @@ Resources:
   #   InstanceTypes: [ !GetAtt GpuSubnetResolver.<AttrKey>Type ]
   #   Subnets: !Split [",", !GetAtt GpuSubnetResolver.<AttrKey>Subnets]
   # keeping the template region- and AZ-agnostic. Refresh the embedded map with
-  # generate-gpu-map.sh; a stack update re-runs the resolver.
+  # assets/generate-gpu-map.sh; a stack update re-runs the resolver.
   GpuSubnetResolverRole:
     Type: AWS::IAM::Role
     Condition: GpuEnabled
@@ -2410,7 +2614,7 @@ Resources:
           import boto3, json, os, urllib.request
           # STATIC_MAP is the committed region -> GPU-pool map, embedded here so
           # the template stays a single self-contained file. Generated (and this
-          # block rewritten) by generate-gpu-map.sh from live EC2 offerings; the
+          # block rewritten) by assets/generate-gpu-map.sh from live EC2 offerings; the
           # standalone gpu-instance-map.json is the human-auditable copy. Shape:
           #   {"poolMemGib": {pool: gib},
           #    "regions": {region: {pool: {"type": t, "azIds": [azId, ...]}}}}
@@ -2519,7 +2723,7 @@ Resources:
       # CF re-invokes this resource whenever any property changes, so subnet
       # changes re-resolve automatically. A plain stack update also re-runs it,
       # which re-reads the embedded static map — how to pick up offering changes
-      # after a map refresh (regenerate with generate-gpu-map.sh).
+      # after a map refresh (regenerate with assets/generate-gpu-map.sh).
       SubnetIds: !If
         - CreateNewVpc
         - - !Ref PrivateSubnet1
@@ -2962,9 +3166,23 @@ Resources:
                   - ecr:BatchGetImage
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchCheckLayerAvailability
-                # Region wildcard: custom PlatformaHelmChart/PlatformaImage may live in a
-                # different region than the cluster (e.g. an eu-central-1 chart on an eu-west-1 cluster).
-                Resource: !Sub 'arn:aws:ecr:*:${AWS::AccountId}:repository/*'
+                # Region and account wildcards: a custom PlatformaHelmChart or
+                # PlatformaImage may live in another region than the cluster, or in
+                # another account entirely. Cross-account reads stay gated by the
+                # repository policy on the other side.
+                Resource: 'arn:aws:ecr:*:*:repository/*'
+              # Read deployer assets when DeployerAssetBaseUrl is an s3:// prefix.
+              # Scoped to that prefix's own bucket, so it grants nothing when the
+              # parameter is left at the published https default.
+              - !If
+                - HasS3AssetBase
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                  Resource: !Sub
+                    - 'arn:aws:s3:::${AssetBucket}/*'
+                    - AssetBucket: !Select [0, !Split ['/', !Select [1, !Split ['s3://', !Ref DeployerAssetBaseUrl]]]]
+                - !Ref 'AWS::NoValue'
               # Tag GPU ASGs for Cluster Autoscaler scale-from-zero
               - Effect: Allow
                 Action:
@@ -3344,6 +3562,11 @@ Resources:
               - UseDefaultHelmChart
               - 'oci://ghcr.io/milaboratory/platforma-helm/platforma'
               - !Ref PlatformaHelmChart
+          - Name: DEPLOYER_ASSET_BASE
+            Value: !If
+              - UseDefaultAssetBase
+              - !FindInMap [DeployerAssets, Public, BaseUrl]
+              - !Ref DeployerAssetBaseUrl
           - Name: DEPLOY_PLATFORMA
             Value: !Ref DeployPlatforma
           - Name: DOMAIN_NAME
@@ -3384,10 +3607,20 @@ Resources:
             Value: !If [GpuEnabled, !GetAtt GpuSubnetResolver.GpuMaxGpuGi, '0']
           - Name: AUTH_METHOD
             Value: !Ref AuthMethod
+          - Name: SSO_PROVIDER
+            Value: !Ref SsoProvider
+          - Name: ENABLE_LOCAL_USERS
+            Value: !Ref EnableLocalUsers
           - Name: SHOW_USER_LIST
             Value: !Ref ShowUserList
           - Name: ADMIN_USERS
             Value: !Ref AdminUsers
+          - Name: SSO_ADMIN_USERS
+            Value: !Ref SsoAdminUsers
+          - Name: LDAP_ADMIN_USERS
+            Value: !Ref LdapAdminUsers
+          - Name: LOCAL_ADMIN_USERS
+            Value: !Ref LocalAdminUsers
           - Name: HTPASSWD_CONTENT
             Value: !Ref HtpasswdContent
           - Name: LDAP_SERVER
@@ -3548,6 +3781,9 @@ Resources:
                   aws ssm delete-parameter \
                     --name "/${CLUSTER_NAME}/platforma/master-secret" \
                     --region $REGION 2>/dev/null || true
+                  aws ssm delete-parameter \
+                    --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                    --region $REGION 2>/dev/null || true
                   echo "Platforma teardown complete."
                   exit 0
 
@@ -3579,14 +3815,26 @@ Resources:
                     --from-literal=MI_LICENSE="$LICENSE_KEY" \
                     --dry-run=client -o yaml | kubectl apply -f -
 
-                  if [ -n "$GOOGLE_CLIENT_SECRET" ]; then
+                  # Sibling script under assets/; fetched so this buildspec
+                  # stays under CodeBuild's 25600-character inline cap. An
+                  # s3:// base is read with this role's credentials, which is
+                  # what lets a preview prefix stay private; the published
+                  # https base stays an unsigned fetch.
+                  if [ "${DEPLOYER_ASSET_BASE#s3://}" != "$DEPLOYER_ASSET_BASE" ]; then
+                    aws s3 cp "${DEPLOYER_ASSET_BASE%/}/compose-auth.py" /tmp/compose-auth.py
+                  else
+                    curl -fsSL "${DEPLOYER_ASSET_BASE%/}/compose-auth.py" -o /tmp/compose-auth.py
+                  fi
+                  python3 /tmp/compose-auth.py
+                  . /tmp/auth-env.sh
+                  if [ -n "$SSO_CLIENT_SECRET" ]; then
                     kubectl create secret generic platforma-sso-client-secret \
                       -n $NAMESPACE \
-                      --from-literal=client-secret="$GOOGLE_CLIENT_SECRET" \
+                      --from-literal=client-secret="$SSO_CLIENT_SECRET" \
                       --dry-run=client -o yaml | kubectl apply -f -
                   fi
 
-                  if [ "$AUTH_METHOD" = "htpasswd" ]; then
+                  if [ -n "$LOCAL_ID" ]; then
                     HTPASSWD_TRIMMED=$(echo "$HTPASSWD_CONTENT" | tr -d '[:space:]')
                     HTPASSWD_CONTENT=$(echo "$HTPASSWD_CONTENT" | tr ' ' '\n')
 
@@ -3696,6 +3944,46 @@ Resources:
                     --from-literal=master-secret="$MASTER_SECRET" \
                     --dry-run=client -o yaml | kubectl apply -f -
 
+                  # The admin credential is always on: no parameter creates it, none
+                  # switches it off. Re-read from SSM before generating a fresh one — a
+                  # new password on every deploy would rotate the credential and churn
+                  # the Secret on every no-op run.
+                  ADMIN_PASSWORD=$(aws ssm get-parameter \
+                    --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                    --with-decryption --query Parameter.Value --output text \
+                    --region $REGION 2>/dev/null) || ADMIN_PASSWORD=""
+                  if [ -z "$ADMIN_PASSWORD" ]; then
+                    echo "No admin password in SSM — generating a random one"
+                    ADMIN_PASSWORD=$(openssl rand -base64 12)
+                    aws ssm put-parameter \
+                      --name "/${CLUSTER_NAME}/platforma/admin-password" \
+                      --type SecureString \
+                      --value "$ADMIN_PASSWORD" \
+                      --region $REGION
+                    echo "Admin password stored in SSM: /${CLUSTER_NAME}/platforma/admin-password"
+                  else
+                    echo "Using existing admin password from SSM: /${CLUSTER_NAME}/platforma/admin-password"
+                  fi
+                  # Reuse the existing hash's salt, exactly as the platforma-htpasswd block
+                  # above does. A fresh salt on an unchanged password would still rewrite the
+                  # Secret every build, the churn that the SSM re-read avoids.
+                  ADMIN_EXISTING_APR1=$(kubectl -n $NAMESPACE get secret platforma-admin-htpasswd \
+                    -o jsonpath='{.data.htpasswd}' 2>/dev/null | base64 -d 2>/dev/null \
+                    | grep -oE '\$apr1\$[^:]+' | head -1)
+                  ADMIN_EXISTING_SALT=""
+                  if [ -n "$ADMIN_EXISTING_APR1" ]; then
+                    ADMIN_EXISTING_SALT=$(echo "$ADMIN_EXISTING_APR1" | cut -d'$' -f3)
+                  fi
+                  if [ -n "$ADMIN_EXISTING_SALT" ]; then
+                    ADMIN_HASH=$(openssl passwd -apr1 -salt "$ADMIN_EXISTING_SALT" "$ADMIN_PASSWORD")
+                  else
+                    ADMIN_HASH=$(openssl passwd -apr1 "$ADMIN_PASSWORD")
+                  fi
+                  kubectl create secret generic platforma-admin-htpasswd \
+                    -n $NAMESPACE \
+                    --from-literal=htpasswd="platforma:${ADMIN_HASH}" \
+                    --dry-run=client -o yaml | kubectl apply -f -
+
                   DATASOURCES_YAML=""
                   for LIB_NUM in 1 2 3; do
                     eval "LIB_NAME=\${DATA_LIBRARY_${LIB_NUM}_NAME:-}"
@@ -3757,16 +4045,10 @@ Resources:
                   ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/quay-${CLUSTER_NAME}/milaboratories/pl-containers"
                   APP_EXTRA_ARGS="[\"--default-docker-registry=${ECR_REGISTRY}\"]"
 
-                  # Grant admin role to matching logins: split ADMIN_USERS on ';'
-                  # into one --admin-user=<regexp> flag each, appended to the JSON
-                  # extraArgs array. jq handles JSON-escaping of regexp
-                  # metacharacters (backslashes, quotes) in the patterns.
-                  if [ -n "$ADMIN_USERS" ]; then
-                    APP_EXTRA_ARGS=$(echo "$APP_EXTRA_ARGS" | jq -c \
-                      --arg raw "$ADMIN_USERS" \
-                      '. + ($raw | split(";") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0)) | map("--admin-user=" + .))')
-                  fi
-
+                  # Admin patterns are per login source, because the backend
+                  # evaluates a login only against the rules of the provider
+                  # that authenticated it. The deprecated global ADMIN_USERS
+                  # keeps its old meaning by being merged into every source.
                   cat > /tmp/platforma-values.yaml << PLATFORMA_VALUES
                   environment: aws
                   storage:
@@ -3874,72 +4156,7 @@ Resources:
                   dataSources: ${DATASOURCES_YAML:-[]}
                   PLATFORMA_VALUES
 
-                  if [ "$AUTH_METHOD" = "htpasswd" ]; then
-                    cat >> /tmp/platforma-values.yaml << AUTH_VALUES
-                  auth:
-                    htpasswd:
-                      secretName: platforma-htpasswd
-                  AUTH_VALUES
-                  elif [ "$AUTH_METHOD" = "ldap" ]; then
-                    EFFECTIVE_START_TLS="${LDAP_START_TLS}"
-                    if echo "$LDAP_SERVER" | grep -qi '^ldaps://'; then
-                      EFFECTIVE_START_TLS="false"
-                    fi
-                    cat >> /tmp/platforma-values.yaml << LDAP_BLOCK
-                  auth:
-                    ldap:
-                      server: "${LDAP_SERVER}"
-                      startTLS: ${EFFECTIVE_START_TLS}
-                  LDAP_BLOCK
-                    if [ -n "$LDAP_BIND_DN" ]; then
-                      cat >> /tmp/platforma-values.yaml << LDAP_BIND
-                      bindDN: "${LDAP_BIND_DN}"
-                  LDAP_BIND
-                    fi
-                    if [ -n "$LDAP_SEARCH_USER" ]; then
-                      cat >> /tmp/platforma-values.yaml << LDAP_SEARCH
-                      searchUser: "${LDAP_SEARCH_USER}"
-                      searchPassword: "${LDAP_SEARCH_PASSWORD}"
-                  LDAP_SEARCH
-                    fi
-                    if [ -n "$LDAP_SEARCH_RULES" ]; then
-                      echo "    searchRules:" >> /tmp/platforma-values.yaml
-                      OLD_IFS="$IFS"
-                      IFS=";"
-                      for rule in $LDAP_SEARCH_RULES; do
-                        IFS="$OLD_IFS"
-                        rule=$(echo "$rule" | xargs)
-                        [ -z "$rule" ] && { IFS=";"; continue; }
-                        echo "      - \"${rule}\"" >> /tmp/platforma-values.yaml
-                        IFS=";"
-                      done
-                      IFS="$OLD_IFS"
-                    fi
-                  elif [ "$AUTH_METHOD" = "google" ]; then
-                    cat >> /tmp/platforma-values.yaml << GOOGLE_BLOCK
-                  auth:
-                    sso:
-                      issuer: "https://accounts.google.com"
-                      clientId: "${GOOGLE_CLIENT_ID}"
-                      scopes: "openid profile email"
-                      prompt: "consent"
-                      accessType: "offline"
-                      clientSecret:
-                        secretName: platforma-sso-client-secret
-                  GOOGLE_BLOCK
-                  elif [ "$AUTH_METHOD" = "entra" ]; then
-                    if [ -z "$ENTRA_ISSUER" ] && [ -n "$ENTRA_TENANT_ID" ]; then
-                      ENTRA_ISSUER="https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0"
-                    elif echo "$ENTRA_ISSUER" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
-                      ENTRA_ISSUER="https://login.microsoftonline.com/${ENTRA_ISSUER}/v2.0"
-                    fi
-                    cat >> /tmp/platforma-values.yaml << ENTRA_BLOCK
-                  auth:
-                    sso:
-                      issuer: "${ENTRA_ISSUER}"
-                      clientId: "${ENTRA_CLIENT_ID}"
-                  ENTRA_BLOCK
-                  fi
+                  V=/tmp/platforma-values.yaml
 
                   cat >> /tmp/platforma-values.yaml << MASTER_SECRET_VALUES
                   masterSecret:
@@ -3966,6 +4183,7 @@ Resources:
                     --version $PLATFORMA_VERSION \
                     -n $NAMESPACE \
                     -f /tmp/platforma-values.yaml \
+                    -f /tmp/auth-values.json \
                     --set auth.showUserList=${SHOW_USER_LIST:-true} \
                     --atomic --timeout 15m
             post_build:
@@ -4122,7 +4340,11 @@ Resources:
       # Properties below trigger re-deployment when changed during stack update.
       # CF re-invokes this custom resource (and thus re-runs the platforma
       # deployer CodeBuild) whenever ANY property value here changes.
-      ForceUpdatePlatforma: "4" # Bump to force Platforma re-deployment
+      ForceUpdatePlatforma: "5" # Bump to force Platforma re-deployment
+      DeployerAssetBaseUrl: !If
+        - UseDefaultAssetBase
+        - !FindInMap [DeployerAssets, Public, BaseUrl]
+        - !Ref DeployerAssetBaseUrl
       # GPU inputs mirror the platforma-deployer env vars (GPU_ENABLED /
       # GPU_MAX_*). Watching them here means flipping EnableGpu — or a change to
       # the region's resolved GPU ceilings — re-triggers a Platforma deploy so
@@ -4156,6 +4378,11 @@ Resources:
       LicenseKey: !Ref LicenseKey
       AuthMethod: !Ref AuthMethod
       HtpasswdContent: !Ref HtpasswdContent
+      SsoProvider: !Ref SsoProvider
+      EnableLocalUsers: !Ref EnableLocalUsers
+      SsoAdminUsers: !Ref SsoAdminUsers
+      LdapAdminUsers: !Ref LdapAdminUsers
+      LocalAdminUsers: !Ref LocalAdminUsers
       LdapServer: !Ref LdapServer
       LdapStartTLS: !Ref LdapStartTLS
       LdapBindDN: !Ref LdapBindDN
@@ -4369,13 +4596,16 @@ Outputs:
   DefaultUsername:
     Condition: IsHtpasswd
     Description: >
-      Default username for Platforma login (htpasswd mode, auto-generated password).
+      Username of the auto-generated local account. Present whenever local
+      (htpasswd) logins are enabled, including alongside SSO or LDAP, and only
+      meaningful when HtpasswdContent was left empty.
     Value: platforma
 
   UsersPasswordSSMPath:
     Condition: IsHtpasswd
     Description: >
-      SSM Parameter containing auto-generated users password (htpasswd mode only).
+      SSM Parameter containing the auto-generated local account password.
+      Only populated when local logins are enabled and HtpasswdContent is empty.
       Retrieve with: aws ssm get-parameter --name /<ClusterName>/platforma/users-password --with-decryption --query Parameter.Value --output text
     Value: !Sub '/${ClusterName}/platforma/users-password'
 
@@ -4385,6 +4615,24 @@ Outputs:
       Click to open the SSM Parameter with the auto-generated users password.
       Click "Show" on the parameter page to reveal the value.
     Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/systems-manager/parameters/%2F${ClusterName}%2Fplatforma%2Fusers-password/description?region=${AWS::Region}'
+
+  AdminUsername:
+    Description: >
+      Administrator login for Platforma. Present on every install, whatever
+      login sources are configured.
+    Value: platforma
+
+  AdminPasswordSSMPath:
+    Description: >
+      SSM Parameter holding the generated administrator password. Retrieve with:
+      aws ssm get-parameter --name /<ClusterName>/platforma/admin-password --with-decryption --query Parameter.Value --output text
+    Value: !Sub '/${ClusterName}/platforma/admin-password'
+
+  AdminPasswordSSMConsole:
+    Description: >
+      Click to open the SSM Parameter holding the administrator password.
+      Click "Show" on the parameter page to reveal the value.
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/systems-manager/parameters/%2F${ClusterName}%2Fplatforma%2Fadmin-password/description?region=${AWS::Region}'
 
   ClusterName:
     Description: >

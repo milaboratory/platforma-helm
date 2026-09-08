@@ -13,7 +13,7 @@ auth remains legacy and single-provider (`--auth-token`), and the legacy flags
 > the change. Plan provider changes like a restart with forced re-login.
 
 These are backend startup flags. In Kubernetes the chart renders them from the
-`auth.providers` values map — see [Helm](#helm) below — which is the only way to
+`auth.providers` values list — see [Helm](#helm) below — which is the only way to
 get the htpasswd file, the OAuth client secret and the LDAP TLS material mounted
 at the paths the backend reads them from. Do not put secret literals in values.
 
@@ -413,15 +413,24 @@ never provision new ones, and that is better surfaced at startup than per login.
 
 ## Helm
 
-The chart templates the whole `auth.*` namespace from `auth.providers`, a map
-keyed by provider id. The id lands verbatim in generated Kubernetes volume and
-Secret names, so it must be a lowercase RFC 1123 name — `[a-z0-9]` and `-`, no
-dots, no underscores, no capitals — of at most 40 characters; the values schema
-rejects anything else. Dots are excluded for a second reason: `auth.map-field`
-keys split at the first dot, so a dotted id would address a provider that was
-never declared. It replaces the flat `auth.htpasswd` / `auth.ldap` /
-`auth.sso` values blocks, which render the legacy flags — the chart fails the
-render when `auth.providers` is combined with any of them, or with a raw
+The chart templates the whole `auth.*` namespace from `auth.providers`, a list
+of provider entries. Each entry carries a `name`, which is the provider id, and
+the chart rejects an entry without one or a name used twice.
+
+**The order of the list is the order users see.** Providers are advertised to
+clients in the order written, and a client opens its login form on the first
+one. Write the method most people should use first.
+
+The name lands verbatim in generated Kubernetes volume and Secret names, so it
+must be a lowercase RFC 1123 name — `[a-z0-9]` and `-`, no dots, no underscores,
+no capitals — of at most 40 characters; the values schema rejects anything else.
+Dots are excluded for a second reason:
+`auth.map-field` keys split at the first dot, so a dotted name would address a
+provider that was never declared.
+
+The list replaces the flat `auth.htpasswd` / `auth.ldap` / `auth.sso` values
+blocks, which render the legacy flags. The chart fails the render when
+`auth.providers` is combined with any of them, or with a raw
 `--auth.provider-id` in `app.extraArgs`, rather than letting the backend refuse
 to start later.
 
@@ -431,7 +440,7 @@ exactly as before, so an existing release is unaffected until it opts in.
 ```yaml
 auth:
   providers:
-    entra:
+    - name: entra
       type: sso
       sso:
         issuer: "https://login.microsoftonline.com/<tenant>/v2.0"
@@ -456,7 +465,7 @@ auth:
       roles:
         groups: ["admin=platforma-admins"]
 
-    local:                         # break-glass, alongside the SSO provider
+    - name: local                  # break-glass, alongside the SSO provider
       type: htpasswd
       htpasswd:
         credentials:
@@ -465,7 +474,7 @@ auth:
 ```
 
 Each provider's secret material is mounted under
-`/etc/platforma/secrets/auth/<id>/`, so two providers of the same type never
+`/etc/platforma/secrets/auth/<name>/`, so two providers of the same type never
 collide. `htpasswd.credentials` makes the chart generate the Secret;
 `htpasswd.secretName` points at an existing one.
 

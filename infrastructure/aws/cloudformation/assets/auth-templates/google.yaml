@@ -1,0 +1,17 @@
+# Filled by compose-auth.py. $name is the RFC 1123 provider id (the slot name).
+name: $name
+type: sso
+sso:
+  issuer: https://accounts.google.com
+  clientId: $clientId
+  scopes: openid profile email
+  prompt: consent
+  accessType: offline
+  clientSecret:
+    secretName: platforma-sso-client-secret
+map:
+  login: email
+  email: email
+  displayName: name
+lookUpAttr: email
+createUsers: true

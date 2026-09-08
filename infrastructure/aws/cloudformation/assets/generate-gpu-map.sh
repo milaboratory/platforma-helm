@@ -30,9 +30,9 @@
 #          static RegionHas* Conditions Fn::FindInMap it to gate each node group.
 #
 # USAGE
-#   ./generate-gpu-map.sh                 # query all enabled regions, write + inject
-#   ./generate-gpu-map.sh --regions "eu-west-1 us-east-1"
-#   ./generate-gpu-map.sh --no-inject     # only write gpu-instance-map.json
+#   ./assets/generate-gpu-map.sh                 # query all enabled regions, write + inject
+#   ./assets/generate-gpu-map.sh --regions "eu-west-1 us-east-1"
+#   ./assets/generate-gpu-map.sh --no-inject     # only write gpu-instance-map.json
 #
 # Requires awscli v2 (ec2:DescribeRegions + ec2:DescribeInstanceTypeOfferings),
 # jq, python3. Regions absent from the map (opt-in regions not enabled in the
@@ -41,8 +41,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT_FILE="${SCRIPT_DIR}/gpu-instance-map.json"
-TEMPLATE_FILE="${SCRIPT_DIR}/cloudformation-eks-1-35.yaml"
+CF_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+OUT_FILE="${CF_DIR}/gpu-instance-map.json"
+TEMPLATE_FILE="${CF_DIR}/cloudformation-eks-1-35.yaml"
 REGIONS_ARG=""
 DO_INJECT=1
 while [[ $# -gt 0 ]]; do

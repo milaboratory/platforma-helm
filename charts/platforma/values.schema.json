@@ -1240,6 +1240,9 @@
         "scratchStorage": {
           "type": "object",
           "properties": {
+            "enabled": {
+              "type": ["boolean", "null"]
+            },
             "network": {
               "type": "object",
               "properties": {

@@ -232,15 +232,23 @@ spec:
             - "--runner-max-ram-request={{ .Values.kueue.maxJobResources.memory }}"
             {{- end }}
             {{- end }}
-            {{- with (include "platforma.scratchStorage" . | fromYaml).network }}
-            {{- if .maxRequest }}
-            - "--k8s-max-scratch-request={{ .maxRequest }}"
+            {{- /*
+              Scratch space, all of it behind one switch. The bounds clamp a request, so
+              without the switch there is no request to clamp: passing them would describe
+              storage this deployment never promised anyone.
+            */}}
+            {{- with (include "platforma.scratchStorage" . | fromYaml) }}
+            {{- if .enabled }}
+            - "--has-scratch-space"
+            {{- if .network.maxRequest }}
+            - "--k8s-max-scratch-request={{ .network.maxRequest }}"
             {{- end }}
-            {{- if .minRequest }}
-            - "--k8s-min-scratch-request={{ .minRequest }}"
+            {{- if .network.minRequest }}
+            - "--k8s-min-scratch-request={{ .network.minRequest }}"
             {{- end }}
-            {{- if and $.Values.kueue.pools.gpu.enabled .gpuMaxRequest }}
-            - "--k8s-gpu-max-scratch-request={{ .gpuMaxRequest }}"
+            {{- if and $.Values.kueue.pools.gpu.enabled .network.gpuMaxRequest }}
+            - "--k8s-gpu-max-scratch-request={{ .network.gpuMaxRequest }}"
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if hasKey .Values.kueue "imagePullMaxRetries" }}

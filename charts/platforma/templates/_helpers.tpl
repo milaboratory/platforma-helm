@@ -645,6 +645,12 @@ tier stays off until an operator names a class.
 
 Every field an operator sets wins over its default, including `create: false` to point
 at a class the cluster already has.
+
+`enabled` follows the same three-state rule as the rest: an operator's `true` or `false`
+wins, and only an unset value falls back to the `environment` default — true on aws,
+where this chart creates the class that backs a scratch volume, false everywhere else,
+because a deployment that claims scratch space it cannot serve makes blocks stop managing
+their own temporary files and leaves them on the small shared volume.
 */}}
 {{- define "platforma.scratchStorage" -}}
 {{- $s := .Values.jobs.scratchStorage -}}
@@ -671,6 +677,8 @@ at a class the cluster already has.
     {{- $minRequest = printf "%dGi" (int (ceil (divf (float64 $iops) (get $iopsPerGi $type)))) -}}
   {{- end -}}
 {{- end -}}
+{{- $enabled := $s.enabled -}}
+{{- if kindIs "invalid" $enabled -}}{{- $enabled = $aws -}}{{- end -}}
 {{- $network := dict
       "maxRequest" (default (ternary "16Ti" "" $aws) $s.network.maxRequest)
       "gpuMaxRequest" (default "" $s.network.gpuMaxRequest)
@@ -683,5 +691,5 @@ at a class the cluster already has.
         "throughput" (default 1000 $sc.throughput)
         "encrypted" $encrypted)
 -}}
-{{- toYaml (dict "network" $network) -}}
+{{- toYaml (dict "enabled" $enabled "network" $network) -}}
 {{- end }}

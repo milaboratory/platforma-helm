@@ -849,6 +849,15 @@ jobs:
   # node's own small disk. Where I/O to the workspace storage is billed — EFS on AWS,
   # Filestore on GCP — a deployment with no scratch tier can thus cost noticeably more.
   scratchStorage:
+    # -- Set to 'true' in installations that serve scratch space requests.
+    # This makes configuration of network scratch volumes required.
+    # Leave it unset to apply environment-specific defaults. I.e.
+    # when environment is 'aws', scratch storage configuration is fully automated.
+    #
+    # Optimisation parameter: does not affect functionality of blocks, but may affect
+    # cost of calculations (their speed, cost of storage and so on).
+    enabled: ~
+
     network:
       # -- Hard ceiling on a scratch request (--k8s-max-scratch-request).
       # Larger requests are shrunk to this value, never rejected. Keep it at or below the

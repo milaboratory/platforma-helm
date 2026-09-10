@@ -8,7 +8,7 @@ sso:
   prompt: consent
   accessType: offline
   clientSecret:
-    secretName: platforma-sso-client-secret
+    secretName: $secretName
 map:
   login: email
   email: email

@@ -200,9 +200,10 @@ either one.
 
 | Goal                          | Parameters |
 |-------------------------------|------------|
-| SSO only                      | `SsoProvider=google` |
-| SSO + local break-glass       | `SsoProvider=google`, `EnableLocalUsers=true` |
-| SSO + corporate directory     | `SsoProvider=entra`, `LdapServer=ldaps://…` |
+| Google SSO only               | `GoogleClientId`, `GoogleClientSecret` |
+| Google **and** Entra          | both IdPs' parameters; the login screen offers both |
+| SSO + local break-glass       | `GoogleClientId`, `GoogleClientSecret`, `EnableLocalUsers=true` |
+| SSO + corporate directory     | `EntraClientId`, `EntraIssuer`, `LdapServer=ldaps://…` |
 | LDAP + local break-glass      | `LdapServer=ldaps://…`, `EnableLocalUsers=true` |
 | All three                     | all of the above |
 
@@ -228,21 +229,23 @@ parameter descriptions in the CloudFormation Console for details.
 
 #### Deprecated: `AuthMethod`
 
-`AuthMethod` selected exactly one method and therefore cannot express any
-combination. It is superseded by the slots above and defaults to empty.
+CloudFormation cannot hide parameters. `AuthMethod` is moved to the last
+parameter group so the Console auth section is only the source fields; leave
+its previous value unchanged on existing stacks.
 
-It is still honoured so stacks created before the slots existed keep their
-current behaviour unchanged: a non-empty value is the entire auth configuration
-and the slot parameters must stay at their defaults (the stack rejects setting
-both). Clearing it moves the stack onto the slot parameters — which re-derives
-the JWT signing key, so budget one forced re-login for the switch.
+A non-empty `AuthMethod` is **appended after** the slot sources and before
+the built-in admin (the same source is not added twice). An htpasswd stack
+can add Google SSO without clearing `AuthMethod`. New stacks leave it empty.
 
-| `AuthMethod` | Equivalent slots |
-|--------------|------------------|
-| `htpasswd`   | `EnableLocalUsers=true` |
-| `ldap`       | `LdapServer=…` |
-| `google`     | `SsoProvider=google` |
-| `entra`      | `SsoProvider=entra` |
+Adding a source still re-derives the JWT signing key, so budget one forced
+re-login when the set of sources changes.
+
+| `AuthMethod` | Source it adds |
+|--------------|----------------|
+| `htpasswd`   | local htpasswd (`EnableLocalUsers`) |
+| `ldap`       | LDAP (`LdapServer` must still be set) |
+| `google`     | Google SSO |
+| `entra`      | Entra SSO |
 
 #### Admin logins: `AdminUsers`
 
@@ -253,9 +256,16 @@ semicolon-separated full-match regular expressions, e.g.
 
 The patterns apply to **every configured login source**, which is what the
 single `--admin-user` flag has always meant. The login they match is the email
-for `SsoProvider=google`, the `preferred_username` claim for
-`SsoProvider=entra`, the username the directory authenticated for LDAP, and the
-htpasswd username for local users.
+for Google, the `preferred_username` claim for Entra, the username the
+directory authenticated for LDAP, and the htpasswd username for local users.
+
+Stacks created before this parameter became the only admin list may still carry
+per-source grants from `SsoAdminUsers` / `LdapAdminUsers` / `LocalAdminUsers`.
+Those parameters are gone, but the grants are not: on the first deploy after the
+upgrade the deployer reads them off the running release and pins them in the
+`platforma-legacy-admin-grants` ConfigMap, then re-applies them to the same
+provider ids on every later deploy. They are additive with `AdminUsers`. To drop
+one, edit or delete that ConfigMap.
 
 The built-in `admin` login is excluded — it is an administrator on its own and
 needs no pattern. Leave `AdminUsers` empty if the built-in admin is the only
@@ -271,13 +281,18 @@ You need first to create/register new SSO application in your OIDC provider serv
 
 CloudFormation does NOT configure SSO integration for you. It only configures Platforma Backend to integrate with existing SSO infrastructure your company already has. If you don't have SSO - configure it first to use this feature.
 
-`SsoProvider` offers two presets. Pick the one matching your IdP and fill the
-parameters in the matching console group:
+There is no SSO selector parameter. **An IdP turns on by having its own
+parameters filled in**, so fill the console group matching your IdP — or both
+groups to offer both logins:
 
-| SsoProvider | Required parameters                | Predefined / derived                                  |
-|-------------|------------------------------------|-------------------------------------------------------|
-| `google`    | `GoogleClientId`, `GoogleClientSecret` | issuer `https://accounts.google.com`, scopes, prompt  |
-| `entra`     | `EntraIssuer` or `EntraTenantId`, plus `EntraClientId` | issuer URL preferred; tenant GUID auto-derives `https://login.microsoftonline.com/{tenant}/v2.0` |
+| IdP     | Turns on when set                      | Also required            | Predefined / derived                                  |
+|---------|----------------------------------------|--------------------------|-------------------------------------------------------|
+| Google  | `GoogleClientId`                       | `GoogleClientSecret`     | issuer `https://accounts.google.com`, scopes, prompt  |
+| Entra   | `EntraClientId`, `EntraTenantId` or `EntraIssuer` | `EntraClientId`, plus `EntraIssuer` or `EntraTenantId` | issuer URL preferred; tenant GUID auto-derives `https://login.microsoftonline.com/{tenant}/v2.0` |
+
+Each IdP that needs a client secret gets its own Kubernetes Secret. Google keeps
+the original `platforma-sso-client-secret` name; any further IdP would use
+`platforma-sso-client-secret-<provider-id>`.
 
 A `*ConfigRequired` rule fails stack-create if a method's required parameters are missing.
 Discovery is fetched from `{issuer}/.well-known/openid-configuration` at runtime.
@@ -342,7 +357,7 @@ optional — when omitted, the stack creates an IAM role for read-only access to
 
 **Re-check minimal required parameters:**
 - Stack name: just a name of your stack
-- SsoProvider / LdapServer / EnableLocalUsers
+- Google / Entra parameters, LdapServer, EnableLocalUsers
 - DataLibrary[N] parameters: your samples libraries configuration 
 - DomainName & HostedZoneId: domain to make Platforma available
 - LicenseKey: check not empty

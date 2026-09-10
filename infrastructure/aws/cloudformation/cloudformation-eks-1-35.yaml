@@ -39,19 +39,15 @@ Metadata:
           - PlatformaHelmChart
           - DeployerAssetBaseUrl
       - Label:
-          default: Authentication (required when deploying Platforma)
+          default: Authentication
         Parameters:
-          - SsoProvider
           - EnableLocalUsers
           - ShowUserList
-          - SsoAdminUsers
-          - AuthMethod
           - AdminUsers
       - Label:
           default: 'Local users (EnableLocalUsers=true) — static htpasswd file, no external IdP'
         Parameters:
           - HtpasswdContent
-          - LocalAdminUsers
       - Label:
           default: 'LDAP (enabled by setting LdapServer) — authenticate against an LDAP / Active Directory server'
         Parameters:
@@ -61,14 +57,13 @@ Metadata:
           - LdapSearchRules
           - LdapSearchUser
           - LdapSearchPassword
-          - LdapAdminUsers
       - Label:
-          default: 'Google Workspace SSO (SsoProvider=google) — OIDC login with Google accounts'
+          default: 'Google Workspace SSO (enabled by setting GoogleClientId) — OIDC login with Google accounts'
         Parameters:
           - GoogleClientId
           - GoogleClientSecret
       - Label:
-          default: 'Microsoft Entra ID SSO (SsoProvider=entra) — OIDC login with an Azure AD tenant'
+          default: 'Microsoft Entra ID SSO (enabled by setting EntraClientId) — OIDC login with an Azure AD tenant'
         Parameters:
           - EntraIssuer
           - EntraTenantId
@@ -102,6 +97,13 @@ Metadata:
           - DataLibrary3Region
           - DataLibrary3AccessKey
           - DataLibrary3SecretKey
+      # CloudFormation cannot hide Parameters. These stay on the template so
+      # existing stacks keep their stored values (Use previous value), but they
+      # sit last so the Console auth section is only the slot parameters.
+      - Label:
+          default: 'Existing stacks — leave unchanged (previous AuthMethod is added to the sources above; the per-source admin lists still grant on their own source)'
+        Parameters:
+          - AuthMethod
     ParameterLabels:
       ClusterName:
         default: Cluster name
@@ -137,32 +139,24 @@ Metadata:
         default: 'Domain name (e.g. platforma.example.com)'
       HostedZoneId:
         default: 'Route53 hosted zone ID (e.g. Z0123456789ABCDEF)'
-      SsoProvider:
-        default: 'SSO / OIDC login (none, google, or entra)'
       EnableLocalUsers:
         default: 'Also allow local htpasswd logins (break-glass)'
       AuthMethod:
-        default: 'DEPRECATED single-method selector — leave empty'
+        default: 'Existing stacks only — previous value is kept and added as a login source'
       ShowUserList:
         default: 'Allow clients to list users (set false for multitenant instances)'
       AdminUsers:
-        default: 'DEPRECATED — admin logins applied to every provider (regexp)'
-      SsoAdminUsers:
-        default: 'SSO admin logins (regexp; semicolon-separated for multiple)'
-      LdapAdminUsers:
-        default: 'LDAP admin logins (regexp; semicolon-separated for multiple)'
-      LocalAdminUsers:
-        default: 'Local (htpasswd) admin logins (regexp; semicolon-separated)'
+        default: 'Admin logins, on every login source (regexp; semicolon-separated)'
       GoogleClientId:
-        default: 'Google OAuth client ID (required when SsoProvider=google)'
+        default: 'Google OAuth client ID (required)'
       GoogleClientSecret:
-        default: 'Google OAuth client secret (required when SsoProvider=google)'
+        default: 'Google OAuth client secret (required)'
       EntraIssuer:
-        default: 'Entra OIDC issuer URL (preferred when SsoProvider=entra)'
+        default: 'Entra OIDC issuer URL'
       EntraTenantId:
         default: 'Entra tenant GUID (legacy fallback — issuer derived automatically)'
       EntraClientId:
-        default: 'Entra application (client) ID (required when SsoProvider=entra)'
+        default: 'Entra application (client) ID (required)'
       EnableDemoLibrary:
         default: 'Enable MiLaboratories demo data library'
       DataLibrary1Name:
@@ -298,28 +292,16 @@ Parameters:
       an arbitrary host would run as the deployer, which holds cluster-admin.
 
   # --- Authentication ---
-  # Each login source is an independent slot, so any combination works:
-  #   SSO only            SsoProvider=google
-  #   SSO + local users   SsoProvider=google, EnableLocalUsers=true
-  #   SSO + LDAP          SsoProvider=entra,  LdapServer=ldaps://...
+  # A login source turns on by having its own fields filled in — there is no
+  # selector parameter. Any combination works, including both IdPs at once:
+  #   Google only         GoogleClientId + GoogleClientSecret
+  #   Google + Entra      both IdPs' fields set; the login screen offers both
+  #   SSO + local users   GoogleClientId + GoogleClientSecret, EnableLocalUsers=true
+  #   SSO + LDAP          EntraClientId + EntraIssuer, LdapServer=ldaps://...
   #   LDAP + local users  LdapServer=ldaps://..., EnableLocalUsers=true
-  #   all three           all of the above set
-  # One slot renders the backend's single-provider flags exactly as before.
+  # One source renders the backend's single-provider flags exactly as before.
   # Two or more render the multi-provider auth.providers scheme (backend
-  # >= 4.3.0) with fixed provider ids: 'google'/'entra', 'corp', 'local'.
-  SsoProvider:
-    Type: String
-    Default: none
-    AllowedValues: [none, google, entra]
-    Description: >
-      SSO / OIDC login source.
-      none: no SSO.
-      google: provide GoogleClientId and GoogleClientSecret (issuer and scopes
-      are predefined).
-      entra: provide EntraIssuer (preferred) or EntraTenantId (legacy) and
-      EntraClientId.
-      Combine freely with LdapServer and EnableLocalUsers.
-
+  # >= 4.3.0) with fixed provider ids: 'google', 'entra', 'corp', 'local'.
   EnableLocalUsers:
     Type: String
     Default: 'false'
@@ -331,23 +313,19 @@ Parameters:
       auto-generated single 'platforma' account whose password is stored in SSM
       (see the UsersPasswordSSMPath output).
 
-  # DEPRECATED. Superseded by SsoProvider / LdapServer / EnableLocalUsers,
-  # which can be combined; this one selects exactly one method and cannot.
-  # It is still honoured for stacks created before the slot parameters existed:
-  # a non-empty value takes over the whole auth configuration and renders it
-  # exactly as it did before, ignoring the slot parameters (the Rules below
-  # reject setting both). Clear it to move to the slot parameters — note that
-  # doing so re-derives the JWT signing key, so every user signs in again once.
+  # DEPRECATED. Superseded by the IdP fields / LdapServer / EnableLocalUsers.
+  # Kept so stacks created before the slot parameters existed retain their
+  # stored value: a non-empty AuthMethod is appended to the slot sources
+  # (the same source is not added twice). New stacks leave it empty.
   AuthMethod:
     Type: String
     Default: ''
     AllowedValues: ['', htpasswd, ldap, google, entra]
     Description: >
-      DEPRECATED — leave empty and use SsoProvider / LdapServer /
-      EnableLocalUsers instead, which support combinations such as SSO plus a
-      local break-glass account. Kept so existing stacks keep their current
-      behaviour: when non-empty it is the entire auth configuration and the
-      slot parameters must be left at their defaults.
+      DEPRECATED — existing stacks only. CloudFormation keeps the previous
+      value; do not change it. It is added to whatever IdP fields /
+      LdapServer / EnableLocalUsers you set, so an htpasswd stack can gain
+      SSO without clearing this field. New stacks leave it empty.
 
   ShowUserList:
     Type: String
@@ -360,47 +338,22 @@ Parameters:
       enumerate users of another: AuthAPI.ListUsers returns an empty list and
       the userListing capability is not advertised.
 
-  # Admin patterns are per login source, because the backend evaluates a login
-  # only against the rules of the provider that authenticated it. All three
-  # take the same syntax: semicolon-separated full-match regular expressions
-  # over the authenticated login, e.g. 'alice@corp\.com;.*@admins\.corp\.com'.
-  # Metacharacters in a literal login must be escaped (e.g. 'user\.name').
+  # The admin grant is one list over every configured login source. The backend
+  # evaluates a login only against the rules of the provider that authenticated
+  # it, so this list is merged into all of them. Syntax: semicolon-separated
+  # full-match regular expressions over the authenticated login, e.g.
+  # 'alice@corp\.com;.*@admins\.corp\.com'. Metacharacters in a literal login
+  # must be escaped (e.g. 'user\.name'). The login is the email for Google, the
+  # 'preferred_username' claim for Entra, the username the directory
+  # authenticated for LDAP (the value substituted for %u), and the htpasswd
+  # username for local users.
   # Admin role has the same access as the controller role.
-  SsoAdminUsers:
-    Type: String
-    Default: ''
-    Description: >
-      Grant admin to SSO logins matching these full-match regular expressions.
-      Semicolon-separated. The login is the email for SsoProvider=google, and
-      the 'preferred_username' claim for SsoProvider=entra.
-      Leave empty for none.
-
-  LdapAdminUsers:
-    Type: String
-    Default: ''
-    Description: >
-      Grant admin to LDAP logins matching these full-match regular expressions.
-      Semicolon-separated. The login is the username the directory
-      authenticated (the value substituted for %u). Leave empty for none.
-
-  LocalAdminUsers:
-    Type: String
-    Default: ''
-    Description: >
-      Grant admin to local htpasswd logins matching these full-match regular
-      expressions. Semicolon-separated. The login is the htpasswd username.
-      Leave empty for none.
-
-  # DEPRECATED. Applies to every configured login source, which is what the
-  # single global --admin-user flag used to mean. Prefer the per-source
-  # parameters above; anything set here is merged into all of them.
   AdminUsers:
     Type: String
     Default: ''
     Description: >
-      DEPRECATED — use SsoAdminUsers / LdapAdminUsers / LocalAdminUsers.
       Grant the admin role to logins matching these full-match regular
-      expressions, on EVERY configured login source. Semicolon-separated.
+      expressions, on every configured login source. Semicolon-separated.
       Leave empty for none.
 
   HtpasswdContent:
@@ -478,16 +431,14 @@ Parameters:
     Default: ''
     Description: >
       Google OAuth client ID (e.g. 1234567890-abc.apps.googleusercontent.com).
-      Required when SsoProvider=google.
   GoogleClientSecret:
     Type: String
     Default: ''
     NoEcho: true
     Description: >
-      Google OAuth client secret. Required when SsoProvider=google — Google's token
-      endpoint requires a client secret even for the PKCE flow. The backend forwards
-      it to the desktop, which performs the token exchange. Stored as the Kubernetes
-      Secret 'platforma-sso-client-secret'.
+      Google OAuth client secret. Google's token endpoint requires a client secret
+      even for the PKCE flow. The backend forwards it to the desktop, which performs
+      the token exchange. Stored as the Kubernetes Secret 'platforma-sso-client-secret'.
 
   # Microsoft Entra ID SSO — supply the OIDC issuer URL directly (preferred), or a
   # tenant GUID (legacy; issuer is derived as login.microsoftonline.com/{tenant}/v2.0).
@@ -498,7 +449,7 @@ Parameters:
     ConstraintDescription: 'Must be an https issuer URL, a tenant GUID, or empty'
     Description: >
       Entra OIDC issuer URL (e.g. https://login.microsoftonline.com/{tenant-id}/v2.0).
-      Preferred when SsoProvider=entra. A bare tenant GUID is also accepted here.
+      A bare tenant GUID is also accepted here.
   EntraTenantId:
     Type: String
     Default: ''
@@ -510,7 +461,7 @@ Parameters:
   EntraClientId:
     Type: String
     Default: ''
-    Description: Entra application (client) ID. Required when SsoProvider=entra.
+    Description: Entra application (client) ID.
 
   # --- Data libraries ---
   EnableDemoLibrary:
@@ -968,12 +919,15 @@ Rules:
         AssertDescription: LicenseKey is required when DeployPlatforma is true
   # --- Per-source requirements (slot parameters) ---------------------------
   # Each login source validates only its own fields, so any combination of
-  # sources is accepted. The deprecated AuthMethod is handled separately below.
+  # sources is accepted. A leftover AuthMethod is another source, not a
+  # replacement, so it uses the same per-source required-field checks.
+  # An IdP is on as soon as one of its own fields carries a value, so the
+  # required-field check fires off that same signal rather than off a selector.
   GoogleConfigRequired:
     RuleCondition: !And
       - !Equals [!Ref DeployPlatforma, 'true']
       - !Or
-        - !Equals [!Ref SsoProvider, 'google']
+        - !Not [!Equals [!Ref GoogleClientId, '']]
         - !Equals [!Ref AuthMethod, 'google']
     Assertions:
       - Assert: !Not [!Equals [!Ref GoogleClientId, '']]
@@ -984,7 +938,9 @@ Rules:
     RuleCondition: !And
       - !Equals [!Ref DeployPlatforma, 'true']
       - !Or
-        - !Equals [!Ref SsoProvider, 'entra']
+        - !Not [!Equals [!Ref EntraClientId, '']]
+        - !Not [!Equals [!Ref EntraTenantId, '']]
+        - !Not [!Equals [!Ref EntraIssuer, '']]
         - !Equals [!Ref AuthMethod, 'entra']
     Assertions:
       - Assert: !Or
@@ -1000,43 +956,6 @@ Rules:
     Assertions:
       - Assert: !Not [!Equals [!Ref LdapSearchPassword, '']]
         AssertDescription: LdapSearchPassword is required when LdapSearchUser is set
-  # SSO fields belong to the SSO source; a value left behind after switching
-  # SsoProvider back to none would otherwise look configured but do nothing.
-  SsoFieldsNeedSsoProvider:
-    RuleCondition: !And
-      - !Equals [!Ref AuthMethod, '']
-      - !Equals [!Ref SsoProvider, 'none']
-    Assertions:
-      - Assert: !And
-          - !Equals [!Ref GoogleClientId, '']
-          - !Equals [!Ref GoogleClientSecret, '']
-          - !Equals [!Ref EntraIssuer, '']
-          - !Equals [!Ref EntraTenantId, '']
-          - !Equals [!Ref EntraClientId, '']
-          - !Equals [!Ref SsoAdminUsers, '']
-        AssertDescription: >-
-          SsoProvider is none, so leave every Google/Entra field and
-          SsoAdminUsers empty (set SsoProvider to google or entra to use them)
-  # Google and Entra are one slot, so only one IdP's fields may be filled in.
-  SsoProviderGoogleExclusive:
-    RuleCondition: !And
-      - !Equals [!Ref AuthMethod, '']
-      - !Equals [!Ref SsoProvider, 'google']
-    Assertions:
-      - Assert: !And
-          - !Equals [!Ref EntraIssuer, '']
-          - !Equals [!Ref EntraTenantId, '']
-          - !Equals [!Ref EntraClientId, '']
-        AssertDescription: When SsoProvider is google, leave the Entra fields empty
-  SsoProviderEntraExclusive:
-    RuleCondition: !And
-      - !Equals [!Ref AuthMethod, '']
-      - !Equals [!Ref SsoProvider, 'entra']
-    Assertions:
-      - Assert: !And
-          - !Equals [!Ref GoogleClientId, '']
-          - !Equals [!Ref GoogleClientSecret, '']
-        AssertDescription: When SsoProvider is entra, leave the Google fields empty
   # Direct bind (a DN template) and search+bind (a service account that looks
   # the user up) are different modes; the backend refuses to start with both.
   LdapBindModeExclusive:
@@ -1048,74 +967,13 @@ Rules:
         AssertDescription: >-
           LdapBindDN (direct bind) cannot be combined with LdapSearchRules /
           LdapSearchUser (search + bind) — pick one mode
-  # Per-source admin patterns need their source configured, or they are inert.
-  LdapAdminUsersNeedLdap:
-    RuleCondition: !Equals [!Ref LdapServer, '']
-    Assertions:
-      - Assert: !Equals [!Ref LdapAdminUsers, '']
-        AssertDescription: LdapAdminUsers has no effect without LdapServer
-  # --- Deprecated AuthMethod: exclusive with the slot parameters -----------
-  # A non-empty AuthMethod is the entire auth configuration, so the slot
-  # parameters must stay at their defaults. Mixing the two would silently drop
-  # one of them rather than deploying what the operator asked for.
-  AuthMethodExclusiveWithSlots:
-    RuleCondition: !Not [!Equals [!Ref AuthMethod, '']]
-    Assertions:
-      - Assert: !And
-          - !Equals [!Ref SsoProvider, 'none']
-          - !Equals [!Ref EnableLocalUsers, 'false']
-          - !Equals [!Ref SsoAdminUsers, '']
-          - !Equals [!Ref LdapAdminUsers, '']
-          - !Equals [!Ref LocalAdminUsers, '']
-        AssertDescription: >-
-          AuthMethod is deprecated and cannot be combined with SsoProvider /
-          EnableLocalUsers / the per-source admin parameters. Clear AuthMethod
-          and configure the login sources instead, or leave the new parameters
-          at their defaults.
-  # Within the deprecated selector the old one-method-only rules still hold.
-  AuthMethodHtpasswdExclusive:
-    RuleCondition: !Equals [!Ref AuthMethod, 'htpasswd']
-    Assertions:
-      - Assert: !And
-          - !Equals [!Ref LdapServer, '']
-          - !Equals [!Ref GoogleClientId, '']
-          - !Equals [!Ref GoogleClientSecret, '']
-          - !Equals [!Ref EntraIssuer, '']
-          - !Equals [!Ref EntraTenantId, '']
-          - !Equals [!Ref EntraClientId, '']
-        AssertDescription: When AuthMethod is htpasswd, leave all LDAP/SSO fields empty
-  AuthMethodLdapExclusive:
+  # Leftover AuthMethod=ldap still enables the LDAP source, so the URL is
+  # required the same way a Google login requires GoogleClientId.
+  AuthMethodLdapNeedsServer:
     RuleCondition: !Equals [!Ref AuthMethod, 'ldap']
     Assertions:
       - Assert: !Not [!Equals [!Ref LdapServer, '']]
         AssertDescription: LdapServer is required when AuthMethod is ldap
-      - Assert: !And
-          - !Equals [!Ref HtpasswdContent, '']
-          - !Equals [!Ref GoogleClientId, '']
-          - !Equals [!Ref GoogleClientSecret, '']
-          - !Equals [!Ref EntraIssuer, '']
-          - !Equals [!Ref EntraTenantId, '']
-          - !Equals [!Ref EntraClientId, '']
-        AssertDescription: When AuthMethod is ldap, leave all htpasswd/SSO fields empty
-  AuthMethodGoogleExclusive:
-    RuleCondition: !Equals [!Ref AuthMethod, 'google']
-    Assertions:
-      - Assert: !And
-          - !Equals [!Ref HtpasswdContent, '']
-          - !Equals [!Ref LdapServer, '']
-          - !Equals [!Ref EntraIssuer, '']
-          - !Equals [!Ref EntraTenantId, '']
-          - !Equals [!Ref EntraClientId, '']
-        AssertDescription: When AuthMethod is google, set only GoogleClientId
-  AuthMethodEntraExclusive:
-    RuleCondition: !Equals [!Ref AuthMethod, 'entra']
-    Assertions:
-      - Assert: !And
-          - !Equals [!Ref HtpasswdContent, '']
-          - !Equals [!Ref LdapServer, '']
-          - !Equals [!Ref GoogleClientId, '']
-          - !Equals [!Ref GoogleClientSecret, '']
-        AssertDescription: When AuthMethod is entra, set only EntraIssuer/EntraTenantId and EntraClientId
   DataLibrary1KeyPair:
     Assertions:
       - Assert: !Or
@@ -3607,20 +3465,12 @@ Resources:
             Value: !If [GpuEnabled, !GetAtt GpuSubnetResolver.GpuMaxGpuGi, '0']
           - Name: AUTH_METHOD
             Value: !Ref AuthMethod
-          - Name: SSO_PROVIDER
-            Value: !Ref SsoProvider
           - Name: ENABLE_LOCAL_USERS
             Value: !Ref EnableLocalUsers
           - Name: SHOW_USER_LIST
             Value: !Ref ShowUserList
           - Name: ADMIN_USERS
             Value: !Ref AdminUsers
-          - Name: SSO_ADMIN_USERS
-            Value: !Ref SsoAdminUsers
-          - Name: LDAP_ADMIN_USERS
-            Value: !Ref LdapAdminUsers
-          - Name: LOCAL_ADMIN_USERS
-            Value: !Ref LocalAdminUsers
           - Name: HTPASSWD_CONTENT
             Value: !Ref HtpasswdContent
           - Name: LDAP_SERVER
@@ -3825,14 +3675,10 @@ Resources:
                   else
                     curl -fsSL "${DEPLOYER_ASSET_BASE%/}/compose-auth.py" -o /tmp/compose-auth.py
                   fi
+                  # Reads NAMESPACE itself: it pins the legacy admin grants
+                  # and creates one Secret per SSO source that sends one.
                   python3 /tmp/compose-auth.py
                   . /tmp/auth-env.sh
-                  if [ -n "$SSO_CLIENT_SECRET" ]; then
-                    kubectl create secret generic platforma-sso-client-secret \
-                      -n $NAMESPACE \
-                      --from-literal=client-secret="$SSO_CLIENT_SECRET" \
-                      --dry-run=client -o yaml | kubectl apply -f -
-                  fi
 
                   if [ -n "$LOCAL_ID" ]; then
                     HTPASSWD_TRIMMED=$(echo "$HTPASSWD_CONTENT" | tr -d '[:space:]')
@@ -4378,11 +4224,17 @@ Resources:
       LicenseKey: !Ref LicenseKey
       AuthMethod: !Ref AuthMethod
       HtpasswdContent: !Ref HtpasswdContent
-      SsoProvider: !Ref SsoProvider
       EnableLocalUsers: !Ref EnableLocalUsers
-      SsoAdminUsers: !Ref SsoAdminUsers
-      LdapAdminUsers: !Ref LdapAdminUsers
-      LocalAdminUsers: !Ref LocalAdminUsers
+      ShowUserList: !Ref ShowUserList
+      AdminUsers: !Ref AdminUsers
+      # An IdP is enabled by its own fields, so every one of them has to be
+      # watched: a client id that changes without re-running the deployer
+      # leaves the cluster authenticating against the previous OAuth client.
+      GoogleClientId: !Ref GoogleClientId
+      GoogleClientSecret: !Ref GoogleClientSecret
+      EntraIssuer: !Ref EntraIssuer
+      EntraTenantId: !Ref EntraTenantId
+      EntraClientId: !Ref EntraClientId
       LdapServer: !Ref LdapServer
       LdapStartTLS: !Ref LdapStartTLS
       LdapBindDN: !Ref LdapBindDN

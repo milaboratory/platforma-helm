@@ -117,11 +117,29 @@ resolve_inputs() {
 cleanup_pvcs() {
   bold "Cleaning up chart PVCs before IM destroy"
 
-  local zone
-  zone=$(gcloud container clusters list \
+  # Don't swallow stderr, and don't let 'set -e' kill the script on a failed
+  # lookup: an expired credential or a missing IAM binding here used to exit 1
+  # right after the section header with no message at all, which reads as "the
+  # teardown is broken" rather than "log in again". Distinguish the three cases:
+  # lookup failed, lookup succeeded and found nothing, lookup found the cluster.
+  local zone zone_err zone_rc
+  zone_err="$(mktemp)"
+  zone="$(gcloud container clusters list \
     --project="${PROJECT_ID}" \
     --filter="name=${CLUSTER_NAME}" \
-    --format="value(location)" 2>/dev/null | head -1)
+    --format="value(location)" 2>"${zone_err}" | head -1)" && zone_rc=0 || zone_rc=$?
+
+  if (( zone_rc != 0 )); then
+    red "Failed to list clusters in ${PROJECT_ID}:"
+    sed 's/^/  /' "${zone_err}" >&2
+    rm -f "${zone_err}"
+    red "  → Cannot tell whether ${CLUSTER_NAME} still exists, so its PVCs may still"
+    red "    hold PVs and stall the IM destroy for ~30 min. Refusing to continue blind."
+    red "  → Most common cause is an expired credential: gcloud auth login"
+    red "  → Then re-run: bash $0"
+    exit 1
+  fi
+  rm -f "${zone_err}"
 
   if [[ -z "${zone}" ]]; then
     info "Cluster ${CLUSTER_NAME} not found in ${PROJECT_ID} — assuming already torn down or partially destroyed. Skipping PVC cleanup."

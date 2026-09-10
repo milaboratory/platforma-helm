@@ -74,11 +74,71 @@ resource "terraform_data" "appwrapper_manifest_integrity" {
       condition     = self.input == var.appwrapper_install_yaml_sha256
       error_message = "AppWrapper install.yaml SHA-256 mismatch — got ${self.input}, expected ${var.appwrapper_install_yaml_sha256}. Either upstream re-published the release at ${var.appwrapper_version} (verify and update var.appwrapper_install_yaml_sha256) or the download was tampered with."
     }
+
+    # A replace() that matches nothing fails silently, which would leave the
+    # buggy upstream controller running while the configuration claims
+    # otherwise. Fail loudly instead. The upstream reference appears exactly
+    # once, on the manager container.
+    postcondition {
+      condition     = var.appwrapper_image == "" || length(split(local.appwrapper_upstream_image, data.http.appwrapper_manifest.response_body)) == 2
+      error_message = "var.appwrapper_image is set, but '${local.appwrapper_upstream_image}' was not found exactly once in the upstream install.yaml, so the image override would not apply as intended. Upstream may have changed how the image is referenced at ${var.appwrapper_version}."
+    }
+
+    # Same reasoning for the controller resources block.
+    postcondition {
+      condition     = length(split(local.appwrapper_upstream_resources, data.http.appwrapper_manifest.response_body)) == 2
+      error_message = "The AppWrapper controller resources block was not found exactly once in the upstream install.yaml, so the memory override would not apply. Upstream likely changed the manager container's requests or limits at ${var.appwrapper_version} — compare against local.appwrapper_upstream_resources and update it."
+    }
   }
 }
 
+# Substitute the controller image for our patched build (see var.appwrapper_image)
+# and raise the controller's memory (see var.appwrapper_controller_memory_limit).
+# The SHA-256 assertion above runs against the ORIGINAL response body, so upstream
+# integrity is verified before anything is rewritten — we only substitute once the
+# manifest is known-good. Everything else in the install (CRDs, RBAC, webhooks,
+# namespace) is applied exactly as upstream ships it.
+locals {
+  appwrapper_upstream_image = "quay.io/ibm/appwrapper:${var.appwrapper_version}"
+
+  # The manager container's resources exactly as upstream v1.2.0 ships them.
+  # Written out line by line rather than as a heredoc because the leading
+  # whitespace is load-bearing — it has to match the manifest byte for byte.
+  appwrapper_upstream_resources = join("\n", [
+    "        resources:",
+    "          limits:",
+    "            cpu: \"2\"",
+    "            memory: 128Mi",
+    "          requests:",
+    "            cpu: 100m",
+    "            memory: 64Mi",
+  ])
+
+  appwrapper_patched_resources = join("\n", [
+    "        resources:",
+    "          limits:",
+    "            cpu: \"2\"",
+    "            memory: ${var.appwrapper_controller_memory_limit}",
+    "          requests:",
+    "            cpu: 100m",
+    "            memory: ${var.appwrapper_controller_memory_request}",
+  ])
+
+  appwrapper_manifest_with_image = (
+    var.appwrapper_image == ""
+    ? data.http.appwrapper_manifest.response_body
+    : replace(data.http.appwrapper_manifest.response_body, local.appwrapper_upstream_image, var.appwrapper_image)
+  )
+
+  appwrapper_manifest_body = replace(
+    local.appwrapper_manifest_with_image,
+    local.appwrapper_upstream_resources,
+    local.appwrapper_patched_resources,
+  )
+}
+
 data "kubectl_file_documents" "appwrapper" {
-  content = data.http.appwrapper_manifest.response_body
+  content = local.appwrapper_manifest_body
 }
 
 # The appwrapper namespace must exist before the 17 other manifests inside it

@@ -136,6 +136,60 @@ variable "appwrapper_install_yaml_sha256" {
   }
 }
 
+variable "appwrapper_image" {
+  type        = string
+  description = <<-EOT
+    Container image for the AppWrapper controller, substituted into the upstream
+    install.yaml. Defaults to our patched build of v1.2.0.
+
+    Upstream v1.2.0 fails a workload permanently when the controller reads back a
+    Job it has just created through an informer cache that has not caught up:
+
+      MissingComponent: Only found 0 deployed components, but was expecting 1
+
+    The audit log shows jobs.create returning success ~100ms earlier, and in one
+    case a second create returning ALREADY EXISTS 245ms later, so the controller
+    cannot see its own write. Unlike the neighbouring FoundFailedPods branch,
+    which waits out a FailureGracePeriod, this path takes no grace period and no
+    retry, so a sub-second cache lag destroys a user job. It reaches users as a
+    container exiting -1. Observed on two independent customer clusters, so it is
+    not environment-specific, and it is not fixed in v1.2.2 (that release is
+    dependency bumps and a CI matrix update; the code path is unchanged).
+
+    Pinned by digest as well as tag: the SHA-256 check above covers the upstream
+    YAML, not our registry, so a republished tag would otherwise swap the
+    controller out from under a restarted pod with no configuration change. The
+    digest is the multi-arch image index, so platform selection still works.
+
+    Set to "" to use the upstream image from install.yaml unmodified. Once
+    upstream ships a fix, drop this override and bump appwrapper_version instead.
+  EOT
+  default     = "public.ecr.aws/miresearch/pl-containers:appwrapper-v1.2.0-milab-6881@sha256:77fda74e30c6fd1bf8fb6c5c419ab9b92c82d9b8d32d9ca46fefb78338ede9a5"
+}
+
+variable "appwrapper_controller_memory_limit" {
+  type        = string
+  description = <<-EOT
+    Memory limit for the AppWrapper controller, substituted into the upstream
+    install.yaml. Upstream ships 128Mi, which leaves no headroom: the controller
+    caches every AppWrapper, Job and Pod it watches, so footprint grows with the
+    size of the queue rather than staying flat. Set to the upstream value to
+    apply the manifest unchanged.
+  EOT
+  default     = "1Gi"
+}
+
+variable "appwrapper_controller_memory_request" {
+  type        = string
+  description = <<-EOT
+    Memory request for the AppWrapper controller, substituted into the upstream
+    install.yaml. Upstream ships 64Mi. Raised so the scheduler reserves a
+    realistic amount and the controller is not placed on a node it will later
+    contend for memory on.
+  EOT
+  default     = "256Mi"
+}
+
 # -----------------------------------------------------------------------------
 # Kueue per-job + queue caps (overrides; defaults derive from presets.tf)
 # -----------------------------------------------------------------------------

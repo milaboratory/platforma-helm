@@ -716,7 +716,7 @@ Mappings:
     EKS:
       Version: "1.35"
     Platforma:
-      Version: "4.4.3"
+      Version: "4.4.4"
   # Git and the production S3 object share this unversioned /assets prefix, so
   # a deployer left on the default reads the same files this repo holds. The
   # publish-infra job writes a TTL'd copy under pr/<version>/ and points a

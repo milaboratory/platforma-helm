@@ -19,6 +19,16 @@ if [ -n "${PL_JOB_PATH:-}" ]; then
   export PATH="${PL_JOB_PATH}:${PATH}"
 fi
 
+# --- The command's temporary directory ---
+# One path on every infrastructure: backed by a scratch volume the job template mounts here where
+# the cluster has scratch storage, by the working directory's own filesystem where it has not.
+# TMPDIR and TMP point at it for every command that asked for one.
+#
+# The prune below must not walk into it. This script's own mktemp files land there when TMPDIR does,
+# so pruning it would delete the expected-items lists mid-run and make every real item look
+# unexpected. It is emptied instead, once the prune is done and before the command starts.
+PL_JOB_TMPDIR="${PL_JOB_WORKDIR:-}/.pl/tmp"
+
 # --- Prune unexpected items from workdir ---
 # Removes leftover output from OOM-killed retries so they don't consume memory.
 # The expected items are a newline-separated list of relative paths.
@@ -53,7 +63,7 @@ if [ -n "${PL_JOB_EXPECTED_ITEMS_FILE:-}" ] && [ -s "${PL_JOB_EXPECTED_ITEMS_FIL
 
   # Prune unexpected files. awk emits only the paths to remove, so the shell loop below runs
   # once per pruned file rather than once per workdir file.
-  find "$PL_JOB_WORKDIR" -type f \
+  find "$PL_JOB_WORKDIR" -path "${PL_JOB_TMPDIR}" -prune -o -type f -print \
     | awk -v prefix="${PL_JOB_WORKDIR}/" -v expected="$_expected_files" '
         BEGIN { while ((getline _line < expected) > 0) keep[_line] = 1 }
         {
@@ -67,36 +77,54 @@ if [ -n "${PL_JOB_EXPECTED_ITEMS_FILE:-}" ] && [ -s "${PL_JOB_EXPECTED_ITEMS_FIL
         rm -f "$_abs_path"
       done
 
-  # Prune unexpected directories (depth-first to handle nested dirs correctly)
-  find "$PL_JOB_WORKDIR" -depth -type d ! -path "$PL_JOB_WORKDIR" | while IFS= read -r _abs_dir; do
-    _rel_dir="${_abs_dir#"${PL_JOB_WORKDIR}/"}"
-    _rel_dir_slash="${_rel_dir}/"
+  # Prune unexpected directories, depth-first so nested ones go before their parents.
+  #
+  # One awk holds both expected lists in memory and decides every directory, the way the file pass
+  # above does. The previous shape spawned a grep AND an awk per directory, which is a process pair
+  # per workdir entry: on a workdir of any size that dominates the whole prune. awk emits only the
+  # directories to remove, so the shell loop runs once per removal rather than once per directory.
+  find "$PL_JOB_WORKDIR" -path "${PL_JOB_TMPDIR}" -prune -o -depth -type d ! -path "$PL_JOB_WORKDIR" -print \
+    | awk -v prefix="${PL_JOB_WORKDIR}/" -v files="$_expected_files" -v dirs="$_expected_dirs" '
+        BEGIN {
+          while ((getline _line < files) > 0) { expected_files[_line] = 1; all[_n++] = _line }
+          while ((getline _line < dirs) > 0)  { expected_dirs[_line] = 1;  all[_n++] = _line }
+        }
+        {
+          _rel = (index($0, prefix) == 1) ? substr($0, length(prefix) + 1) : $0
+          if ((_rel "/") in expected_dirs) next
 
-    # Check if this directory is expected
-    if grep -qxF "$_rel_dir_slash" "$_expected_dirs"; then
-      continue
-    fi
+          # Keep a directory that an expected item lives under. index() is a literal prefix test,
+          # so a path holding regex metacharacters compares the way the shell case used to.
+          _pre = _rel "/"
+          for (_i = 0; _i < _n; _i++) {
+            if (index(all[_i], _pre) == 1) next
+          }
 
-    # Check if this directory is an ancestor of an expected item. index() is a literal prefix
-    # test, so paths holding regex metacharacters compare the same way the shell case did.
-    if awk -v prefix="${_rel_dir}/" '
-         index($0, prefix) == 1 { found = 1; exit }
-         END { if (found) exit 0; exit 1 }
-       ' "$_expected_files" "$_expected_dirs"; then
-      continue
-    fi
-
-    # Not expected and not an ancestor — remove if empty, or force remove
-    if rmdir "$_abs_dir" 2>/dev/null; then
-      echo "[job-script] Pruning empty directory: ${_rel_dir}" >&2
-    else
-      echo "[job-script] Pruning unexpected directory: ${_rel_dir}" >&2
-      rm -rf "$_abs_dir"
-    fi
-  done
+          print
+        }
+      ' \
+    | while IFS= read -r _abs_dir; do
+        _rel_dir="${_abs_dir#"${PL_JOB_WORKDIR}/"}"
+        if rmdir "$_abs_dir" 2>/dev/null; then
+          echo "[job-script] Pruning empty directory: ${_rel_dir}" >&2
+        else
+          echo "[job-script] Pruning unexpected directory: ${_rel_dir}" >&2
+          rm -rf "$_abs_dir"
+        fi
+      done
 
 elif [ -n "${PL_JOB_EXPECTED_ITEMS_FILE:-}" ] && ! command -v awk >/dev/null 2>&1; then
   echo "[job-script] awk not found in image: skipping workdir prune" >&2
+fi
+
+# Empty the temporary directory, whether or not the prune ran: the command must start on a clean
+# one. Doing it here rather than after the command is what makes it self-healing - an attempt the
+# OOM reaper kills never reaches its own cleanup, and the next attempt clears what it left.
+#
+# find streams and -delete removes as it goes, so a directory of a million temporary files costs no
+# shell memory and no glob expansion. The expected-items lists go with it; they have done their job.
+if [ -n "${PL_JOB_WORKDIR:-}" ] && [ -d "${PL_JOB_TMPDIR}" ]; then
+  find "${PL_JOB_TMPDIR}" -mindepth 1 -delete 2>/dev/null || true
 fi
 
 # Save 'real stdout' and 'real stderr' of current script in descriptors 3 and 4

@@ -614,23 +614,22 @@ ever, and scratch space is an optimisation, never a precondition.
 Rendered at the caller's indentation — use it with `nindent`.
 */}}
 {{- define "platforma.job.scratchVolumeSource" -}}
-{{- $class := (include "platforma.scratchStorage" . | fromYaml).network.storageClass.name -}}
-{{- if $class -}}
-<<- if and .Resources .Resources.HasScratch >>
 ephemeral:
   volumeClaimTemplate:
     spec:
       accessModes: ["ReadWriteOnce"]
-      storageClassName: {{ $class }}
+      storageClassName: {{ include "platforma.job.scratchStorageClass" . }}
       resources:
         requests:
           storage: "<< .Resources.ScratchFreeSpace >>"
-<<- else >>
-emptyDir: {}
-<<- end >>
-{{- else -}}
-emptyDir: {}
 {{- end }}
+
+{{/*
+Whether this deployment can back the command's temporary directory with a scratch volume.
+Empty when it cannot, and the working directory's own filesystem serves that directory instead.
+*/}}
+{{- define "platforma.job.scratchStorageClass" -}}
+{{- (include "platforma.scratchStorage" . | fromYaml).network.storageClass.name -}}
 {{- end }}
 
 {{/*

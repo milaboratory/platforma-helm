@@ -143,16 +143,22 @@ data:
                       workingDir: << .WorkdirAbsPath | quote >>
                       env:
                         <<- /* Defaults come first: a block that sets any of these in its own
-                               environment must win, and K8s keeps the last entry for a name. */>>
-                        - name: TMP # MiXCR requires the existed tmp directory
-                          value: "/tmp"
-                        <<- /* TMPDIR only for a command that asked for scratch space. Pointed at
-                               the working directory it makes every mktemp write into the directory
-                               job_script.sh prunes, starting with the script's own expected-items
-                               lists; with no scratch request the command gets no TMPDIR at all. */>>
+                               environment must win, and K8s keeps the last entry for a name.
+                               TMPDIR and TMP are the exception - the backend refuses a command
+                               that sets either, because temporary storage belongs to the
+                               infrastructure the same way the working directory does. */>>
+                        <<- /* A command that asked for a temporary directory gets both TMP and
+                               TMPDIR pointed at it. Old blocks do not request scratch storage
+                               and get old behaviour: TMPDIR not set, TMP points to /tmp mounted
+                               from host FS. */>>
                         <<- if .TmpdirPath >>
+                        - name: TMP
+                          value: << .TmpdirPath | quote >>
                         - name: TMPDIR
                           value: << .TmpdirPath | quote >>
+                        <<- else >>
+                        - name: TMP
+                          value: "/tmp"
                         <<- end >>
                         - name: HOME
                           value: << .HomePath | quote >>
@@ -253,8 +259,22 @@ data:
                           mountPath: {{ include "platforma.path.scripts" . }}/job_script.sh
                           subPath: job_script.sh
                           readOnly: true
+                        <<- /* /tmp stays a plain local filesystem on every shape, even when not
+                               pointed by TMP or TMPDIR. Standard place for things that need features
+                               that might be not supported by all filesystems, like named pipes (FIFO). */>>
                         - name: temp-volume
                           mountPath: /tmp
+{{- if (include "platforma.job.scratchStorageClass" .) }}
+                        <<- /* The scratch device is mounted AT the command's temporary directory,
+                               so one path serves every deployment: backed by this volume where
+                               the cluster has scratch storage, by the working directory's own
+                               filesystem where it has none. A volume inside the workdir volume -
+                               kubelet creates the subPath target if a workdir predates it. */>>
+                        <<- if and .Resources .Resources.HasScratch >>
+                        - name: scratch-volume
+                          mountPath: << .ScratchPath | quote >>
+                        <<- end >>
+{{- end }}
                         - name: home-volume
                           mountPath: << .HomePath >>
 
@@ -267,7 +287,13 @@ data:
                         name: {{ include "platforma.fullname" . }}-job-script
                         defaultMode: 0755
                     - name: temp-volume
+                      emptyDir: {}
+{{- if (include "platforma.job.scratchStorageClass" .) }}
+                    <<- if and .Resources .Resources.HasScratch >>
+                    - name: scratch-volume
                       {{- include "platforma.job.scratchVolumeSource" . | nindent 22 }}
+                    <<- end >>
+{{- end }}
                     # HOME lives on its own volume: dotfiles and tool caches must not compete
                     # for the space a command's temporary data needs, and temporary data must
                     # not end up inside a home directory.

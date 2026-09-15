@@ -115,11 +115,20 @@ repeatable:
 --auth.role.attr-regex=<id>=<role>=<attr>=<regex>   # a user attribute value fully matches a regexp
 --auth.role.group=<id>=<role>=<group>               # the login belongs to this exact group
 --auth.role.group-regex=<id>=<role>=<regex>         # any of the login's groups fully matches a regexp
---auth.admin-user=<id>=<login>                      # a specific login is admin
+--auth.admin-user=<id>=<regex>                      # the login fully matches a regexp
 ```
 
 Every regexp is a **full match** — `admin[0-9]+` matches the group `admin42` but
-not `platforma-admin42-eu`.
+not `platforma-admin42-eu`. The full-match rule also covers `--auth.admin-user`.
+A literal login must escape its metacharacters: write `user\.name`, not `user.name`.
+
+The role rules match the login after the server resolves it, which is not always the
+string the user typed. For an `sso` provider, the login is the opaque `sub` by
+default. An email-shaped pattern does not match that value. The mismatch goes
+unreported.
+
+The global `--admin-user=<regexp>` still works. It applies to **every** declared
+provider.
 
 `--auth.role.group-regex` needs the login's whole group set, which means the
 provider's token must carry a groups claim (`--auth.map.groups`, plus whatever

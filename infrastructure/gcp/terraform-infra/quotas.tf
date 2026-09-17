@@ -88,35 +88,35 @@ locals {
       quota_id      = "CPUS-ALL-REGIONS-per-project"
       dimensions    = {}
       preferred     = local.preset.cpus_global_quota
-      justification = "Total CPU (all regions). Required for Platforma batch capacity up to ${local.total_batch_cpu} vCPU (NAP-provisioned across n2d/n2 families) plus system/UI overhead for deployment size ${var.deployment_size}."
+      justification = "Total CPU (all regions). Required for Platforma batch capacity up to ${local.total_batch_cpu} vCPU (ComputeClass-provisioned across n2d/n2 families) plus system/UI overhead for deployment size ${var.deployment_size}."
     }
     n2d_cpus_region = {
       service       = "compute.googleapis.com"
       quota_id      = "N2D-CPUS-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.n2d_cpus_quota
-      justification = "N2D (AMD) CPU per region. Primary family for Platforma batch nodes — NAP provisions n2d-* shapes by default. Also used by static n2d-standard-8 system pool and n2d-standard-4 UI pool. Peak total: ${local.total_batch_cpu} vCPU batch + system/UI overhead, deployment size ${var.deployment_size}."
+      justification = "N2D (AMD) CPU per region. Primary family for Platforma batch nodes — the platforma-batch ComputeClass provisions n2d-* shapes first in every size tier. Also used by static n2d-standard-8 system pool and n2d-standard-4 UI pool. Peak total: ${local.total_batch_cpu} vCPU batch + system/UI overhead, deployment size ${var.deployment_size}."
     }
     n2_cpus_region = {
       service       = "compute.googleapis.com"
       quota_id      = "N2-CPUS-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.n2_cpus_quota
-      justification = "N2 (Intel) CPU per region. Used by Node Auto-Provisioning as a STOCKOUT fallback when the N2D (AMD) family is unavailable in this zone. Sized to match N2D so NAP can shift the full batch load to the Intel family if needed. Deployment size: ${var.deployment_size}."
+      justification = "N2 (Intel) CPU per region. Used by the platforma-batch ComputeClass as a STOCKOUT fallback when the N2D (AMD) family is unavailable in this zone. Sized to match N2D so the full batch load can shift to the Intel family if needed. Deployment size: ${var.deployment_size}."
     }
     pd_ssd_region = {
       service       = "compute.googleapis.com"
       quota_id      = "SSD-TOTAL-GB-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.pd_ssd_quota_gb
-      justification = "Persistent Disk SSD per region. Covers pd-balanced boot disks for system + UI + NAP-provisioned batch nodes (cluster-wide envelope ${local.total_batch_cpu} vCPU) plus database PVC."
+      justification = "Persistent Disk SSD per region. Covers pd-balanced boot disks for system + UI + ComputeClass-provisioned batch nodes (cluster-wide envelope ${local.total_batch_cpu} vCPU) plus database PVC."
     }
     instances_region = {
       service       = "compute.googleapis.com"
       quota_id      = "INSTANCES-per-project-region"
       dimensions    = { region = var.region }
       preferred     = local.preset.instances_quota
-      justification = "Compute instances per region. System (1-2) + UI (up to ${local.preset.ui_max_nodes}) + NAP-provisioned batch nodes (cluster-wide envelope ${local.total_batch_cpu} vCPU; node count depends on shape mix the autoscaler picks)."
+      justification = "Compute instances per region. System (1-2) + UI (up to ${local.preset.ui_max_nodes}) + ComputeClass-provisioned batch nodes (cluster-wide envelope ${local.total_batch_cpu} vCPU; node count depends on shape mix the autoscaler picks)."
     }
     filestore_zonal_region = {
       service       = "file.googleapis.com"

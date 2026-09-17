@@ -88,12 +88,16 @@ controls cluster-wide parallelism.
 
 Batch nodes are provisioned on demand by a custom **GKE ComputeClass**
 (`platforma-batch`) — there are no static batch pools. Cluster-wide Node
-Auto-Provisioning is **off**; the ComputeClass names highmem machine types
+Auto-Provisioning is **off**; the ComputeClass names the machine types
 explicitly and creates node pools as batch pods appear, scaling them back to
 zero when idle. (Bare NAP defaults to the E2 family and can't satisfy the high
 memory:CPU ratio batch jobs need — naming the machine types is the fix.) The
-list is an ordered fallback: `n2d-*` highmem first, `n2-*` as a stockout
-fallback when AMD capacity in the zone is exhausted. Cross-tenant isolation is
+list is an ordered fallback, sorted smallest-first across size tiers with two
+families per tier (`n2d-*` then `n2-*`), so a small job gets a small node
+and a large job falls through the tiers it doesn't fit. At each vCPU count the standard shape sits
+ahead of the highmem shape of the same vCPU count — real batch requests run
+~4.6-5.4 GiB/vCPU, so CPU is what binds and the cheaper standard shape is taken
+first whenever the pod fits it. Cross-tenant isolation is
 via the `dedicated=batch:NoSchedule` taint + `role=batch` label on the
 auto-created nodes; pods opt in with
 `nodeSelector: cloud.google.com/compute-class=platforma-batch`.
@@ -114,10 +118,34 @@ The ComputeClass tries these GCP machine families in priority order (extend by
 editing `batch_machine_priorities` in `terraform-{infra,platforma}/presets.tf`
 — keep both copies in sync — and adding matching quota requests):
 
-| Family    | Role     | Used when                              | AWS counterpart family |
+| Family    | Role       | Used when                                        | AWS counterpart family |
 |---|---|---|---|
-| `n2d-*`   | primary  | default — cheapest available           | r7i/m7i (AMD-friendly) |
-| `n2-*`    | fallback | n2d STOCKOUT in the cluster's zone     | m7i (Intel) |
+| `n2d-*`   | primary    | default — cheapest available                     | r7i/m7i (AMD-friendly) |
+| `n2-*`    | fallback   | n2d STOCKOUT in the cluster's zone               | m7i (Intel) |
+
+Size tiers run `*-highmem-8` → `*-standard-16` → `*-highmem-16` →
+`*-standard-32` → `*-highmem-32` → `*-standard-64` → `*-highmem-64`, then
+`*-highmem-80` and `*-highmem-96` as the xlarge last resort when the large tier
+is stocked out region-wide. `pd_ssd_quota_gb` and `instances_quota` are
+sized against a **realistic shape mix** — an average batch node of ≥32 vCPU
+(small: 320 ÷ 32 = 10 nodes × 200 GiB = 2000 GiB against a 4096 GiB quota,
+roughly 2× headroom) — not against the theoretical all-8-vCPU worst case,
+which would need 4× the quota and push every install into Google's manual
+review queue. The trade-off: an unusual wave of very small jobs can exhaust
+`SSD-TOTAL-GB` before the Kueue envelope fills, leaving pods Pending on a
+`QUOTA_EXCEEDED` scale-up. Raise the two quotas if that ever appears in the
+field.
+
+`whenUnsatisfiable: ScaleUpAnyway` keeps a pod from stalling permanently when no
+listed shape is available anywhere — but be aware what it actually does: per the
+[GKE docs](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/about-custom-compute-classes),
+a Standard cluster using node-pool auto-creation "might create a new node pool
+that uses the default E2 machine series to place the Pod". E2 caps at 128 GiB,
+so it can never host a max-size job, but it *can* quietly take a mid-sized one
+at reduced throughput. Watch for unexpected machine types after a stockout; the
+durable fix is adding shapes to the priority list.
+`activeMigration.optimizeRulePriority` is off so running multi-hour jobs are
+never evicted just to repack them.
 
 Other preset values:
 
@@ -281,13 +309,16 @@ Active-job cost depends on which machine type the ComputeClass provisions:
 
 | Machine type      | vCPU / RAM     | Approx. $/hour | Notes |
 |---|---|---|---|
-| `n2d-highmem-16`  | 16 / 128 GiB   | ~$1.05 | smallest batch shape |
+| `n2d-highmem-8`   | 8 / 64 GiB     | ~$0.53 | smallest batch shape |
+| `n2d-standard-16` | 16 / 64 GiB    | ~$0.70 | |
+| `n2d-highmem-16`  | 16 / 128 GiB   | ~$1.05 | |
+| `n2d-standard-32` | 32 / 128 GiB   | ~$1.40 | |
 | `n2d-highmem-32`  | 32 / 256 GiB   | ~$2.10 | |
-| `n2d-highmem-48`  | 48 / 384 GiB   | ~$3.15 | |
+| `n2d-standard-64` | 64 / 256 GiB   | ~$2.75 | |
 | `n2d-highmem-64`  | 64 / 512 GiB   | ~$4.20 | primary host for max 62/484 jobs |
 | `n2-highmem-64`   | 64 / 512 GiB   | ~$4.70 | Intel fallback on n2d stockout |
-| `n2d-standard-128`| 128 / 512 GiB  | ~$5.40 | last-resort fallback |
-| `n2-standard-128` | 128 / 512 GiB  | ~$6.20 | last-resort fallback |
+| `n2d-highmem-80`  | 80 / 640 GiB   | ~$5.25 | xlarge fallback |
+| `n2d-highmem-96`  | 96 / 768 GiB   | ~$6.30 | xlarge fallback, largest shape |
 
 (europe-west1 list prices; spot / commit / SUD discounts apply separately —
 always check the GCP price calculator for current numbers.) The priority list

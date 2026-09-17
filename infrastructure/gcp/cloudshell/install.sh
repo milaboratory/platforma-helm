@@ -942,12 +942,16 @@ EOF
 # quota during scale-up).
 #
 # Lookup table mirrors presets.tf — keep in sync on each preset change AND
-# whenever NAP allowed-families changes. Adding a new family (e.g. c3, c3d)
+# whenever the ComputeClass machine families change. Adding a new family (e.g. c3, c4d)
 # requires:
-#   1. Append to nap_allowed_families in presets.tf
-#   2. Add the matching N<FAMILY>-CPUS quota request in quotas.tf
+#   1. Append the machine types to batch_machine_priorities in BOTH
+#      terraform-infra/presets.tf and terraform-platforma/presets.tf, and add
+#      a <family>_cpus_quota key to each preset in terraform-infra/presets.tf
+#   2. Add the matching <FAMILY>-CPUS quota request in quotas.tf
 #   3. Add the matching PRESET_<FAMILY>_CPUS array here + the preset key in
 #      ALL_QUOTA_PRESET_KEYS + a case branch in required_for_preset_key()
+#   4. Add the key to the three QUOTA_PRESET_TO_* maps further below, or the
+#      >10% decrease pre-flight silently skips it
 # -----------------------------------------------------------------------------
 
 declare -A PRESET_CPUS_GLOBAL=(    [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
@@ -955,6 +959,11 @@ declare -A PRESET_N2D_CPUS=(       [small]=512  [medium]=1024 [large]=2048 [xlar
 # N2_CPUS mirrors N2D — either family alone can host the full batch load
 # if the other is stocked out. NAP picks whichever has stock at scale-up.
 declare -A PRESET_N2_CPUS=(        [small]=512  [medium]=1024 [large]=2048 [xlarge]=4096  )
+# PD SSD and INSTANCES follow batch node count, which is the Kueue envelope
+# divided by the shapes the autoscaler picks. Sized against a realistic mix
+# (average batch node >=32 vCPU), NOT the all-8-vCPU worst case -- see the
+# sizing note above batch_machine_priorities in presets.tf for the derivation
+# and the trade-off. Keep these in sync with presets.tf.
 declare -A PRESET_PD_SSD_GB=(      [small]=4096 [medium]=8192 [large]=16384 [xlarge]=32768 )
 declare -A PRESET_INSTANCES=(      [small]=32   [medium]=48   [large]=64   [xlarge]=128   )
 declare -A PRESET_FILESTORE_GB=(   [small]=1024 [medium]=2048 [large]=4096 [xlarge]=8192  )

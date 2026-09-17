@@ -1,6 +1,6 @@
 # Proves the Google-SSO client-secret value flow WITHOUT a cluster:
 #   var.google_client_secret -> kubernetes_secret.sso_client_secret
-#                             -> local.auth_helm_value.sso.clientSecret.secretName
+#                             -> the auth_providers entry's sso.clientSecret.secretName
 # Providers are mocked; the appwrapper http/kubectl data sources are overridden
 # so the mocked plan doesn't choke on unknown for_each keys.
 #
@@ -75,12 +75,12 @@ run "google_sso_wires_client_secret" {
   }
 
   assert {
-    condition     = local.auth_helm_value.sso.clientSecret.secretName == "platforma-sso-client-secret"
-    error_message = "google_client_secret did not map to auth_helm_value.sso.clientSecret.secretName"
+    condition     = one([for p in local.auth_providers : p if p.type == "sso"]).sso.clientSecret.secretName == "platforma-sso-client-secret"
+    error_message = "google_client_secret did not map to the SSO entry's sso.clientSecret.secretName"
   }
 
   assert {
-    condition     = local.auth_helm_value.sso.accessType == "offline"
+    condition     = one([for p in local.auth_providers : p if p.type == "sso"]).sso.accessType == "offline"
     error_message = "google preset must set accessType=offline so Google issues a refresh token"
   }
 

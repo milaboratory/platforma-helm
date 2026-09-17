@@ -168,7 +168,8 @@ deployment and updates in place via a new IM revision.
 
 When the installer finishes it prints two things:
 
-1. The command to retrieve your auto-generated admin password from Secret Manager.
+1. The command to retrieve the password of the admin login every deployment
+   carries, from Secret Manager.
 2. Your Platforma URL (e.g. `https://platforma.mycompany.bio`).
 
 The TLS certificate provisions a few minutes after the load balancer is up.
@@ -183,7 +184,9 @@ When the certificate state is `ACTIVE`:
 1. Open the Platforma Desktop App on your machine.
 2. Click **Add Connection** → **Remote Server**.
 3. Enter your Platforma URL.
-4. Log in with username `platforma` and the password from step 1 above.
+4. Pick the **Administrator** source and log in with username `platforma`
+   and the password from step 1 above. Any other login source you
+   configured during the install appears beside it.
 
 You should see your projects, run a workflow, and confirm the demo data
 library appears in the data sources list (if you enabled it).

@@ -494,6 +494,9 @@ spec:
                   key: {{ .Values.auth.ldap.searchPasswordSecretRef.key }}
             {{- end }}
             {{- end }}
+            {{- if eq (include "platforma.auth.providersEnabled" .) "true" }}
+            {{- include "platforma.auth.providerEnv" . | nindent 12 }}
+            {{- end }}
             {{- with .Values.app.env.variables }}
             {{- range $key, $value := . }}
             - name: {{ $key }}

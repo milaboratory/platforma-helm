@@ -426,8 +426,10 @@ DNS project.
 
 Batch nodes are provisioned on demand by a custom GKE **ComputeClass**
 (`platforma-batch`) — cluster-wide Node Auto-Provisioning is off and there are
-no per-shape pool definitions to override. The ComputeClass names highmem
-machine types explicitly (`batch_machine_priorities`) and creates node pools as
+no per-shape pool definitions to override. The ComputeClass names the
+machine types explicitly (`batch_machine_priorities` — size tiers smallest-first,
+standard and highmem ratios interleaved at each vCPU count, `n2d-*` then
+`n2-*` per tier) and creates node pools as
 batch pods appear, scaling to zero when idle. The `deployment_size` preset sets
 the **Kueue ClusterQueue** admission quota — the real cap on concurrent batch
 work; the ComputeClass itself has no ceiling.
@@ -444,8 +446,10 @@ workspace_capacity_gb  = 8192    # preset large = 4096
 # 484Gi = measured GKE allocatable on n2d-highmem-64 (486.94 GiB)
 # minus ~1 GiB GKE DaemonSet overhead minus 1 GiB safety margin.
 # Raising this requires a machine in batch_machine_priorities whose
-# allocatable can host the request — n2d-highmem-64 / n2-highmem-64 are
-# the largest highmem shapes in the default priority list.
+# allocatable can host the request. n2d/n2-highmem-96 (~730 GiB) are the
+# largest shapes in the default list, but they sit in the xlarge fallback
+# tier: anything above ~484 GiB will only ever land there, and above
+# ~607 GiB only on the two -96 shapes.
 kueue_max_job_cpu     = 62
 kueue_max_job_memory  = "484Gi"
 
@@ -458,8 +462,11 @@ kueue_batch_queue_memory = "8000Gi"
 
 To change which machine types the ComputeClass provisions (e.g. add a family
 once the team has verified it), edit `batch_machine_priorities` in **both**
-`terraform-infra/presets.tf` and `terraform-platforma/presets.tf` (kept
-byte-identical) and add the matching CPU quota request in `quotas.tf`.
+`terraform-infra/presets.tf` and `terraform-platforma/presets.tf` (the
+`batch_machine_priorities` block is kept byte-identical between them) and add
+the matching `<FAMILY>-CPUS` quota request in `terraform-infra/quotas.tf`, the
+`<family>_cpus_quota` preset key, and the `PRESET_<FAMILY>_CPUS` table in
+`cloudshell/install.sh` (the recipe is spelled out in a comment there).
 
 > **Deprecated:** `batch_pool_max_nodes_overrides` is now a no-op (there are no
 > per-shape pools). The variable is kept for tfvars backwards-compatibility but

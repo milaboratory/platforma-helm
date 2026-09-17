@@ -530,8 +530,8 @@ resource "helm_release" "platforma" {
             }
             batch = {
               # Batch pods select the custom ComputeClass (computeclass.tf),
-              # which provisions highmem nodes on demand (n2d-highmem-64,
-              # falling back to n2-highmem-64 on stockout). This nodeSelector
+              # which provisions n2d/n2 standard and highmem nodes on demand
+              # (16 vCPU up to 96, n2d first and n2 as the stockout fallback). This nodeSelector
               # both ATTRACTS batch pods to ComputeClass nodes and triggers
               # the class's node-pool auto-creation. The taint set on the
               # class nodes plus this toleration isolates batch work from

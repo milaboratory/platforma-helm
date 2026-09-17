@@ -53,8 +53,8 @@ resource "google_container_cluster" "primary" {
   # floating kube-system pods during bootstrap.
   #
   # Instead, batch capacity is provisioned by a custom ComputeClass
-  # (terraform-platforma/computeclass.tf) that names n2d-highmem / n2-highmem
-  # machine types explicitly and auto-creates pools standalone (GKE >= 1.33.3
+  # (terraform-platforma/computeclass.tf) that names n2d / n2 standard and
+  # highmem machine types explicitly and auto-creates pools standalone (GKE >= 1.33.3
   # supports nodePoolAutoCreation without cluster-wide NAP). Only pods that
   # select the compute class trigger pool creation — system/ui/kube-system
   # stay on their static pools.

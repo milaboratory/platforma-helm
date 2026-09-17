@@ -26,17 +26,12 @@ locals {
   _password_console_url = "https://console.cloud.google.com/security/secret-manager/secret/${google_secret_manager_secret.admin_password.secret_id}/versions?project=${var.project_id}"
   _password_cli_command = "gcloud secrets versions access latest --secret=${google_secret_manager_secret.admin_password.secret_id} --project=${var.project_id}"
 
-  # nonsensitive() wrap: htpasswd_content is sensitive, so any expression
-  # touching it inherits sensitivity. Whether it is empty is not sensitive,
-  # so we extract that boolean explicitly — without this, post_deploy_steps
-  # itself becomes sensitive and TF refuses to print it.
-  _htpasswd_provided = nonsensitive(length(var.htpasswd_content) > 0)
-  _auth_step = (
-    var.auth_method == "ldap" ?
-    "Log in with your LDAP credentials (server: ${var.ldap_server})." :
-    local._htpasswd_provided ?
-    "Log in with one of the user/password pairs from your htpasswd_content." :
-    "Retrieve the auto-generated admin password (username '${var.admin_username}'):\n       Open: ${local._password_console_url}\n       (or run: ${local._password_cli_command})"
+  _auth_step = trimspace(<<-EOT
+    Log in with one of the advertised sources: ${join(", ", [for entry in local.auth_providers : entry.name])}.
+           The 'admin' source always accepts the username '${var.admin_username}' with the auto-generated password:
+           Open: ${local._password_console_url}
+           (or run: ${local._password_cli_command})
+    EOT
   )
 
   _post_deploy_steps_with_ingress = <<-EOT

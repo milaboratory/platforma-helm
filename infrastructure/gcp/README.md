@@ -304,48 +304,62 @@ bioinformatics workloads — use Zonal SSD for production.
 
 ## Authentication
 
-Two methods supported (mirrors the AWS CloudFormation runbook):
+Every deployment carries an admin password login — username `platforma`,
+password generated and stored in Secret Manager. No variable creates or
+removes it. Beside it, configure any combination of four login sources in
+one install:
 
-- **htpasswd** — file-based local auth.
-  - **Auto-generated** (default — `htpasswd_content=""`): the installer
-    creates a random admin password and stores it in Secret Manager.
-    **TESTING ONLY** — the password ends up in Terraform state.
-  - **User-supplied file** (`HTPASSWD_FILE=path/to/htpasswd` env var, or
-    `htpasswd_content` = pre-bcrypted string): production-ready single-team
-    setup. Build the file in Cloud Shell with one bcrypt line per user —
-    `-c` **creates** (first user only; it overwrites), `-B` = bcrypt:
+- **SSO** (`sso_provider`) — OIDC single sign-on (PKCE auth-code flow). Most
+  IdPs use a public/native client with no secret; Google requires a client
+  secret even for PKCE. One slot, three presets:
+
+  | `sso_provider` | Required inputs / tfvars            | Predefined / derived |
+  |---|---|---|
+  | `google` | `google_client_id`, `google_client_secret` | issuer `https://accounts.google.com`, scopes, prompt |
+  | `entra`  | `entra_tenant_id`, `entra_client_id` | issuer `https://login.microsoftonline.com/{tenant}/v2.0` |
+  | `oidc`   | `oidc_issuer` (`https`), `oidc_client_id` | optional `oidc_scopes`, `oidc_resource`, `oidc_prompt`, `oidc_user_id_claim`, `oidc_groups_claim` |
+
+  The entra and oidc slots need an application registered as a public PKCE
+  client; only google takes a client secret. The installer rejects a slot
+  whose required inputs are missing (and a non-`https` OIDC issuer) before
+  deploying. Advanced backend flags not exposed here
+  (`subject-token-source`, `jwt-algorithm`, `redirect-port`) default to
+  backend values; override them via the chart's `auth.sso.*` block or
+  `app.extraArgs` advanced path.
+- **LDAP** (`ldap_server`) — corporate directory integration. A non-empty
+  `ldap_server` (`LDAP_SERVER` at the prompt) is what switches this source
+  on. Supports direct-bind (template) or search-bind (rules +
+  service-account creds).
+- **Local users** (`enable_local_users`) — advertises your own htpasswd
+  file as a login source. `enable_local_users` (`ENABLE_LOCAL_USERS` at the
+  prompt) requires `htpasswd_content` — it is no longer auto-generated.
+  Build the file in Cloud Shell with one bcrypt line per user — `-c`
+  **creates** (first user only; it overwrites), `-B` = bcrypt:
 
     ```bash
     htpasswd -cB ~/htpasswd alice    # first user — prompts for the password
     htpasswd -B  ~/htpasswd bob      # add more users — omit -c, or it wipes the file
     ```
 
-    Then point the installer at it: `export AUTH_METHOD=htpasswd
+    Then point the installer at it: `export ENABLE_LOCAL_USERS=true
     HTPASSWD_FILE=~/htpasswd`. To add a user later, append with
     `htpasswd -B ~/htpasswd <name>` and re-run `install.sh` — the
     `platforma-htpasswd-provided` secret updates on the next revision.
-- **LDAP** (`auth_method=ldap`) — corporate directory integration. Supports
-  direct-bind (template) or search-bind (rules + service-account creds).
-- **SSO** — OIDC single sign-on (PKCE auth-code flow). Most IdPs use a
-  public/native client with no secret; Google requires a client secret even for
-  PKCE. Three presets, selected by `auth_method`:
 
-  | `auth_method` | Required inputs / tfvars            | Predefined / derived |
-  |---|---|---|
-  | `google` | `google_client_id`, `google_client_secret` | issuer `https://accounts.google.com`, scopes, prompt |
-  | `entra`  | `entra_tenant_id`, `entra_client_id` | issuer `https://login.microsoftonline.com/{tenant}/v2.0` |
-  | `oidc`   | `oidc_issuer` (`https`), `oidc_client_id` | optional `oidc_scopes`, `oidc_resource`, `oidc_prompt`, `oidc_user_id_claim`, `oidc_groups_claim` |
+Grant the admin role per source, not globally: `sso_admin_users`,
+`ldap_admin_users`, `local_admin_users` each take a semicolon-separated
+full-match regexp, granting admin to logins from that source alone — a
+grant belongs to the source that authenticates the login.
 
-  The installer rejects a method whose required inputs are missing (and a
-  non-`https` OIDC issuer) before deploying. Advanced backend flags not exposed
-  here (`subject-token-source`, `jwt-algorithm`, `redirect-port`) default to
-  backend values; override them via the chart's `auth.sso.*` block or
-  `app.extraArgs` advanced path.
+`AUTH_METHOD` and `ADMIN_USERS` are refused by the installer. Replace
+`AUTH_METHOD` with `sso_provider`, `ldap_server` and `enable_local_users`;
+replace `ADMIN_USERS` with `sso_admin_users`, `ldap_admin_users` and
+`local_admin_users`.
 
-  > **Switching an existing instance's auth method (e.g. LDAP→SSO) is a manual
-  > operation** — see the [LDAP→SSO migration runbook](../ldap-to-sso-migration.md).
-  > It is not automated by this installer and carries identity-remap, lockout, and
-  > session-loss risks.
+> **Switching an existing instance's login source (e.g. LDAP→SSO) is a manual
+> operation** — see the [LDAP→SSO migration runbook](../ldap-to-sso-migration.md).
+> It is not automated by this installer and carries identity-remap, lockout, and
+> session-loss risks.
 
 ## Data libraries
 
@@ -390,7 +404,7 @@ PVC) survives across updates.
   re-deploy. The chart's `appVersion` flows to the running pod, which rolls
   with ~15-30 sec of gRPC blip. Desktop App reconnects automatically.
 - **Add / remove / edit data libraries**: bump the list, re-deploy.
-- **Switch auth** (htpasswd ↔ LDAP): change vars, re-deploy. Switching an
+- **Add or remove a login source**: change vars, re-deploy. Switching an
   existing instance to/from **SSO** re-homes user identities — follow the
   [LDAP→SSO migration runbook](../ldap-to-sso-migration.md), not a plain re-deploy.
 - **Resize**: change `deployment_size`, re-deploy. The installer auto-submits
@@ -420,13 +434,14 @@ export LICENSE_KEY='E-XXXXXXXXX...'
 export INGRESS_ENABLED=true
 export DOMAIN_NAME=platforma.yourcompany.bio
 export DNS_ZONE_NAME=yourcompany-bio
-export AUTH_METHOD=ldap                                        # or 'htpasswd'
+export SSO_PROVIDER=none
 export LDAP_SERVER='ldaps://ldap.yourcompany.bio:636'
 export LDAP_START_TLS=false
 export LDAP_BIND_DN=''                                         # search-bind mode
 export LDAP_SEARCH_RULES='(uid=%u)|ou=users,dc=yourcompany,dc=bio'
 export LDAP_SEARCH_USER='cn=svc-platforma,ou=services,dc=yourcompany,dc=bio'
 export LDAP_SEARCH_PASSWORD='...'
+export ENABLE_LOCAL_USERS=false
 export ENABLE_DEMO=true
 
 # Full data-libraries YAML — INCLUDING existing libraries, otherwise they're

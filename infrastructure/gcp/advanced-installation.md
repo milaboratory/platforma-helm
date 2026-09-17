@@ -177,10 +177,64 @@ data_libraries = [
 ]
 ```
 
-### LDAP authentication
+### Authentication
+
+Every deployment carries an `admin` htpasswd login, whichever other sources
+you configure. No variable creates it and none removes it. Read its
+auto-generated password from `terraform output password_retrieve_command`,
+or from the Cloud Console URL in `terraform output post_deploy_steps`.
+
+`sso_provider`, `ldap_server` and `enable_local_users` combine — set any
+mix of them and every source you turn on is advertised together:
 
 ```hcl
-auth_method      = "ldap"
+sso_provider         = "google"
+google_client_id     = "12345-abc.apps.googleusercontent.com"
+google_client_secret = "GOCSPX-..."
+
+ldap_server          = "ldaps://ldap.yourcompany.bio:636"
+ldap_bind_dn         = "cn=%u,ou=users,dc=yourcompany,dc=bio"
+
+enable_local_users   = true
+htpasswd_content     = "alice:$2y$05$Xk1.../rest.of.the.bcrypt.hash"
+```
+
+Grant the admin role to logins from a source with that source's admin-user
+variable — a semicolon-separated list of full-match regexps:
+
+```hcl
+sso_admin_users   = "alice@example.com;^ops-.*$"
+ldap_admin_users  = "svc-admin"
+local_admin_users = ""
+```
+
+`auth_method` is deprecated. It still configures one source on its own, but
+does not combine with the variables above, and the apply fails if you set both.
+Each of its five values moves to one of them: `ldap` to `ldap_server`,
+`htpasswd` to `enable_local_users`, and `google` / `entra` / `oidc` to
+`sso_provider`.
+
+A `--admin-user=` entry left in `additional_extra_args` also fails the apply —
+the backend grants the admin role per login source now, so a global
+`--admin-user` flag reaches nobody. Move each pattern to the variable of the
+source that authenticates it: `sso_admin_users`, `ldap_admin_users`, or
+`local_admin_users`.
+
+`enable_local_users = true` needs `htpasswd_content` set, and `htpasswd_content`
+needs a source that advertises it — `enable_local_users = true` or a legacy
+`auth_method = "htpasswd"`. Either mismatch fails the apply, naming the line to
+add. A deployment upgrading from before this module wrote `auth.providers` —
+one that never set `auth_method` and only ever supplied an htpasswd file — must
+add `enable_local_users = true`, and its apply fails until it does.
+
+An admin-user variable also needs its own source advertised: `sso_admin_users`
+needs `sso_provider` set, `ldap_admin_users` needs `ldap_server` set, and
+`local_admin_users` needs `enable_local_users = true`. Otherwise the apply
+fails, naming the variable that turns the source on.
+
+#### LDAP authentication
+
+```hcl
 ldap_server      = "ldaps://ldap.yourcompany.bio:636"
 ldap_start_tls   = false
 
@@ -193,11 +247,19 @@ ldap_bind_dn     = "cn=%u,ou=users,dc=yourcompany,dc=bio"
 # ldap_search_password = "..."
 ```
 
-### Pre-bcrypted htpasswd (single-team production)
+#### Pre-bcrypted htpasswd (single-team production)
 
 ```hcl
-auth_method      = "htpasswd"
-htpasswd_content = file("./htpasswd")
+enable_local_users = true
+htpasswd_content   = "alice:$2y$05$Xk1.../rest.of.the.bcrypt.hash"
+```
+
+A tfvars file cannot call functions, so `htpasswd_content` holds the file's
+text rather than `file("./htpasswd")`. To read it from the file itself, pass it
+on the command line:
+
+```sh
+terraform apply -var="htpasswd_content=$(cat ./htpasswd)"
 ```
 
 Build the `htpasswd` file with one bcrypt line per user. `-c` **creates** the
@@ -214,28 +276,28 @@ change rolls the `platforma-htpasswd-provided` secret. Non-interactive form
 (password on the command line, lands in shell history): `htpasswd -cbB
 ./htpasswd alice 'S3cret!'`.
 
-### SSO (OIDC) authentication
+#### SSO (OIDC) authentication
 
 PKCE auth-code flow. Most IdPs use a public/native client with no secret; Google
-requires a client secret even for PKCE. Three presets via `auth_method`:
+requires a client secret even for PKCE. Three presets via `sso_provider`:
 
 ```hcl
 # Google Workspace — issuer, scopes and prompt are predefined.
-auth_method          = "google"
+sso_provider         = "google"
 google_client_id     = "12345-abc.apps.googleusercontent.com"
 google_client_secret = "GOCSPX-..."
 ```
 
 ```hcl
 # Microsoft Entra ID — issuer derived from the tenant.
-auth_method     = "entra"
+sso_provider    = "entra"
 entra_tenant_id = "53dff85f-903c-48f0-908b-00aa35e40dad"
 entra_client_id = "2f2c6eed-cddc-4375-96f6-92ccebe29648"
 ```
 
 ```hcl
 # Any OIDC provider — full control. Optional fields default to backend values.
-auth_method        = "oidc"
+sso_provider       = "oidc"
 oidc_issuer        = "https://idp.example.com/oidc"
 oidc_client_id     = "ld69k866zvhnhz3xr1xwd"
 oidc_scopes        = "openid profile email"   # optional
@@ -248,12 +310,23 @@ oidc_groups_claim  = ""                        # optional
 The installer rejects a method whose required inputs are missing (and a
 non-`https` OIDC issuer). Advanced backend flags not exposed as tfvars
 (`subject-token-source`, `jwt-algorithm`, `redirect-port`) default to backend
-values. Override them through the chart's `auth.sso.*` block or `app.extraArgs`.
+values. Override them through `additional_extra_args`. The chart's flat
+`auth.sso.*` block is not a route from here — the module writes
+`auth.providers`, and the chart refuses the two schemes together.
 
 > **Switching an existing instance's auth method (e.g. LDAP→SSO) is a manual
 > operation** — see the [LDAP→SSO migration runbook](../ldap-to-sso-migration.md).
 > It is not automated by this installer and carries identity-remap, lockout, and
 > session-loss risks.
+
+**Before you run this on an existing SSO deployment:** every user record must
+carry a verified email, which means every user has completed at least one SSO
+login under the current configuration. A record seeded without a login has no
+verified email, so the first login under the new scheme mints a second
+account and nothing merges the two.
+
+Changing the set of auth sources re-derives the JWT signing key, so every
+signed-in user signs in once more after this apply.
 
 ### Master secret
 

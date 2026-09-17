@@ -345,12 +345,12 @@ variable "admin_username" {
 
 variable "auth_method" {
   type        = string
-  description = "Authentication method: 'htpasswd' (local), 'ldap' (corporate directory), or SSO via 'google', 'entra', or 'oidc'."
-  default     = "htpasswd"
+  description = "DEPRECATED single-source selector, empty by default and selecting nothing when empty: 'htpasswd' (local), 'ldap' (corporate directory), or SSO via 'google', 'entra', or 'oidc'. Still honoured on its own, and rejected beside sso_provider, enable_local_users, sso_admin_users, ldap_admin_users or local_admin_users. Those combine; this does not."
+  default     = ""
 
   validation {
-    condition     = contains(["htpasswd", "ldap", "google", "entra", "oidc"], var.auth_method)
-    error_message = "auth_method must be one of: htpasswd, ldap, google, entra, oidc."
+    condition     = contains(["", "htpasswd", "ldap", "google", "entra", "oidc"], var.auth_method)
+    error_message = "auth_method must be empty or one of: htpasswd, ldap, google, entra, oidc."
   }
 }
 
@@ -410,40 +410,40 @@ variable "ldap_search_password" {
   sensitive   = true
 }
 
-# --- Google Workspace SSO (auth_method=google) ---
+# --- Google Workspace SSO (sso_provider=google) ---
 # Issuer, scopes and prompt are predefined; operator supplies the client ID and secret.
 variable "google_client_id" {
   type        = string
-  description = "Google OAuth client ID (required when auth_method=google)."
+  description = "Google OAuth client ID (required when the SSO source is 'google')."
   default     = ""
 }
 
 # Google's token endpoint requires a client secret even for the PKCE flow.
 variable "google_client_secret" {
   type        = string
-  description = "Google OAuth client secret (required when auth_method=google)."
+  description = "Google OAuth client secret (required when the SSO source is 'google')."
   default     = ""
   sensitive   = true
 }
 
-# --- Microsoft Entra ID SSO (auth_method=entra) ---
+# --- Microsoft Entra ID SSO (sso_provider=entra) ---
 # Issuer is derived as https://login.microsoftonline.com/{tenant}/v2.0.
 variable "entra_tenant_id" {
   type        = string
-  description = "Entra directory (tenant) ID (required when auth_method=entra)."
+  description = "Entra directory (tenant) ID (required when the SSO source is 'entra')."
   default     = ""
 }
 
 variable "entra_client_id" {
   type        = string
-  description = "Entra application (client) ID (required when auth_method=entra)."
+  description = "Entra application (client) ID (required when the SSO source is 'entra')."
   default     = ""
 }
 
-# --- Custom OIDC SSO (auth_method=oidc) ---
+# --- Custom OIDC SSO (sso_provider=oidc) ---
 variable "oidc_issuer" {
   type        = string
-  description = "OIDC issuer URL (required when auth_method=oidc)."
+  description = "OIDC issuer URL (required when the SSO source is 'oidc')."
   default     = ""
 
   validation {
@@ -454,7 +454,7 @@ variable "oidc_issuer" {
 
 variable "oidc_client_id" {
   type        = string
-  description = "Public OAuth client ID (required when auth_method=oidc)."
+  description = "Public OAuth client ID (required when the SSO source is 'oidc')."
   default     = ""
 }
 
@@ -485,6 +485,41 @@ variable "oidc_user_id_claim" {
 variable "oidc_groups_claim" {
   type        = string
   description = "Optional JWT claim carrying group memberships."
+  default     = ""
+}
+
+variable "sso_provider" {
+  type        = string
+  description = "SSO source to advertise: 'none', 'google', 'entra' or 'oidc'. Combines with ldap_server and enable_local_users."
+  default     = "none"
+
+  validation {
+    condition     = contains(["none", "google", "entra", "oidc"], var.sso_provider)
+    error_message = "sso_provider must be one of: none, google, entra, oidc."
+  }
+}
+
+variable "enable_local_users" {
+  type        = bool
+  description = "Advertise the htpasswd_content users as the 'local' login source. Requires htpasswd_content."
+  default     = false
+}
+
+variable "sso_admin_users" {
+  type        = string
+  description = "Semicolon-separated full-match regexps granting the admin role to logins from the SSO source, e.g. \"alice@example.com;^ops-.*$\"."
+  default     = ""
+}
+
+variable "ldap_admin_users" {
+  type        = string
+  description = "Semicolon-separated full-match regexps granting the admin role to logins from the 'corp' LDAP source."
+  default     = ""
+}
+
+variable "local_admin_users" {
+  type        = string
+  description = "Semicolon-separated full-match regexps granting the admin role to logins from the 'local' htpasswd source."
   default     = ""
 }
 

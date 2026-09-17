@@ -191,6 +191,18 @@
                   "bindPassword": {
                     "type": "string"
                   },
+                  "bindPasswordSecretRef": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "baseDN": {
                     "type": "string"
                   },

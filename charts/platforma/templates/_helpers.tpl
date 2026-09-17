@@ -299,6 +299,11 @@ collide on a file name.
 {{- printf "%s/%s" (include "platforma.path.authSecrets" .ctx) .id -}}
 {{- end }}
 
+{{/* One provider id, in the form an env var name can hold. Args: id. */}}
+{{- define "platforma.auth.providerEnvId" -}}
+{{- .id | upper | replace "-" "_" | replace "." "_" -}}
+{{- end }}
+
 {{/*
 Guards what map keys used to ensure. auth.providers is now a list, so the name
 field must enforce uniqueness and presence. A missing or repeated name fails the
@@ -439,6 +444,13 @@ deterministic.
     {{- if $ldap.userDN -}}{{- $args = append $args (printf "--auth.ldap.user-dn=%s=%s" $id $ldap.userDN) -}}{{- end -}}
     {{- if $ldap.bindDN -}}{{- $args = append $args (printf "--auth.ldap.bind-dn=%s=%s" $id $ldap.bindDN) -}}{{- end -}}
     {{- if $ldap.bindPassword -}}{{- $args = append $args (printf "--auth.ldap.bind-password=%s=%s" $id $ldap.bindPassword) -}}{{- end -}}
+    {{- $bp := default (dict) $ldap.bindPasswordSecretRef -}}
+    {{- if $bp.name -}}
+      {{- if $ldap.bindPassword -}}
+        {{- fail (printf "ERROR: auth.providers[%d] (%q) sets both ldap.bindPassword and ldap.bindPasswordSecretRef.\n\nOne provider takes one password source: two would render two --auth.ldap.bind-password\nargs for one id, and the last one silently wins. Keep the literal, or keep the Secret\nreference." $i $id) -}}
+      {{- end -}}
+      {{- $args = append $args (printf "--auth.ldap.bind-password=%s=$(PL_AUTH_LDAP_BIND_PASSWORD_%s)" $id (include "platforma.auth.providerEnvId" (dict "id" $id))) -}}
+    {{- end -}}
     {{- if $ldap.baseDN -}}{{- $args = append $args (printf "--auth.ldap.base-dn=%s=%s" $id $ldap.baseDN) -}}{{- end -}}
     {{- if $ldap.userFilter -}}{{- $args = append $args (printf "--auth.ldap.user-filter=%s=%s" $id $ldap.userFilter) -}}{{- end -}}
     {{- range $rule := default (list) $ldap.searchRules -}}
@@ -503,6 +515,26 @@ deterministic.
   {{- end -}}
 {{- end -}}
 {{- toYaml $args -}}
+{{- end }}
+
+{{/*
+Container env vars a provider entry needs. The LDAP bind password arrives this
+way because the arg carries the `<id>=` pair the backend's map flag needs. A
+secretKeyRef value is the Secret's bytes and nothing else.
+*/}}
+{{- define "platforma.auth.providerEnv" -}}
+{{- range $p := default (list) .Values.auth.providers -}}
+  {{- if eq $p.type "ldap" -}}
+    {{- $bp := default (dict) (default (dict) $p.ldap).bindPasswordSecretRef -}}
+    {{- if $bp.name }}
+- name: PL_AUTH_LDAP_BIND_PASSWORD_{{ include "platforma.auth.providerEnvId" (dict "id" $p.name) }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ $bp.name }}
+      key: {{ $bp.key | default "bind-password" }}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*

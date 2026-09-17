@@ -84,75 +84,73 @@ locals {
   default_docker_registry      = "${local.image_cache_registry}/milaboratories/pl-containers"
   artifact_registry_login_host = "${var.region}-docker.pkg.dev"
 
-  # Auth Helm values — branches on auth_method:
-  #   ldap                                → ldap.* block
-  #   htpasswd + htpasswd_content         → reference user-supplied secret
-  #   htpasswd + empty content (auto-gen) → inline credentials list with random_password
-  #
-  # Built via merge() of mutually-exclusive single-key objects rather than a
-  # straight ternary because Terraform 1.5 strictly unifies conditional branch
-  # types — the htpasswd content path produces {secretName, secretKey} while
-  # the auto-gen path produces {credentials = [...]}. merge with empty-object
-  # fallbacks sidesteps the unify check.
-  _auth_ldap = {
-    ldap = merge(
-      {
-        server      = var.ldap_server
-        startTLS    = var.ldap_start_tls
-        bindDN      = var.ldap_bind_dn
-        searchRules = var.ldap_search_rules
-        searchUser  = var.ldap_search_user
-      },
-      var.ldap_search_password != "" ? {
-        searchPasswordSecretRef = {
-          name = "platforma-ldap-search-password"
-          key  = "password"
-        }
-      } : {},
+  auth_sources = {
+    sso = (
+      contains(["google", "entra", "oidc"], var.auth_method)
+      ? var.auth_method
+      : (var.sso_provider == "none" ? "" : var.sso_provider)
     )
+    ldap  = var.ldap_server != "" && (var.auth_method == "" || var.auth_method == "ldap")
+    local = var.enable_local_users || (var.auth_method == "htpasswd" && nonsensitive(var.htpasswd_content != ""))
   }
 
-  _auth_htpasswd_content = {
-    htpasswd = {
-      secretName = "platforma-htpasswd-provided"
-      secretKey  = "htpasswd"
-    }
+  auth_combinable_variables_set = (
+    var.sso_provider != "none"
+    || var.enable_local_users
+    || var.sso_admin_users != ""
+    || var.ldap_admin_users != ""
+    || var.local_admin_users != ""
+  )
+
+  _auth_admin_regexps = {
+    for source, patterns in {
+      sso   = var.sso_admin_users
+      ldap  = var.ldap_admin_users
+      local = var.local_admin_users
+    } :
+    source => [
+      for pattern in split(";", patterns) : "admin=login=${trimspace(pattern)}"
+      if trimspace(pattern) != ""
+    ]
   }
 
-  _auth_htpasswd_auto = {
-    htpasswd = {
-      credentials = [{
-        username = var.admin_username
-        password = random_password.admin.result
-      }]
-    }
-  }
-
-  # Google: issuer/scopes/prompt/accessType are predefined; operator supplies the client ID and secret.
-  # accessType=offline is required for Google to return a refresh token (backend rejects login without one).
-  _auth_google = {
+  _auth_entry_google = merge({
+    name = "google"
+    type = "sso"
     sso = {
-      issuer     = "https://accounts.google.com"
-      clientId   = var.google_client_id
-      scopes     = "openid profile email"
-      prompt     = "consent"
-      accessType = "offline"
-      clientSecret = {
-        secretName = "platforma-sso-client-secret"
-      }
+      issuer       = "https://accounts.google.com"
+      clientId     = var.google_client_id
+      scopes       = "openid profile email"
+      prompt       = "consent"
+      accessType   = "offline"
+      clientSecret = { secretName = "platforma-sso-client-secret" }
     }
-  }
+    map         = { login = "email", email = "email", displayName = "name" }
+    lookUpAttr  = "email"
+    createUsers = true
+    },
+    length(local._auth_admin_regexps.sso) > 0 ? { roles = { attrRegexps = local._auth_admin_regexps.sso } } : {},
+  )
 
-  # Entra: issuer is derived from the tenant ID.
-  _auth_entra = {
+  _auth_entry_entra = merge({
+    name = "entra"
+    type = "sso"
     sso = {
-      issuer   = "https://login.microsoftonline.com/${var.entra_tenant_id}/v2.0"
-      clientId = var.entra_client_id
+      issuer      = "https://login.microsoftonline.com/${var.entra_tenant_id}/v2.0"
+      clientId    = var.entra_client_id
+      userIdClaim = "oid"
     }
-  }
+    trustUnverifiedEmail = true
+    map                  = { login = "preferred_username", email = "email", displayName = "name", groups = "groups" }
+    lookUpAttr           = "email"
+    createUsers          = true
+    },
+    length(local._auth_admin_regexps.sso) > 0 ? { roles = { attrRegexps = local._auth_admin_regexps.sso } } : {},
+  )
 
-  # Custom OIDC: empty optional fields are skipped by the chart (backend defaults apply).
-  _auth_oidc = {
+  _auth_entry_oidc = merge({
+    name = "oidc"
+    type = "sso"
     sso = {
       issuer      = var.oidc_issuer
       clientId    = var.oidc_client_id
@@ -160,18 +158,68 @@ locals {
       resource    = var.oidc_resource
       prompt      = var.oidc_prompt
       userIdClaim = var.oidc_user_id_claim
-      groupsClaim = var.oidc_groups_claim
     }
+    map         = { email = "email", displayName = "name", groups = var.oidc_groups_claim }
+    lookUpAttr  = "email"
+    createUsers = true
+    },
+    length(local._auth_admin_regexps.sso) > 0 ? { roles = { attrRegexps = local._auth_admin_regexps.sso } } : {},
+  )
+
+  _auth_entry_corp = merge({
+    name = "corp"
+    type = "ldap"
+    ldap = merge({
+      url         = var.ldap_server
+      startTLS    = var.ldap_start_tls
+      userDN      = var.ldap_bind_dn
+      bindDN      = var.ldap_search_user
+      searchRules = var.ldap_search_rules
+      },
+      var.ldap_search_password != "" ? {
+        bindPasswordSecretRef = {
+          name = "platforma-ldap-search-password"
+          key  = "password"
+        }
+      } : {},
+    )
+    createUsers = true
+    },
+    var.ldap_search_user != "" ? { map = { email = "mail", displayName = "displayName" } } : {},
+    length(local._auth_admin_regexps.ldap) > 0 ? { roles = { attrRegexps = local._auth_admin_regexps.ldap } } : {},
+  )
+
+  _auth_entry_local = merge({
+    name = "local"
+    type = "htpasswd"
+    htpasswd = {
+      secretName = "platforma-htpasswd-provided"
+      secretKey  = "htpasswd"
+    }
+    },
+    length(local._auth_admin_regexps.local) > 0 ? { roles = { attrRegexps = local._auth_admin_regexps.local } } : {},
+  )
+
+  _auth_entry_admin = {
+    name  = "admin"
+    type  = "htpasswd"
+    title = "Administrator"
+    htpasswd = {
+      credentials = [{
+        username = var.admin_username
+        password = random_password.admin.result
+      }]
+    }
+    adminUsers = [var.admin_username]
   }
 
-  auth_helm_value = merge(
-    { showUserList = var.show_user_list },
-    (var.auth_method == "ldap") ? local._auth_ldap : {},
-    (var.auth_method == "htpasswd" && var.htpasswd_content != "") ? local._auth_htpasswd_content : {},
-    (var.auth_method == "htpasswd" && var.htpasswd_content == "") ? local._auth_htpasswd_auto : {},
-    (var.auth_method == "google") ? local._auth_google : {},
-    (var.auth_method == "entra") ? local._auth_entra : {},
-    (var.auth_method == "oidc") ? local._auth_oidc : {},
+  auth_providers = concat(
+    local.auth_sources.sso == "google" ? [local._auth_entry_google] : [],
+    local.auth_sources.sso == "entra" ? [local._auth_entry_entra] : [],
+    local.auth_sources.sso == "oidc" ? [local._auth_entry_oidc] : [],
+    local.auth_sources.ldap ? [local._auth_entry_corp] : [],
+    local.auth_sources.local ? [local._auth_entry_local] : [],
+    [local._auth_entry_admin],
   )
 }
 
@@ -288,7 +336,7 @@ resource "kubernetes_secret" "master_secret" {
 # =============================================================================
 
 resource "kubernetes_secret" "htpasswd_provided" {
-  count = (var.auth_method == "htpasswd" && var.htpasswd_content != "") ? 1 : 0
+  count = local.auth_sources.local ? 1 : 0
 
   metadata {
     name      = "platforma-htpasswd-provided"
@@ -303,7 +351,7 @@ resource "kubernetes_secret" "htpasswd_provided" {
 }
 
 resource "kubernetes_secret" "ldap_search_password" {
-  count = (var.auth_method == "ldap" && var.ldap_search_password != "") ? 1 : 0
+  count = (local.auth_sources.ldap && var.ldap_search_password != "") ? 1 : 0
 
   metadata {
     name      = "platforma-ldap-search-password"
@@ -320,7 +368,7 @@ resource "kubernetes_secret" "ldap_search_password" {
 # SSO client secret (Google requires one even for PKCE). The chart references it
 # via auth.sso.clientSecret.secretName.
 resource "kubernetes_secret" "sso_client_secret" {
-  count = (var.auth_method == "google" && var.google_client_secret != "") ? 1 : 0
+  count = (local.auth_sources.sso == "google" && var.google_client_secret != "") ? 1 : 0
 
   metadata {
     name      = "platforma-sso-client-secret"
@@ -420,7 +468,10 @@ resource "helm_release" "platforma" {
           }
         }
 
-        auth = local.auth_helm_value
+        auth = {
+          showUserList = var.show_user_list
+          providers    = local.auth_providers
+        }
 
         masterSecret = {
           secretName = kubernetes_secret.master_secret.metadata[0].name
@@ -626,20 +677,76 @@ resource "helm_release" "platforma" {
 
   lifecycle {
     precondition {
-      condition     = var.auth_method != "google" || var.google_client_id != ""
-      error_message = "google_client_id is required when auth_method is 'google'."
+      condition     = var.auth_method == "" || !local.auth_combinable_variables_set
+      error_message = <<-EOT
+        auth_method is deprecated and cannot be combined with the login-source variables.
+        auth_method = "${var.auth_method}" is set beside at least one of sso_provider,
+        enable_local_users, sso_admin_users, ldap_admin_users or local_admin_users.
+        Leave auth_method unset and express the same configuration with the variables that combine:
+          auth_method = "google" / "entra" / "oidc"  ->  sso_provider = that value
+          auth_method = "ldap"                       ->  ldap_server already switches the source on
+          auth_method = "htpasswd" + htpasswd_content ->  enable_local_users = true
+      EOT
     }
     precondition {
-      condition     = var.auth_method != "google" || var.google_client_secret != ""
-      error_message = "google_client_secret is required when auth_method is 'google'."
+      condition     = length([for arg in var.additional_extra_args : arg if startswith(arg, "--admin-user")]) == 0
+      error_message = <<-EOT
+        additional_extra_args still carries a --admin-user flag, which this module no longer honours.
+        Under auth.providers the backend grants the admin role per login source, so a global
+        --admin-user reaches nobody and no layer warns you.
+        Move each pattern to the variable of the source that authenticates it:
+          the SSO source   ->  sso_admin_users
+          the corp LDAP    ->  ldap_admin_users
+          the local users  ->  local_admin_users
+        Each takes semicolon-separated full-match regexps, e.g. "alice@example.com;^ops-.*$".
+      EOT
     }
     precondition {
-      condition     = var.auth_method != "entra" || (var.entra_tenant_id != "" && var.entra_client_id != "")
-      error_message = "entra_tenant_id and entra_client_id are both required when auth_method is 'entra'."
+      condition     = !var.enable_local_users || nonsensitive(var.htpasswd_content != "")
+      error_message = "enable_local_users is true but htpasswd_content is empty. The 'local' source advertises that file, so set htpasswd_content, or leave enable_local_users false and use the admin login."
     }
     precondition {
-      condition     = var.auth_method != "oidc" || (var.oidc_issuer != "" && var.oidc_client_id != "")
-      error_message = "oidc_issuer and oidc_client_id are both required when auth_method is 'oidc'."
+      condition     = nonsensitive(var.htpasswd_content == "") || var.enable_local_users || var.auth_method != ""
+      error_message = <<-EOT
+        htpasswd_content is set but no login source advertises it. auth_method is empty and
+        enable_local_users is false, so those users would have no login at all after this apply.
+        Add:
+          enable_local_users = true
+        Earlier versions advertised the file whenever auth_method held its old "htpasswd" default.
+        That default is gone, so the source is now named rather than implied.
+      EOT
+    }
+    precondition {
+      condition = alltrue([
+        var.sso_admin_users == "" || local.auth_sources.sso != "",
+        var.ldap_admin_users == "" || local.auth_sources.ldap,
+        var.local_admin_users == "" || local.auth_sources.local,
+      ])
+      error_message = <<-EOT
+        An admin-user variable names patterns for a login source this apply does not advertise.
+        The patterns are computed and dropped, so they grant the admin role to nobody and no
+        layer warns you.
+        Advertise the source, or clear the patterns:
+          sso_admin_users    ->  sso_provider = "google" / "entra" / "oidc"
+          ldap_admin_users   ->  ldap_server = the directory URL
+          local_admin_users  ->  enable_local_users = true
+      EOT
+    }
+    precondition {
+      condition     = local.auth_sources.sso != "google" || var.google_client_id != ""
+      error_message = "google_client_id is required when the SSO source is 'google'."
+    }
+    precondition {
+      condition     = local.auth_sources.sso != "google" || var.google_client_secret != ""
+      error_message = "google_client_secret is required when the SSO source is 'google'."
+    }
+    precondition {
+      condition     = local.auth_sources.sso != "entra" || (var.entra_tenant_id != "" && var.entra_client_id != "")
+      error_message = "entra_tenant_id and entra_client_id are both required when the SSO source is 'entra'."
+    }
+    precondition {
+      condition     = local.auth_sources.sso != "oidc" || (var.oidc_issuer != "" && var.oidc_client_id != "")
+      error_message = "oidc_issuer and oidc_client_id are both required when the SSO source is 'oidc'."
     }
   }
 }

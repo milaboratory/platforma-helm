@@ -38,7 +38,7 @@ trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
 normalize_identifier_inputs() {
   local _lc_var _lc_val
   for _lc_var in PROJECT_ID DNS_ZONE_PROJECT DEPLOYMENT_NAME IM_LOCATION REGION \
-                 ZONE_SUFFIX DEPLOYMENT_SIZE AUTH_METHOD DOMAIN_NAME DNS_ZONE_NAME; do
+                 ZONE_SUFFIX DEPLOYMENT_SIZE SSO_PROVIDER DOMAIN_NAME DNS_ZONE_NAME; do
     _lc_val="${!_lc_var:-}"
     [[ -n "${_lc_val}" ]] && printf -v "${_lc_var}" '%s' "${_lc_val,,}"
   done
@@ -123,6 +123,21 @@ prompt_var() {
     return
   fi
 
+  # Set-but-empty is an answer, not a missing value: an optional input's "off"
+  # state IS the empty string, so a caller driving this script from the
+  # environment has no other way to say "no LDAP directory".
+  if [[ -n "${!name+set}" ]]; then
+    if (( had_default )) && [[ -n "${default}" ]]; then
+      printf -v "${name}" '%s' "${default}"
+      info "${name} = ${default}  (empty in env → default)"
+    elif (( had_default )); then
+      info "${name} = <empty>  (from env)"
+    else
+      red "${name} is set but empty in the environment, and is required."; exit 1
+    fi
+    return
+  fi
+
   local input
   if [[ -n "${default}" ]]; then
     read -r -p "  ${prompt} [${default}]: " input
@@ -148,6 +163,16 @@ prompt_var() {
 # the final confirmation.
 prompt_yn() {
   local prompt="$1"
+  # ASSUME_YES answers every confirmation, so the whole script can run from the
+  # environment. Unset by default, so an operator at a terminal still confirms.
+  # It takes the same forms normalize_boolean_inputs accepts, because a caller
+  # who writes ASSUME_YES=1 means yes and a stricter test would silently prompt.
+  case "${ASSUME_YES:-}" in
+    [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|1)
+      info "${prompt} → yes  (ASSUME_YES)"
+      return 0
+      ;;
+  esac
   while :; do
     local input
     read -r -p "  ${prompt} [y/n]: " input
@@ -180,6 +205,15 @@ prompt_secret_var() {
 
 preflight() {
   bold "Pre-flight checks"
+
+  # Fail fast on the deprecated auth inputs here, not eight prompts and a
+  # licensing-API round trip deep into collect_auth_inputs.
+  if [[ -n "${AUTH_METHOD:-}" ]]; then
+    red "AUTH_METHOD is no longer read — use SSO_PROVIDER, LDAP_SERVER and ENABLE_LOCAL_USERS instead."; exit 1
+  fi
+  if [[ -n "${ADMIN_USERS:-}" ]]; then
+    red "ADMIN_USERS is no longer read — use SSO_ADMIN_USERS, LDAP_ADMIN_USERS and LOCAL_ADMIN_USERS instead."; exit 1
+  fi
 
   require_command gcloud
   # jq is used by detect_quota_decrease_collisions to parse the Cloud Quotas
@@ -517,7 +551,7 @@ verify_dns_delegation() {
 # the cluster (with proper VPC/firewall rules) can. We warn-only on network
 # checks and tell the user that the cluster's view is what ultimately matters.
 verify_ldap_config() {
-  if [[ "${AUTH_METHOD:-}" != "ldap" ]]; then
+  if [[ -z "${LDAP_SERVER:-}" ]]; then
     return 0
   fi
 
@@ -670,7 +704,7 @@ except Exception:
 }
 
 verify_sso_config() {
-  case "${AUTH_METHOD:-}" in
+  case "${SSO_PROVIDER:-}" in
     google)
       bold "SSO config precheck (Google)"
       if [[ -z "${GOOGLE_CLIENT_ID:-}" ]]; then
@@ -716,69 +750,29 @@ verify_sso_config() {
 # -----------------------------------------------------------------------------
 
 collect_auth_inputs() {
+  if [[ -n "${AUTH_METHOD:-}" ]]; then
+    red "AUTH_METHOD is no longer read — use SSO_PROVIDER, LDAP_SERVER and ENABLE_LOCAL_USERS instead."; exit 1
+  fi
+  if [[ -n "${ADMIN_USERS:-}" ]]; then
+    red "ADMIN_USERS is no longer read — use SSO_ADMIN_USERS, LDAP_ADMIN_USERS and LOCAL_ADMIN_USERS instead."; exit 1
+  fi
+
   bold "Authentication"
   cat <<EOF
-  How will users sign in to Platforma?
+  Every deployment carries an admin password login (username 'platforma',
+  password generated and stored in Secret Manager) — no input below creates
+  or removes it. Turn on any combination of the sources below beside it:
 
-    htpasswd  — file-based local auth. Pick this for testing or single-team
-                use. By default the installer auto-generates a random admin
-                password and stores it in Secret Manager (TESTING ONLY — the
-                password ends up in Terraform state). For production set
-                HTPASSWD_CONTENT env var to pre-bcrypted content.
-    ldap      — corporate directory integration (Active Directory, OpenLDAP,
-                etc.). Use this in production when access should be governed
-                by your central directory.
-    google    — Google Workspace SSO. Needs a Google OAuth client ID and client
-                secret (issuer and scopes are predefined).
-    entra     — Microsoft Entra ID SSO. Needs the tenant ID and an application
-                (client) ID.
-    oidc      — any OpenID Connect provider. Requires an issuer URL (https://)
-                and a public OAuth client ID.
+    SSO   — one of Google Workspace, Microsoft Entra ID, or any OpenID Connect
+            provider.
+    LDAP  — corporate directory integration (Active Directory, OpenLDAP, etc.).
+    Local — your own htpasswd user file.
 
 EOF
-  prompt_var AUTH_METHOD "Auth method (htpasswd|ldap|google|entra|oidc)" "htpasswd"
 
-  case "${AUTH_METHOD}" in
-    htpasswd)
-      # Three input modes (in priority order):
-      #   HTPASSWD_CONTENT env var → use as-is
-      #   HTPASSWD_FILE env var    → read from file
-      #   Interactive prompt       → optional path, empty = auto-gen
-      if [[ -n "${HTPASSWD_CONTENT:-}" ]]; then
-        info "htpasswd content provided via env (${#HTPASSWD_CONTENT} bytes)."
-      elif [[ -n "${HTPASSWD_FILE:-}" ]]; then
-        if [[ ! -r "${HTPASSWD_FILE}" ]]; then
-          red "HTPASSWD_FILE='${HTPASSWD_FILE}' is not readable."; exit 1
-        fi
-        HTPASSWD_CONTENT="$(< "${HTPASSWD_FILE}")"
-        info "Read $(wc -l < "${HTPASSWD_FILE}" | tr -d ' ') line(s) from ${HTPASSWD_FILE}"
-      else
-        info "Generate htpasswd content with: htpasswd -nB <username> > ~/htpasswd"
-        local htpasswd_path
-        read -r -p "  Path to htpasswd file (empty = auto-generate, TESTING ONLY): " htpasswd_path
-        htpasswd_path="${htpasswd_path/#\~/$HOME}"   # expand ~ for the user
-        if [[ -n "${htpasswd_path}" ]]; then
-          if [[ ! -r "${htpasswd_path}" ]]; then
-            red "  File not found or unreadable: ${htpasswd_path}"; exit 1
-          fi
-          HTPASSWD_CONTENT="$(< "${htpasswd_path}")"
-          green "  ✓ Read $(wc -l < "${htpasswd_path}" | tr -d ' ') line(s) from ${htpasswd_path}"
-        else
-          warn "Auto-generating random htpasswd password (TESTING ONLY)."
-          warn "For production: generate with 'htpasswd -nB <user> > /tmp/htpasswd' and re-run."
-        fi
-      fi
-      ;;
-    ldap)
-      prompt_var       LDAP_SERVER         "LDAP server URL (e.g. ldaps://ldap.example.com:636)"
-      prompt_var       LDAP_START_TLS      "Enable StartTLS? (true|false)" "false"
-      info "Pick ONE bind mode below — leave the other empty."
-      prompt_var       LDAP_BIND_DN        "Direct-bind DN template (e.g. cn=%u,ou=users,dc=example,dc=com) — empty to use search bind" ""
-      if [[ -z "${LDAP_BIND_DN}" ]]; then
-        prompt_var     LDAP_SEARCH_RULES   "Search bind rules — SEMICOLON-separated 'filter|baseDN' entries (e.g. (uid=%u)|ou=users,dc=example,dc=com;(cn=%u)|ou=admins,dc=example,dc=com)"
-        prompt_var     LDAP_SEARCH_USER    "Search service account DN"
-        prompt_secret_var LDAP_SEARCH_PASSWORD "Search service account password"
-      fi
+  prompt_var SSO_PROVIDER "SSO source (none|google|entra|oidc)" "none"
+  case "${SSO_PROVIDER}" in
+    none)
       ;;
     google)
       prompt_var GOOGLE_CLIENT_ID "Google OAuth client ID (e.g. 12345-abc.apps.googleusercontent.com)"
@@ -798,17 +792,80 @@ EOF
       prompt_var OIDC_GROUPS_CLAIM  "JWT groups claim (optional)" ""
       ;;
     *)
-      red "Invalid auth_method '${AUTH_METHOD}' — must be htpasswd, ldap, google, entra or oidc."; exit 1
+      red "SSO_PROVIDER must be none, google, entra or oidc."; exit 1
       ;;
   esac
 
-  # Admin users — applies to every auth method. Grants the admin role to logins
-  # matching a full-match regexp (Platforma's --admin-user flag; admin role has
-  # the same access as the controller role). For SSO the login is the email.
-  # Semicolon-separated for multiple patterns; each becomes one --admin-user
-  # flag, wired through the module's additional_extra_args (see
-  # build_tfvars_json_full). Metacharacters in a literal login must be escaped.
-  prompt_var ADMIN_USERS "Admin logins — full-match regexp, SEMICOLON-separated for multiple (e.g. alice@corp\.com;.*@admins\.corp\.com), empty for none" ""
+  prompt_var LDAP_SERVER "LDAP server URL (e.g. ldaps://ldap.example.com:636) — empty for no LDAP directory" ""
+  if [[ -n "${LDAP_SERVER}" ]]; then
+    prompt_var       LDAP_START_TLS      "Enable StartTLS? (true|false)" "false"
+    info "Pick ONE bind mode below — leave the other empty."
+    prompt_var       LDAP_BIND_DN        "Direct-bind DN template (e.g. cn=%u,ou=users,dc=example,dc=com) — empty to use search bind" ""
+    if [[ -z "${LDAP_BIND_DN}" ]]; then
+      prompt_var     LDAP_SEARCH_RULES   "Search bind rules — SEMICOLON-separated 'filter|baseDN' entries (e.g. (uid=%u)|ou=users,dc=example,dc=com;(cn=%u)|ou=admins,dc=example,dc=com)"
+      prompt_var     LDAP_SEARCH_USER    "Search service account DN"
+      prompt_secret_var LDAP_SEARCH_PASSWORD "Search service account password"
+    fi
+  fi
+
+  local local_users_default="false"
+  [[ -n "${HTPASSWD_CONTENT:-}${HTPASSWD_FILE:-}" ]] && local_users_default="true"
+  prompt_var ENABLE_LOCAL_USERS "Advertise your own htpasswd user file? (true|false)" "${local_users_default}"
+  normalize_boolean_inputs ENABLE_LOCAL_USERS
+  if [[ "${ENABLE_LOCAL_USERS}" == "true" ]]; then
+    # Two input modes (in priority order):
+    #   HTPASSWD_CONTENT env var → use as-is
+    #   HTPASSWD_FILE env var    → read from file
+    #   Interactive prompt       → required path
+    if [[ -n "${HTPASSWD_CONTENT:-}" ]]; then
+      info "htpasswd content provided via env (${#HTPASSWD_CONTENT} bytes)."
+    elif [[ -n "${HTPASSWD_FILE:-}" ]]; then
+      if [[ ! -r "${HTPASSWD_FILE}" ]]; then
+        red "HTPASSWD_FILE='${HTPASSWD_FILE}' is not readable."; exit 1
+      fi
+      HTPASSWD_CONTENT="$(< "${HTPASSWD_FILE}")"
+      info "Read $(wc -l < "${HTPASSWD_FILE}" | tr -d ' ') line(s) from ${HTPASSWD_FILE}"
+    else
+      info "Generate htpasswd content with: htpasswd -nB <username> > ~/htpasswd"
+      local htpasswd_path
+      read -r -p "  Path to htpasswd file: " htpasswd_path
+      htpasswd_path="${htpasswd_path/#\~/$HOME}"   # expand ~ for the user
+      if [[ -n "${htpasswd_path}" ]]; then
+        if [[ ! -r "${htpasswd_path}" ]]; then
+          red "  File not found or unreadable: ${htpasswd_path}"; exit 1
+        fi
+        HTPASSWD_CONTENT="$(< "${htpasswd_path}")"
+        green "  ✓ Read $(wc -l < "${htpasswd_path}" | tr -d ' ') line(s) from ${htpasswd_path}"
+      fi
+    fi
+    if [[ -z "${HTPASSWD_CONTENT:-}" ]]; then
+      red "A user file is required for local users — sign in with the admin password login instead, or set HTPASSWD_CONTENT / HTPASSWD_FILE."; exit 1
+    fi
+  fi
+
+  # Admin grants — one prompt per source turned on, so a grant is entered
+  # against the source that authenticates the login. Full-match regexp,
+  # semicolon-separated for multiple; the module's _auth_admin_regexps splits
+  # and trims them. For SSO the login is the email.
+  if [[ "${SSO_PROVIDER}" != "none" ]]; then
+    prompt_var SSO_ADMIN_USERS "Admin logins on the SSO source — full-match regexp, SEMICOLON-separated for multiple, empty for none" ""
+  fi
+  if [[ -n "${LDAP_SERVER}" ]]; then
+    prompt_var LDAP_ADMIN_USERS "Admin logins on the corp LDAP source — full-match regexp, SEMICOLON-separated for multiple, empty for none" ""
+  fi
+  if [[ "${ENABLE_LOCAL_USERS}" == "true" ]]; then
+    prompt_var LOCAL_ADMIN_USERS "Admin logins on the local source — full-match regexp, SEMICOLON-separated for multiple, empty for none" ""
+  fi
+
+  if [[ -n "${SSO_ADMIN_USERS:-}" && "${SSO_PROVIDER}" == "none" ]]; then
+    red "SSO_ADMIN_USERS is set but sso_provider is 'none' — advertise the source (sso_provider = \"google\" / \"entra\" / \"oidc\") or clear SSO_ADMIN_USERS."; exit 1
+  fi
+  if [[ -n "${LDAP_ADMIN_USERS:-}" && -z "${LDAP_SERVER}" ]]; then
+    red "LDAP_ADMIN_USERS is set but ldap_server is empty — advertise the source (ldap_server = the directory URL) or clear LDAP_ADMIN_USERS."; exit 1
+  fi
+  if [[ -n "${LOCAL_ADMIN_USERS:-}" && "${ENABLE_LOCAL_USERS}" != "true" ]]; then
+    red "LOCAL_ADMIN_USERS is set but enable_local_users is false — advertise the source (enable_local_users = true) or clear LOCAL_ADMIN_USERS."; exit 1
+  fi
   echo
 }
 
@@ -1051,21 +1108,27 @@ detect_existing_quota_prefs() {
 #   ENABLE_QUOTA_AUTO_REQUEST   pre-flight check + tfvar
 #   GCS_FORCE_DESTROY           tfvar
 #   ENABLE_DEMO                 tfvar (set via prompt_var with default 'true')
-#   LDAP_START_TLS              tfvar (set via prompt_var when AUTH_METHOD=ldap)
+#   LDAP_START_TLS              tfvar (set via prompt_var when LDAP_SERVER is non-empty)
+#   ENABLE_LOCAL_USERS          tfvar (set via prompt_var)
 #   ENABLE_GPU                  tfvar (opt-out — unset = true; set false to disable)
 #   SHOW_USER_LIST              tfvar (hidden — unset = true; opt-out via env)
 # -----------------------------------------------------------------------------
 
 normalize_boolean_inputs() {
   local var val
+  local -a vars=("$@")
 
-  # GPU support is opt-out: an unset ENABLE_GPU means enabled. Apply the
-  # default here, before the generic empty-skip loop below, so an unset value
-  # normalizes to 'true' and the GPU block (zone discovery + enable_gpu tfvar)
-  # runs by default. Set ENABLE_GPU=false to opt out.
-  ENABLE_GPU="${ENABLE_GPU:-true}"
+  # No names given: the full-run call from main. GPU support is opt-out — an
+  # unset ENABLE_GPU means enabled. Apply the default here, before the
+  # generic empty-skip loop below, so an unset value normalizes to 'true' and
+  # the GPU block (zone discovery + enable_gpu tfvar) runs by default. Set
+  # ENABLE_GPU=false to opt out.
+  if (( ${#vars[@]} == 0 )); then
+    ENABLE_GPU="${ENABLE_GPU:-true}"
+    vars=(ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS ENABLE_LOCAL_USERS ENABLE_GPU SHOW_USER_LIST ACCEPT_QUOTA_WARNINGS ASSUME_YES)
+  fi
 
-  for var in ENABLE_QUOTA_AUTO_REQUEST GCS_FORCE_DESTROY ENABLE_DEMO LDAP_START_TLS ENABLE_GPU SHOW_USER_LIST ACCEPT_QUOTA_WARNINGS ASSUME_YES; do
+  for var in "${vars[@]}"; do
     val="${!var:-}"
     [[ -z "${val}" ]] && continue
     case "${val,,}" in
@@ -1474,7 +1537,11 @@ build_tfvars_json_full() {
     --arg     contact_email  "${CONTACT_EMAIL}" \
     --arg     license_key    "${LICENSE_KEY}" \
     --argjson enable_demo_data_library "${ENABLE_DEMO}" \
-    --arg     auth_method    "${AUTH_METHOD}" \
+    --arg     sso_provider       "${SSO_PROVIDER:-none}" \
+    --argjson enable_local_users "${ENABLE_LOCAL_USERS:-false}" \
+    --arg     sso_admin_users    "${SSO_ADMIN_USERS:-}" \
+    --arg     ldap_admin_users   "${LDAP_ADMIN_USERS:-}" \
+    --arg     local_admin_users  "${LOCAL_ADMIN_USERS:-}" \
     '{
        project_id:               $project_id,
        region:                   $region,
@@ -1487,7 +1554,11 @@ build_tfvars_json_full() {
        contact_email:            $contact_email,
        license_key:              $license_key,
        enable_demo_data_library: $enable_demo_data_library,
-       auth_method:              $auth_method
+       sso_provider:             $sso_provider,
+       enable_local_users:       $enable_local_users,
+       sso_admin_users:          $sso_admin_users,
+       ldap_admin_users:         $ldap_admin_users,
+       local_admin_users:        $local_admin_users
      }')"
 
   # Cross-project Cloud DNS zone. Only set when the managed zone lives in a
@@ -1506,12 +1577,12 @@ build_tfvars_json_full() {
   fi
 
   # Auth: htpasswd-content path
-  if [[ "${AUTH_METHOD}" == "htpasswd" && -n "${HTPASSWD_CONTENT:-}" ]]; then
+  if [[ "${ENABLE_LOCAL_USERS:-false}" == "true" && -n "${HTPASSWD_CONTENT:-}" ]]; then
     doc="$(echo "${doc}" | jq --arg v "${HTPASSWD_CONTENT}" '. + {htpasswd_content: $v}')"
   fi
 
   # Auth: LDAP path
-  if [[ "${AUTH_METHOD}" == "ldap" ]]; then
+  if [[ -n "${LDAP_SERVER:-}" ]]; then
     doc="$(echo "${doc}" | jq \
       --arg     ldap_server      "${LDAP_SERVER}" \
       --argjson ldap_start_tls   "${LDAP_START_TLS}" \
@@ -1534,19 +1605,19 @@ build_tfvars_json_full() {
   fi
 
   # Auth: SSO paths (issuer/scopes are derived in Terraform for google/entra)
-  if [[ "${AUTH_METHOD}" == "google" ]]; then
+  if [[ "${SSO_PROVIDER:-none}" == "google" ]]; then
     doc="$(echo "${doc}" | jq \
       --arg client_id     "${GOOGLE_CLIENT_ID}" \
       --arg client_secret "${GOOGLE_CLIENT_SECRET}" \
       '. + {google_client_id: $client_id, google_client_secret: $client_secret}')"
   fi
-  if [[ "${AUTH_METHOD}" == "entra" ]]; then
+  if [[ "${SSO_PROVIDER:-none}" == "entra" ]]; then
     doc="$(echo "${doc}" | jq \
       --arg tenant    "${ENTRA_TENANT_ID}" \
       --arg client_id "${ENTRA_CLIENT_ID}" \
       '. + {entra_tenant_id: $tenant, entra_client_id: $client_id}')"
   fi
-  if [[ "${AUTH_METHOD}" == "oidc" ]]; then
+  if [[ "${SSO_PROVIDER:-none}" == "oidc" ]]; then
     doc="$(echo "${doc}" | jq \
       --arg issuer       "${OIDC_ISSUER}" \
       --arg client_id    "${OIDC_CLIENT_ID}" \
@@ -1564,16 +1635,6 @@ build_tfvars_json_full() {
          oidc_user_id_claim: $user_claim,
          oidc_groups_claim:  $groups_claim
        }')"
-  fi
-
-  # Admin users → --admin-user flags. Split ADMIN_USERS on ';' into one
-  # --admin-user=<regexp> entry each and pass them through the module's
-  # additional_extra_args (appended to the server's extraArgs). jq trims each
-  # entry and JSON-escapes regexp metacharacters. Same convention as the
-  # CloudFormation AdminUsers parameter.
-  if [[ -n "${ADMIN_USERS:-}" ]]; then
-    doc="$(echo "${doc}" | jq --arg raw "${ADMIN_USERS}" \
-      '. + {additional_extra_args: ($raw | split(";") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0)) | map("--admin-user=" + .))}')"
   fi
 
   # enable_quota_auto_request — opt out of QuotaPreference creation entirely.
@@ -1897,7 +1958,9 @@ build_tfvars_json_platforma() {
         license_key, platforma_chart_version, helm_chart_repository,
         platforma_image_override, deploy_platforma,
         master_secret_secret_id,
-        admin_username, auth_method, show_user_list, htpasswd_content,
+        admin_username, show_user_list, htpasswd_content,
+        sso_provider, enable_local_users,
+        sso_admin_users, ldap_admin_users, local_admin_users,
         google_client_id, google_client_secret,
         entra_tenant_id, entra_client_id,
         oidc_issuer, oidc_client_id,
@@ -2261,6 +2324,13 @@ main() {
   local infra_deployment="${DEPLOYMENT_NAME}-infra"
   local platforma_deployment="${DEPLOYMENT_NAME}-platforma"
 
+  local login_sources=()
+  [[ "${SSO_PROVIDER:-none}" != "none" ]] && login_sources+=("${SSO_PROVIDER}")
+  [[ -n "${LDAP_SERVER:-}" ]] && login_sources+=("ldap")
+  [[ "${ENABLE_LOCAL_USERS:-false}" == "true" ]] && login_sources+=("local")
+  local login_sources_display="admin only"
+  (( ${#login_sources[@]} > 0 )) && login_sources_display="$(printf '%s, ' "${login_sources[@]}" | sed 's/, $//')"
+
   bold "Review"
   cat <<EOF
   Project:         ${PROJECT_ID}
@@ -2269,7 +2339,8 @@ main() {
   Size:            ${DEPLOYMENT_SIZE}
   Domain:          https://${DOMAIN_NAME}
   DNS zone:        ${DNS_ZONE_NAME}
-  Auth method:     ${AUTH_METHOD}
+  Login sources:   ${login_sources_display}
+  Admin password:  the admin password login is always present
   Demo library:    ${ENABLE_DEMO}
   GPU support:     ${ENABLE_GPU}  (auto-requests GPU quota; set ENABLE_GPU=false to skip)
   Contact email:   ${CONTACT_EMAIL}

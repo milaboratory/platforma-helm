@@ -3109,6 +3109,26 @@ Resources:
             Value: '0.16.1'
           - Name: APPWRAPPER_VERSION
             Value: 'v1.2.0'
+          # Patched AppWrapper controller build. Upstream v1.2.0 permanently
+          # fails a workload when the controller reads back a Job it has just
+          # created through an informer cache that has not caught up
+          # ("MissingComponent: Only found 0 deployed components, but was
+          # expecting 1"). That path takes no grace period and no retry, so a
+          # sub-second cache lag destroys a user job; it reaches users as a
+          # container exiting -1. Not fixed in v1.2.2. Pinned by digest as well
+          # as tag, because the SHA-256 gate in the buildspec covers the
+          # upstream YAML, not our registry. Set to '' to use upstream
+          # unmodified; once upstream ships a fix, drop this and bump
+          # APPWRAPPER_VERSION instead.
+          - Name: APPWRAPPER_IMAGE
+            Value: 'public.ecr.aws/miresearch/pl-containers:appwrapper-v1.2.0-milab-6881@sha256:77fda74e30c6fd1bf8fb6c5c419ab9b92c82d9b8d32d9ca46fefb78338ede9a5'
+          # Upstream ships 128Mi/64Mi, which leaves the controller no headroom:
+          # it caches every AppWrapper, Job and Pod it watches, so footprint
+          # grows with the size of the queue rather than staying flat.
+          - Name: APPWRAPPER_CONTROLLER_MEMORY_LIMIT
+            Value: '1Gi'
+          - Name: APPWRAPPER_CONTROLLER_MEMORY_REQUEST
+            Value: '256Mi'
           - Name: CLUSTER_AUTOSCALER_CHART_VERSION
             Value: '9.56.0'
           - Name: EXTERNAL_DNS_VERSION
@@ -3206,6 +3226,27 @@ Resources:
                     rm -f "$APPWRAPPER_INSTALL_YAML_TMP"
                     exit 1
                   fi
+                  # Substitute our patched controller image and raise the
+                  # controller's memory (see APPWRAPPER_IMAGE above). This runs
+                  # AFTER the SHA-256 gate, so upstream integrity is verified
+                  # before anything is rewritten. A substitution that matched
+                  # nothing would fail silently and leave the buggy upstream
+                  # controller running while the config claims otherwise, so
+                  # each pattern is asserted to occur exactly once first.
+                  aw_sub() {
+                    n="$(grep -cF -- "$1" "$APPWRAPPER_INSTALL_YAML_TMP" || true)"
+                    if [ "$n" != "1" ]; then
+                      echo "ERROR: expected '$1' exactly once in the AppWrapper install.yaml, found $n — the override would not apply as intended." >&2
+                      echo "       Upstream likely changed the manager container at $APPWRAPPER_VERSION; re-check the patterns in this buildspec." >&2
+                      exit 1
+                    fi
+                    sed -i "s|$1|$2|" "$APPWRAPPER_INSTALL_YAML_TMP"
+                  }
+                  if [ -n "${APPWRAPPER_IMAGE:-}" ]; then
+                    aw_sub "quay.io/ibm/appwrapper:$APPWRAPPER_VERSION" "$APPWRAPPER_IMAGE"
+                  fi
+                  aw_sub "            memory: 128Mi" "            memory: $APPWRAPPER_CONTROLLER_MEMORY_LIMIT"
+                  aw_sub "            memory: 64Mi" "            memory: $APPWRAPPER_CONTROLLER_MEMORY_REQUEST"
                   kubectl apply --server-side -f "$APPWRAPPER_INSTALL_YAML_TMP"
                   rm -f "$APPWRAPPER_INSTALL_YAML_TMP"
                   kubectl wait --for=condition=Available deployment/appwrapper-controller-manager -n appwrapper-system --timeout=120s
@@ -4161,6 +4202,9 @@ Resources:
       KubernetesVersion: !FindInMap [Constants, EKS, Version]
       KueueVersion: '0.16.1'
       AppWrapperVersion: 'v1.2.0'
+      AppWrapperImage: 'public.ecr.aws/miresearch/pl-containers:appwrapper-v1.2.0-milab-6881@sha256:77fda74e30c6fd1bf8fb6c5c419ab9b92c82d9b8d32d9ca46fefb78338ede9a5'
+      AppWrapperControllerMemoryLimit: '1Gi'
+      AppWrapperControllerMemoryRequest: '256Mi'
       ClusterAutoscalerChartVersion: '9.56.0'
       ExternalDnsVersion: '1.20.0'
       AlbControllerVersion: '3.0.0'

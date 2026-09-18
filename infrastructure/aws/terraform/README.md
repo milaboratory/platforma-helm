@@ -310,7 +310,10 @@ behavioral:
 - htpasswd hashes use Terraform's built-in `bcrypt()` (the chart consumes
   bcrypt) instead of CloudFormation's apr1 convenience hashing.
 - The AppWrapper `install.yaml` is integrity-checked against a pinned SHA-256
-  before apply.
+  before apply. Once verified, the controller image is substituted for our
+  patched build and its memory raised (`appwrapper_image`,
+  `appwrapper_controller_memory_limit`, `appwrapper_controller_memory_request`);
+  the CloudFormation buildspec does the same with `sed`.
 
 Versions are duplicated from the template; the header comments in each file flag
 what to keep in sync on a bump.

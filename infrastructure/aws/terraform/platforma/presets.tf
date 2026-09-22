@@ -6,8 +6,13 @@
 # MaxSize; the two modules are independent, so the size matrix is duplicated.
 # Keep both in sync when changing sizing.
 #
-#   * max_job_*   — largest single job Kueue admits (constant across sizes; one
-#                   batch node's allocatable). Mirrors kueue.maxJobResources.
+#   * max_job_*   — largest single job Kueue admits (PRESET-DRIVEN since
+#                   MILAB-6982; one batch node's allocatable). Mirrors
+#                   kueue.maxJobResources. small 62/484 (r7i.16xlarge), medium/large 94/733 (r7i.24xlarge),
+#                   large 94/733 (r7i.24xlarge), xlarge 126/973 (r8i.32xlarge).
+#                   All MEASURED on real nodes -- see infra/presets.tf.
+#                   Derivation + the "derived, not measured" caveat live in
+#                   infra/presets.tf — keep both in sync.
 #   * batch/ui_*  — total ClusterQueue quota per pool (kueue.dedicated.resources).
 #                   UI quota is fixed at 64 vCPU / 256 GiB across all sizes.
 #   * gpu_queue_gpu — GPU-job concurrency (nvidia.com/gpu ClusterQueue quota). The
@@ -17,9 +22,6 @@
 # =============================================================================
 
 locals {
-  max_job_cpu       = 62
-  max_job_memory_gi = 484
-
   # Per-job GPU ceilings. Mirror the largest GPU node group in infra/nodegroups.tf
   # GPU jobs run on a separate node pool, so a job needing a GPU is ceiled to these
   # instead of the batch max_job_cpu/max_job_memory_gi. CPU/RAM must be the largest
@@ -47,24 +49,44 @@ locals {
       ui_memory_gi    = 256
     }
     medium = {
-      batch_cpu       = 252
-      batch_memory_gi = 968
+      batch_cpu       = 346
+      batch_memory_gi = 1701
       ui_cpu          = 64
       ui_memory_gi    = 256
     }
     large = {
-      batch_cpu       = 504
-      batch_memory_gi = 1936
+      batch_cpu       = 692
+      batch_memory_gi = 3402
       ui_cpu          = 64
       ui_memory_gi    = 256
     }
     xlarge = {
-      batch_cpu       = 1008
-      batch_memory_gi = 3872
+      batch_cpu       = 1636
+      batch_memory_gi = 8750
       ui_cpu          = 64
       ui_memory_gi    = 256
     }
   }
 
   preset = local.deployment_sizes[var.deployment_size]
+
+  # Per-job ceiling DERIVED from the largest batch node's MEASURED allocatable
+  # (floor - 2). Mirrors infra/presets.tf -- keep the two tables in sync.
+  batch_node_allocatable = {
+    "r7i.16xlarge" = { cpu = 64, memory_gi = 486 }
+    "r7i.24xlarge" = { cpu = 96, memory_gi = 735 }
+    "r8i.32xlarge" = { cpu = 128, memory_gi = 975 }
+  }
+  largest_batch_type = {
+    small  = "r7i.16xlarge"
+    medium = "r7i.24xlarge"
+    large  = "r7i.24xlarge"
+    xlarge = "r8i.32xlarge"
+  }
+  largest_batch_node        = local.batch_node_allocatable[local.largest_batch_type[var.deployment_size]]
+  largest_batch_node_cpu    = local.largest_batch_node.cpu
+  largest_batch_node_mem_gi = local.largest_batch_node.memory_gi
+
+  max_job_cpu       = local.largest_batch_node_cpu - 2
+  max_job_memory_gi = local.largest_batch_node_mem_gi - 2
 }

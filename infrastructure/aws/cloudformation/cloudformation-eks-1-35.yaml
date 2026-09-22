@@ -770,18 +770,62 @@ Mappings:
 
   # Kueue ClusterQueue quotas and node group MaxSize per deployment size.
   # Quotas are derived from pool sizes (worst case: all jobs are max size).
-  # CPU: (64-vCPU node count) x 63 allocatable.  Memory: (r7i.16xl count) x 484Gi.
+  #
+  # MaxJobCpu / MaxJobMemoryGi are the largest SINGLE job Kueue admits. They are
+  # PRESET-DRIVEN since MILAB-6982 -- previously a flat 62 / 484Gi everywhere:
+  #
+  #   size    per-job cap      backing node    nominal   EKS allocatable
+  #   small   62 vCPU / 484Gi  r7i.16xlarge    512 GiB   ~486 GiB (MEASURED)
+  #   medium  62 vCPU / 484Gi  r7i.16xlarge    512 GiB   ~486 GiB (MEASURED)
+  #   large   94 vCPU / 733Gi  r7i.24xlarge    768 GiB   735.38 GiB (MEASURED)
+  #   xlarge 126 vCPU / 973Gi  r8i.32xlarge   1024 GiB   975.37 GiB (MEASURED)
+  #
+  # Ceiling rule is uniform: floor(measured allocatable) - 2, which reproduces
+  # the long-standing 484 from r7i.16xlarge's 486.94 GiB.
+  #
   # 484Gi = r7i.16xlarge EKS allocatable (~486 GiB) minus ~1 GiB EKS DaemonSet
   # overhead (aws-node, kube-proxy, ebs-csi) minus 1 GiB safety margin for
-  # customer-installed DaemonSets (Datadog, Falco, Wiz, etc.). Matches the GCP
-  # per-job ceiling on n2d-highmem-64 so the same deployment_size label means
-  # the same workload capacity on both clouds.
+  # customer-installed DaemonSets (Datadog, Falco, Wiz, etc.). The large/xlarge
+  # figures were MEASURED the same way: both shapes were booted on
+  # pl-lab-cluster (eu-central-1, EKS 1.35 / AL2023, 2026-09-21) and read off
+  # .status.allocatable.memory, then the same ~3 GiB margin applied. A job
+  # requesting more than true allocatable passes Kueue admission and then sits
+  # Pending forever, so do not raise these without re-measuring. CPU headroom
+  # follows the existing convention (2 cores reserved): 64->62, 96->94, 128->126.
+  #
+  # NOTE: real EKS kube-reserved is 255 MiB + 11 MiB * maxPods + 100 MiB
+  # eviction. The _eks_alloc_ram_gib helper further down is the GKE tiered
+  # formula, which over-reserves ~3x and, fed nominal capacity, comes out ~8 GiB
+  # OPTIMISTIC at 512 GiB. It still drives the GPU ceilings and should be
+  # replaced; it is deliberately NOT used for these batch numbers.
+  # maxPods is also not uniformly capped at 737: r7i.24xlarge reserves for 737
+  # pods, but r8i.32xlarge (24 ENIs x 64 IPs) reserves for 1514 -- nearly
+  # double. Assuming the 737 cap put an earlier draft at 976Gi, ABOVE the
+  # node's real 975.37 GiB allocatable.
+  #
+  # The 96c/768g group exists on medium and above (BigBatchTiers); the
+  # 128c/1024g group is xlarge-only (XlargeBatchTier), because large's ceiling
+  # is set by r7i.24xlarge and it could never fill a 1 TiB node. small gets
+  # neither, so it never gains the ability to launch a ~$8-11/hr node.
+  # r7i has no 32xlarge (the family skips 24xl -> 48xl), hence r8i.32xlarge.
+  #
+  # medium is included because memory demand follows sample quality, not project
+  # size: one poor-quality sample needing heavy error correction can require
+  # 600+ GiB while the rest of its project runs comfortably. Below that ceiling
+  # such a request is silently reduced and the job then dies out of memory.
+  #
+  # GCP parity holds at small only. AWS medium/large admit 733Gi vs GCP's 731Gi,
+  # and AWS xlarge 973Gi vs GCP's 824Gi -- GCP's largest N2 highmem shape is
+  # n2-highmem-128 at 864 GiB nominal.
   # UI quota is fixed at 64 vCPU / 256 GiB regardless of size.
   DeploymentSize:
     small:
       # Kueue quotas (derived: 2x63=126 CPU, 1x484=484Gi)
       BatchCpu: '126'
       BatchMemoryGi: '484'
+      # Largest single job Kueue admits at this size.
+      MaxJobCpu: '62'
+      MaxJobMemoryGi: '484'
       UiCpu: '64'
       UiMemoryGi: '256'
       # Node group MaxSize per pool
@@ -790,6 +834,8 @@ Mappings:
       MaxBatch64c256g: '1'
       MaxBatch32c256g: '2'
       MaxBatch64c512g: '1'
+      MaxBatch96c768g: '0'
+      MaxBatch128c1024g: '0'
       MaxGpu3g: '2'
       MaxGpu6g: '2'
       MaxGpu12g: '1'
@@ -799,9 +845,12 @@ Mappings:
       MaxGpu96g: '1'
       MaxUi: '4'
     medium:
-      # Kueue quotas (derived: 4x63=252 CPU, 2x484=968Gi)
-      BatchCpu: '252'
-      BatchMemoryGi: '968'
+      # Kueue quotas (derived: 4x63 + 1x94 = 346 CPU, 2x484 + 1x733 = 1701Gi)
+      BatchCpu: '346'
+      BatchMemoryGi: '1701'
+      # Largest single job Kueue admits at this size.
+      MaxJobCpu: '94'
+      MaxJobMemoryGi: '733'
       UiCpu: '64'
       UiMemoryGi: '256'
       MaxBatch16c64g: '8'
@@ -809,6 +858,8 @@ Mappings:
       MaxBatch64c256g: '2'
       MaxBatch32c256g: '4'
       MaxBatch64c512g: '2'
+      MaxBatch96c768g: '1'
+      MaxBatch128c1024g: '0'
       MaxGpu3g: '4'
       MaxGpu6g: '3'
       MaxGpu12g: '2'
@@ -818,9 +869,12 @@ Mappings:
       MaxGpu96g: '1'
       MaxUi: '8'
     large:
-      # Kueue quotas (derived: 8x63=504 CPU, 4x484=1936Gi)
-      BatchCpu: '504'
-      BatchMemoryGi: '1936'
+      # Kueue quotas (derived: 8x63 + 2x94 = 692 CPU, 4x484 + 2x733 = 3402Gi)
+      BatchCpu: '692'
+      BatchMemoryGi: '3402'
+      # Largest single job Kueue admits at this size.
+      MaxJobCpu: '94'
+      MaxJobMemoryGi: '733'
       UiCpu: '64'
       UiMemoryGi: '256'
       MaxBatch16c64g: '16'
@@ -828,6 +882,8 @@ Mappings:
       MaxBatch64c256g: '4'
       MaxBatch32c256g: '8'
       MaxBatch64c512g: '4'
+      MaxBatch96c768g: '2'
+      MaxBatch128c1024g: '0'
       MaxGpu3g: '8'
       MaxGpu6g: '6'
       MaxGpu12g: '4'
@@ -837,9 +893,12 @@ Mappings:
       MaxGpu96g: '2'
       MaxUi: '16'
     xlarge:
-      # Kueue quotas (derived: 16x63=1008 CPU, 8x484=3872Gi)
-      BatchCpu: '1008'
-      BatchMemoryGi: '3872'
+      # Kueue quotas (derived: 16x63 + 4x94 + 2x126 = 1636 CPU, 8x484 + 4x733 + 2x973 = 8750Gi)
+      BatchCpu: '1636'
+      BatchMemoryGi: '8750'
+      # Largest single job Kueue admits at this size.
+      MaxJobCpu: '126'
+      MaxJobMemoryGi: '973'
       UiCpu: '64'
       UiMemoryGi: '256'
       MaxBatch16c64g: '32'
@@ -847,6 +906,8 @@ Mappings:
       MaxBatch64c256g: '8'
       MaxBatch32c256g: '16'
       MaxBatch64c512g: '8'
+      MaxBatch96c768g: '4'
+      MaxBatch128c1024g: '2'
       MaxGpu3g: '16'
       MaxGpu6g: '12'
       MaxGpu12g: '8'
@@ -864,6 +925,42 @@ Conditions:
   AutoGenerateS3Name: !Equals [!Ref S3BucketName, '']
   HasPublicSubnets: !Not [!Equals [!Select [0, !Ref PublicSubnetIds], '']]
   GpuEnabled: !Equals [!Ref EnableGpu, 'true']
+  # The two largest batch tiers (96c/768g, 128c/1024g) are offered only on
+  # large/xlarge. EKS rejects MaxSize 0, so the node groups are omitted
+  # entirely rather than created at zero.
+  BigBatchTiers: !Or
+    - !Equals [!Ref DeploymentSize, 'medium']
+    - !Equals [!Ref DeploymentSize, 'large']
+    - !Equals [!Ref DeploymentSize, 'xlarge']
+  # The 1 TiB tier is xlarge-only: large's per-job ceiling is set by
+  # r7i.24xlarge (733Gi), so a large stack could never fill a 1024 GiB node --
+  # it would just pay for one. EKS rejects MaxSize 0, hence a second Condition
+  # rather than a zero in the mapping.
+  #
+  # r8i is a newer family than r7i and its regional coverage is one region
+  # thinner: ap-northeast-3 offers r7i.16xlarge and r7i.24xlarge but NOT
+  # r8i.32xlarge (checked against live ec2 describe-instance-type-offerings
+  # across all 34 regions in GpuRegionCoverage, 2026-09-21). EKS validates the
+  # instance type with a RunInstances call when it creates a node group, so
+  # without this gate an xlarge stack in ap-northeast-3 fails to create and
+  # rolls the whole stack back.
+  #
+  # The other 17 regions where r8i.32xlarge is absent (af-south-1, ap-east-1,
+  # ap-east-2, ap-south-2, ap-southeast-3/4/5/6/7, ca-west-1, eu-central-2,
+  # eu-south-1, eu-south-2, il-central-1, me-central-1, me-south-1,
+  # mx-central-1) are already out of scope for this stack at every size:
+  # r7i.16xlarge, an existing batch tier, is absent there too. That is a
+  # pre-existing limitation, not one this tier introduces.
+  RegionHasR8i32xl: !Not [!Equals [!Ref 'AWS::Region', 'ap-northeast-3']]
+  XlargeBatchTier: !And
+    - !Equals [!Ref DeploymentSize, 'xlarge']
+    - !Condition RegionHasR8i32xl
+  # xlarge in a region without r8i.32xlarge: the node group is skipped, so the
+  # per-job ceiling MUST drop to what r7i.24xlarge can hold or Kueue would
+  # admit jobs that never schedule.
+  XlargeWithoutBigNode: !And
+    - !Equals [!Ref DeploymentSize, 'xlarge']
+    - !Not [!Condition RegionHasR8i32xl]
   # Per-region GPU coverage. Each GPU pool exists only where its card is offered,
   # so these gate the node groups below. RegionHas* look up the GpuRegionCoverage
   # Mapping (generated from live EC2 offerings by assets/generate-gpu-map.sh, covering
@@ -2356,6 +2453,74 @@ Resources:
         nodegroup-type: batch-64c-512g
         platforma: !Sub "${ClusterName}"
 
+  Batch96c768gNodeGroupV2:
+    Type: AWS::EKS::Nodegroup
+    Condition: BigBatchTiers
+    DependsOn: Batch64c512gNodeGroupV2
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: batch-96c-768g-v2
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - r7i.24xlarge
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch96c768g]
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref LargeNodeLaunchTemplate
+        Version: !GetAtt LargeNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: batch
+      Taints:
+        - Key: dedicated
+          Value: batch
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: batch-96c-768g
+        platforma: !Sub "${ClusterName}"
+
+  Batch128c1024gNodeGroupV2:
+    Type: AWS::EKS::Nodegroup
+    Condition: XlargeBatchTier
+    DependsOn: Batch96c768gNodeGroupV2
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: batch-128c-1024g-v2
+      Version: !FindInMap [Constants, EKS, Version]
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      InstanceTypes:
+        - r8i.32xlarge
+      ScalingConfig:
+        DesiredSize: 0
+        MinSize: 0
+        MaxSize: !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxBatch128c1024g]
+      Subnets: !If
+        - CreateNewVpc
+        - - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+        - !Ref PrivateSubnetIds
+      LaunchTemplate:
+        Id: !Ref LargeNodeLaunchTemplate
+        Version: !GetAtt LargeNodeLaunchTemplate.LatestVersionNumber
+      Labels:
+        node.kubernetes.io/pool: batch
+      Taints:
+        - Key: dedicated
+          Value: batch
+          Effect: NO_SCHEDULE
+      Tags:
+        nodegroup-type: batch-128c-1024g
+        platforma: !Sub "${ClusterName}"
+
   # ---------------------------------------------------------------------------
   # 4b. GPU node groups — one pool per real GPU card, scale from 0
   # ---------------------------------------------------------------------------
@@ -3492,6 +3657,12 @@ Resources:
             Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchCpu]
           - Name: BATCH_QUEUE_MEMORY_GI
             Value: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchMemoryGi]
+          # Largest single job Kueue admits. Preset-driven (MILAB-6982) — must
+          # fit one batch node's allocatable or admitted pods sit Pending.
+          - Name: MAX_JOB_CPU
+            Value: !If [XlargeWithoutBigNode, '94', !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxJobCpu]]
+          - Name: MAX_JOB_MEMORY_GI
+            Value: !If [XlargeWithoutBigNode, '733', !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxJobMemoryGi]]
           - Name: GPU_ENABLED
             Value: !Ref EnableGpu
           # GPU job ceilings for the region's biggest GPU node (from
@@ -3975,8 +4146,8 @@ Resources:
                       alb.ingress.kubernetes.io/success-codes: '0'
                   kueue:
                     maxJobResources:
-                      cpu: 62
-                      memory: 484Gi
+                      cpu: $MAX_JOB_CPU
+                      memory: ${MAX_JOB_MEMORY_GI}Gi
                       # gpuMemory/gpuCpu/gpuRam mirror the region's highest-VRAM GPU
                       # node (one real node, computed by GpuSubnetResolver from the
                       # GPU ladder) and passed in via GPU_MAX_* env vars. GPU jobs
@@ -4254,11 +4425,13 @@ Resources:
       # stale on stack updates and required a manual ForceUpdatePlatforma bump.
       BatchQueueCpu:      !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchCpu]
       BatchQueueMemoryGi: !FindInMap [DeploymentSize, !Ref DeploymentSize, BatchMemoryGi]
+      MaxJobCpu:            !If [XlargeWithoutBigNode, '94', !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxJobCpu]]
+      MaxJobMemoryGi:       !If [XlargeWithoutBigNode, '733', !FindInMap [DeploymentSize, !Ref DeploymentSize, MaxJobMemoryGi]]
       # Bump when changing platforma values that are hardcoded in the deployer
       # buildspec (not derived from a Mapping above) — e.g.
       # kueue.maxJobResources.memory or app.resources.limits.memory. Mirrors
       # the BuildSpecRevision pattern on TriggerHelmDeploy.
-      PlatformaValuesRevision: "1"
+      PlatformaValuesRevision: "2"
       PlatformaVersion: !If
         - UseDefaultPlatformaVersion
         - !FindInMap [Constants, Platforma, Version]

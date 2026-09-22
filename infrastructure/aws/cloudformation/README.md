@@ -313,17 +313,40 @@ block or `app.extraArgs` via the [advanced-installation](advanced-installation.m
 3. In **Deployment size (controls parallelism)** select the maximum available size from the table below. Request an increase if
    needed. The stack checks the quota during deployment and fails with an error if it is too low.
 
-| Size     | Recommended vCPU quota | Max single-job    | Approximate parallelism<br>(samples in parallel) | GPU nodes                        |
-|----------|------------------------|-------------------|--------------------------------------------------|----------------------------------|
-| `small`  | ~400                   | 62 vCPU / 484 GiB | ~4 large or ~16 small jobs                       | ~1 medium (48GiB) to ~2 small (3GiB) jobs |
-| `medium` | ~700                   | 62 vCPU / 484 GiB | ~8 large or ~32 small jobs                       | ~1 big to ~4 small jobs          |
-| `large`  | ~1400                  | 62 vCPU / 484 GiB | ~16 large or ~64 small jobs                      | ~2 big to ~8 small jobs          |
-| `xlarge` | ~2700                  | 62 vCPU / 484 GiB | ~32 large or ~128 small jobs                     | ~4 big to ~16 small jobs         |
+| Size     | Recommended vCPU quota | Max single-job     | Largest batch node | Approximate parallelism<br>(samples in parallel) | GPU nodes                        |
+|----------|------------------------|--------------------|--------------------|--------------------------------------------------|----------------------------------|
+| `small`  | ~400                   | 62 vCPU / 484 GiB  | `r7i.16xlarge`     | ~4 large or ~16 small jobs                       | ~1 medium (48GiB) to ~2 small (3GiB) jobs |
+| `medium` | ~950                   | 94 vCPU / 733 GiB  | `r7i.24xlarge`     | ~8 large or ~32 small jobs                       | ~1 big to ~4 small jobs          |
+| `large`  | ~1900                  | 94 vCPU / 733 GiB  | `r7i.24xlarge`     | ~16 large or ~64 small jobs                      | ~2 big to ~8 small jobs          |
+| `xlarge` | ~3400                  | 126 vCPU / 973 GiB | `r8i.32xlarge`     | ~32 large or ~128 small jobs                     | ~4 big to ~16 small jobs         |
+
+`medium` and above additionally provision high-memory batch node groups
+(`r7i.24xlarge` — 96 vCPU / 768 GiB, and `r8i.32xlarge` — 128 vCPU / 1024 GiB),
+both scale-from-zero so they cost nothing while idle. `small` and `medium` do
+not get them, which is why `small`'s max single-job size stays at 62 vCPU / 484 GiB.
+`medium` gains the 768 GiB tier because memory demand is driven by sample
+quality, not project size: a single poor-quality sample needing heavy error
+correction can require 600+ GiB while every other sample in the same project
+runs comfortably. Below that ceiling such a sample is silently reduced to the
+limit and then dies out of memory.
+
+The max single-job figures are one node's *allocatable* memory — raw capacity
+minus kubelet reserve and the eviction threshold. A job may not request more
+than this: Kueue would admit it and the pod would then stay `Pending` forever.
+Every figure is measured on a live node — 486.94 GiB on `r7i.16xlarge`,
+735.38 GiB on `r7i.24xlarge`, 975.37 GiB on `r8i.32xlarge` — and the ceiling is
+`floor(measured) − 2 GiB` for DaemonSet overhead and safety margin. The chart
+refuses to deploy if a ceiling ever exceeds the node it is paired with, so this
+cannot silently drift.
+
+Raising the deployment size raises the recommended vCPU quota — the stack's
+pre-flight check fails if your account quota is below what the Kueue queue is
+sized for.
 
 
 | Parameter       | Default | Description                                                                                                                                                                                                                                                                                                            |
 |-----------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Deployment size | `small` | Controls node group scaling limits and Kueue quotas. All sizes support the same max single-job size (62 vCPU / 484 GiB).                                                                                                                                                                                              |
+| Deployment size | `small` | Controls node group scaling limits, Kueue quotas, and the max single-job size. `small` caps a single job at 62 vCPU / 484 GiB; `medium`/`large` raise it to 94 vCPU / 733 GiB and `xlarge` to 126 vCPU / 973 GiB by adding high-memory batch node groups (see the table above). |
 | Enable GPU      | `true`  | Provision GPU node groups (all 6 tiers, scale-from-zero). Set to `false` to deploy in regions without GPU instance availability or to skip GPU costs entirely. When disabled, blocks gating on `feats.hasGpu` run their CPU fallback path; `.gpuMemory()` requests fail with a clear error instead of hanging. |
 
 ![CloudFormation parameters — cluster sizing](images/cf-parameters-4.png)

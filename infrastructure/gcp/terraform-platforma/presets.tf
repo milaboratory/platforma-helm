@@ -19,15 +19,47 @@
 
 locals {
   # ---------------------------------------------------------------------------
-  # Per-job caps — fixed across all presets. A single batch job can use up to
-  # 62 vCPU / 484 GiB RAM. Derived from measured GKE allocatable on
-  # n2d-highmem-64 (486.94 GiB on pl-e2e-cluster) minus GKE-managed DaemonSet
-  # overhead (~1 GiB: fluentbit-gke, gke-metrics-agent, anetd, netd,
-  # pdcsi-node, node-local-dns, gke-metadata-server, filestore-node, gmp
-  # collector) minus 1 GiB safety margin for user-installed DaemonSets.
+  # SINGLE SOURCE OF TRUTH: MEASURED GKE allocatable per batch machine type.
+  #
+  # Read off real GKE 1.35 nodes with
+  #   kubectl get node <n> -o jsonpath='{.status.allocatable.{cpu,memory}}'
+  # (n2d-highmem-64 on pl-e2e-cluster; n2d-highmem-96 and n2-highmem-128 on
+  # tmp-alloc-verify, europe-west3-a, 2026-09-21). Values are floor(measured):
+  # 486.94 / 733.81 / 826.38 GiB. Do not add a row without booting the shape.
+  #
+  # The per-job ceiling is DERIVED from this table (floor - 2), so changing a
+  # machine type moves the ceiling with it and they cannot drift apart.
+  # floor(486.94) - 2 = 484 reproduces the long-standing n2d-highmem-64 ceiling
+  # exactly, so this generalises the existing convention rather than changing it.
+  #
+  # NOTE the reserve model is cloud-specific: GKE uses a tiered percentage
+  # formula (25/20/10/6/2% + eviction), EKS uses 255 MiB + 11 MiB * maxPods +
+  # 100 MiB. Never derive one cloud's numbers from the other's.
   # ---------------------------------------------------------------------------
-  max_job_cpu       = 62
-  max_job_memory_gi = 484
+  batch_node_allocatable = {
+    "n2d-highmem-64" = { cpu = 64, memory_gi = 486 }  # 512 GiB nominal
+    "n2d-highmem-96" = { cpu = 96, memory_gi = 733 }  # 768 GiB nominal
+    "n2-highmem-128" = { cpu = 128, memory_gi = 826 } # 864 GiB nominal
+  }
+
+  # Largest batch shape each deployment size is expected to land on. The
+  # ComputeClass ladder (batch_machine_priorities) may offer smaller shapes too;
+  # this names the ceiling-setting one.
+  largest_batch_type = {
+    small  = "n2d-highmem-64"
+    medium = "n2d-highmem-96"
+    large  = "n2d-highmem-96"
+    xlarge = "n2-highmem-128"
+  }
+
+  # PARITY WITH AWS holds at small/medium only. AWS large is 733Gi
+  # (r7i.24xlarge) vs GCP 731Gi, and AWS xlarge is 973Gi (r8i.32xlarge,
+  # 1024 GiB nominal) vs GCP 824Gi -- GCP's largest N2 highmem shape is only
+  # 864 GiB nominal. n2d-highmem stops at 96, and a 1 TiB+ GCP shape would mean
+  # a memory-optimized (M*) or C4 family: a new <FAMILY>-CPUS quota request in
+  # quotas.tf plus a PRESET_<FAMILY>_CPUS array in cloudshell/install.sh, and
+  # much thinner zonal availability.
+  # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
   # Batch capacity envelope per preset. Batch nodes are provisioned on demand
@@ -157,9 +189,19 @@ locals {
     #     zone. 80 vCPU / 640 GiB (~607 GiB alloc) ---
     "n2d-highmem-80",
     "n2-highmem-80",
-    # --- 96 vCPU / 768 GiB (~730 GiB allocatable) ---
+    # --- 96 vCPU / 768 GiB (733.81 GiB allocatable, MEASURED) -- large ceiling ---
     "n2d-highmem-96",
     "n2-highmem-96",
+    # --- 128 vCPU / 864 GiB (826.38 GiB allocatable, MEASURED) -- xlarge ceiling.
+    #     NOTE this list is NOT preset-scoped: computeclass.tf applies it at
+    #     every deployment_size, so small/medium can also land here if every
+    #     smaller tier is stocked out in every zone. That is a last-resort
+    #     fallback (first-fit walks the list in order), but it does mean a
+    #     small GCP cluster can provision a 128 vCPU node -- its 320 vCPU Kueue
+    #     quota admits one. Scope the list per size if that is unacceptable.
+    #     N2 only: n2d-highmem stops at 96. Covered by the existing N2_CPUS
+    #     quota request, so no new family quota is needed. ---
+    "n2-highmem-128",
   ]
 
   # ---------------------------------------------------------------------------
@@ -245,6 +287,14 @@ locals {
   }
 
   preset = local.presets[var.deployment_size]
+
+  # Per-job ceiling DERIVED from the largest batch node's MEASURED allocatable.
+  largest_batch_node        = local.batch_node_allocatable[local.largest_batch_type[var.deployment_size]]
+  largest_batch_node_cpu    = local.largest_batch_node.cpu
+  largest_batch_node_mem_gi = local.largest_batch_node.memory_gi
+
+  max_job_cpu       = local.largest_batch_node_cpu - 2
+  max_job_memory_gi = local.largest_batch_node_mem_gi - 2
 
   # ---------------------------------------------------------------------------
   # Resolved batch capacity. Sizes the Kueue ClusterQueue admission quota

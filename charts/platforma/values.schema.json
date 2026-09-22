@@ -20,7 +20,11 @@
         },
         "pullPolicy": {
           "type": "string",
-          "enum": ["Always", "IfNotPresent", "Never"]
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
         }
       },
       "additionalProperties": false
@@ -34,7 +38,9 @@
             "type": "string"
           }
         },
-        "required": ["name"]
+        "required": [
+          "name"
+        ]
       }
     },
     "validation": {
@@ -48,7 +54,11 @@
     },
     "environment": {
       "type": "string",
-      "enum": ["", "aws", "gcp"]
+      "enum": [
+        "",
+        "aws",
+        "gcp"
+      ]
     },
     "license": {
       "type": "object",
@@ -60,7 +70,10 @@
           "type": "string"
         }
       },
-      "required": ["secretName", "secretKey"],
+      "required": [
+        "secretName",
+        "secretKey"
+      ],
       "additionalProperties": false
     },
     "auth": {
@@ -82,7 +95,11 @@
               },
               "type": {
                 "type": "string",
-                "enum": ["sso", "htpasswd", "ldap"]
+                "enum": [
+                  "sso",
+                  "htpasswd",
+                  "ldap"
+                ]
               },
               "title": {
                 "type": "string"
@@ -107,18 +124,32 @@
                   },
                   "prompt": {
                     "type": "string",
-                    "enum": ["", "none", "login", "consent", "select_account"]
+                    "enum": [
+                      "",
+                      "none",
+                      "login",
+                      "consent",
+                      "select_account"
+                    ]
                   },
                   "accessType": {
                     "type": "string",
-                    "enum": ["", "online", "offline"]
+                    "enum": [
+                      "",
+                      "online",
+                      "offline"
+                    ]
                   },
                   "userIdClaim": {
                     "type": "string"
                   },
                   "subjectTokenSource": {
                     "type": "string",
-                    "enum": ["", "access_token", "id_token"]
+                    "enum": [
+                      "",
+                      "access_token",
+                      "id_token"
+                    ]
                   },
                   "redirectPorts": {
                     "type": "array",
@@ -164,7 +195,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["username", "password"]
+                      "required": [
+                        "username",
+                        "password"
+                      ]
                     }
                   },
                   "secretName": {
@@ -341,7 +375,10 @@
                 "additionalProperties": false
               }
             },
-            "required": ["name", "type"],
+            "required": [
+              "name",
+              "type"
+            ],
             "additionalProperties": false
           }
         },
@@ -366,7 +403,10 @@
                     "type": "string"
                   }
                 },
-                "required": ["username", "password"]
+                "required": [
+                  "username",
+                  "password"
+                ]
               }
             },
             "secretName": {
@@ -470,11 +510,21 @@
             },
             "prompt": {
               "type": "string",
-              "enum": ["", "none", "login", "consent", "select_account"]
+              "enum": [
+                "",
+                "none",
+                "login",
+                "consent",
+                "select_account"
+              ]
             },
             "accessType": {
               "type": "string",
-              "enum": ["", "online", "offline"]
+              "enum": [
+                "",
+                "online",
+                "offline"
+              ]
             },
             "userIdClaim": {
               "type": "string"
@@ -619,7 +669,11 @@
                 },
                 "accessMode": {
                   "type": "string",
-                  "enum": ["ReadWriteOnce", "ReadWriteMany", "ReadOnlyMany"],
+                  "enum": [
+                    "ReadWriteOnce",
+                    "ReadWriteMany",
+                    "ReadOnlyMany"
+                  ],
                   "default": "ReadWriteMany"
                 },
                 "size": {
@@ -639,7 +693,11 @@
           "properties": {
             "type": {
               "type": "string",
-              "enum": ["", "s3", "gcs"]
+              "enum": [
+                "",
+                "s3",
+                "gcs"
+              ]
             },
             "s3": {
               "type": "object",
@@ -714,7 +772,11 @@
           },
           "type": {
             "type": "string",
-            "enum": ["pvc", "s3", "gcs"]
+            "enum": [
+              "pvc",
+              "s3",
+              "gcs"
+            ]
           },
           "pvc": {
             "type": "object",
@@ -723,7 +785,9 @@
                 "type": "string"
               }
             },
-            "required": ["existingClaim"]
+            "required": [
+              "existingClaim"
+            ]
           },
           "s3": {
             "type": "object",
@@ -763,7 +827,9 @@
                 "type": "boolean"
               }
             },
-            "required": ["bucket"]
+            "required": [
+              "bucket"
+            ]
           },
           "gcs": {
             "type": "object",
@@ -781,10 +847,15 @@
                 "type": "string"
               }
             },
-            "required": ["bucket"]
+            "required": [
+              "bucket"
+            ]
           }
         },
-        "required": ["name", "type"]
+        "required": [
+          "name",
+          "type"
+        ]
       }
     },
     "kueue": {
@@ -792,7 +863,10 @@
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["dedicated", "shared"]
+          "enum": [
+            "dedicated",
+            "shared"
+          ]
         },
         "imagePullMaxRetries": {
           "type": "integer",
@@ -805,7 +879,10 @@
           "type": "object",
           "properties": {
             "cpu": {
-              "type": ["integer", "string"]
+              "type": [
+                "integer",
+                "string"
+              ]
             },
             "memory": {
               "type": "string",
@@ -816,7 +893,10 @@
               "pattern": "^[0-9]+Gi$"
             },
             "gpuCpu": {
-              "type": ["integer", "string"]
+              "type": [
+                "integer",
+                "string"
+              ]
             },
             "gpuRam": {
               "type": "string",
@@ -889,7 +969,10 @@
                   "type": "object",
                   "properties": {
                     "cpu": {
-                      "type": ["integer", "string"]
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
                     },
                     "memory": {
                       "type": "string"
@@ -900,7 +983,10 @@
                   "type": "object",
                   "properties": {
                     "cpu": {
-                      "type": ["integer", "string"]
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
                     },
                     "memory": {
                       "type": "string"
@@ -911,10 +997,16 @@
                   "type": "object",
                   "properties": {
                     "gpu": {
-                      "type": ["integer", "string"]
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
                     },
                     "cpu": {
-                      "type": ["integer", "string"]
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
                     },
                     "memory": {
                       "type": "string"
@@ -1099,7 +1191,11 @@
                     "type": "string"
                   }
                 },
-                "required": ["name", "secretName", "secretKey"]
+                "required": [
+                  "name",
+                  "secretName",
+                  "secretKey"
+                ]
               }
             },
             "configMapVariables": {
@@ -1117,7 +1213,11 @@
                     "type": "string"
                   }
                 },
-                "required": ["name", "configMapName", "configMapKey"]
+                "required": [
+                  "name",
+                  "configMapName",
+                  "configMapKey"
+                ]
               }
             }
           },
@@ -1253,40 +1353,75 @@
           "type": "object",
           "properties": {
             "enabled": {
-              "type": ["boolean", "null"]
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "network": {
               "type": "object",
               "properties": {
                 "maxRequest": {
-                  "type": ["string", "number", "null"]
+                  "type": [
+                    "string",
+                    "number",
+                    "null"
+                  ]
                 },
                 "gpuMaxRequest": {
-                  "type": ["string", "number", "null"]
+                  "type": [
+                    "string",
+                    "number",
+                    "null"
+                  ]
                 },
                 "minRequest": {
-                  "type": ["string", "number", "null"]
+                  "type": [
+                    "string",
+                    "number",
+                    "null"
+                  ]
                 },
                 "storageClass": {
                   "type": "object",
                   "properties": {
                     "create": {
-                      "type": ["boolean", "null"]
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
                     },
                     "name": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "type": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "iops": {
-                      "type": ["string", "number", "null"]
+                      "type": [
+                        "string",
+                        "number",
+                        "null"
+                      ]
                     },
                     "throughput": {
-                      "type": ["string", "number", "null"]
+                      "type": [
+                        "string",
+                        "number",
+                        "null"
+                      ]
                     },
                     "encrypted": {
-                      "type": ["boolean", "null"]
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
                     }
                   },
                   "additionalProperties": false

@@ -247,7 +247,7 @@ aws ssm get-parameter \
 
 - **Deployment size** — `deployment_size` (`small`/`medium`/`large`/`xlarge`)
   sets node-group MaxSize and the Kueue ClusterQueue quotas. All sizes share the
-  same max single-job size (62 vCPU / 484 GiB).
+  per-job ceiling from the size preset: small 62 vCPU / 484 GiB, medium/large 94 / 733 GiB, xlarge 126 / 973 GiB.
 - **GPU** — `enable_gpu` provisions scale-from-zero GPU node groups (no cost
   when idle). Set `false` in regions without g6/g6e capacity.
 - **Authentication** — `auth_method = "htpasswd"` (default) auto-generates a

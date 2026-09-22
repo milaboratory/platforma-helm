@@ -438,13 +438,13 @@ variable "skip_quota_requests" {
 
 variable "kueue_max_job_cpu" {
   type        = number
-  description = "Override max vCPU per single job. null = preset default (62)."
+  description = "Override max vCPU per single job. null = preset default (small/medium 62, large 94, xlarge 126)."
   default     = null
 }
 
 variable "kueue_max_job_memory" {
   type        = string
-  description = "Override max memory per single job. null = preset default (500Gi)."
+  description = "Override max memory per single job. null = preset default (small/medium 484Gi on n2d-highmem-64, large 731Gi on n2d-highmem-96, xlarge 824Gi on n2-highmem-128). Must fit the allocatable of a shape in batch_machine_priorities."
   default     = null
 }
 

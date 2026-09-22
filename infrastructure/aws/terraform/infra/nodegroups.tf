@@ -174,8 +174,16 @@ resource "aws_eks_node_group" "ui" {
 }
 
 # -----------------------------------------------------------------------------
-# Batch node groups. Five CPU/memory tiers, all scale-from-zero, tainted to the
+# Batch node groups. Seven CPU/memory tiers, all scale-from-zero, tainted to the
 # batch pool. MaxSize per tier from the deployment-size preset.
+#
+# The two largest tiers (96c/768g, 128c/1024g) exist only on large/xlarge: their
+# preset max_size is 0 there and batch_node_groups filters those out, so a
+# small/medium cluster never gains the ability to launch a ~$6-8/hr node. EKS
+# rejects maxSize = 0, so omitting the node group is the only way to express
+# "not available at this size".
+#
+# r7i has no 32xlarge (24xl -> 48xl), so the 1 TiB tier uses r8i.32xlarge.
 # -----------------------------------------------------------------------------
 locals {
   batch_node_groups = {
@@ -204,11 +212,26 @@ locals {
       launch_template = "large"
       max_size        = local.preset.max_batch_64c512g
     }
+    "batch-96c-768g-v2" = {
+      instance_type   = "r7i.24xlarge"
+      launch_template = "large"
+      max_size        = local.preset.max_batch_96c768g
+    }
+    "batch-128c-1024g-v2" = {
+      instance_type   = "r8i.32xlarge"
+      launch_template = "large"
+      max_size        = local.preset.max_batch_128c1024g
+    }
+  }
+
+  # A tier whose preset max_size is 0 is not offered at this deployment size.
+  active_batch_node_groups = {
+    for k, v in local.batch_node_groups : k => v if v.max_size > 0
   }
 }
 
 resource "aws_eks_node_group" "batch" {
-  for_each = local.batch_node_groups
+  for_each = local.active_batch_node_groups
 
   cluster_name    = aws_eks_cluster.this.name
   node_group_name = each.key

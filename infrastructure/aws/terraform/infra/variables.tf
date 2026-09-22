@@ -48,7 +48,7 @@ variable "helm_release_name" {
 
 variable "deployment_size" {
   type        = string
-  description = "Cluster sizing profile. Controls node-group MaxSize per pool, GPU node counts, and the Kueue ClusterQueue quotas the platforma module derives. All sizes share the same max single-job size (62 vCPU / 484Gi)."
+  description = "Cluster sizing profile. Controls node-group MaxSize per pool, GPU node counts, and the Kueue ClusterQueue quotas the platforma module derives. Per-job ceiling is preset-driven: small 62 vCPU / 484Gi (r7i.16xlarge), medium/large 94 / 733Gi (r7i.24xlarge), xlarge 126 / 973Gi (r8i.32xlarge)."
   default     = "small"
 
   validation {

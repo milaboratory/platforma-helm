@@ -82,9 +82,29 @@ All three share the same Terraform module under [`terraform/`](terraform/).
 
 `deployment_size` controls the cluster-wide batch capacity envelope, UI pool
 max-node count, Kueue batch queue quotas, Filestore default capacity, and
-the values the installer requests via the Cloud Quotas API. **All sizes
-share the same per-job cap of 62 vCPU / 484 GiB RAM** — the preset
-controls cluster-wide parallelism.
+the values the installer requests via the Cloud Quotas API, and the **per-job
+cap** — the largest single job Kueue will admit:
+
+| Size     | Per-job cap        | Backing shape    |
+|----------|--------------------|------------------|
+| `small`  | 62 vCPU / 484 GiB  | `n2d-highmem-64` |
+| `medium` | 94 vCPU / 731 GiB  | `n2d-highmem-96` |
+| `large`  | 94 vCPU / 731 GiB  | `n2d-highmem-96` |
+| `xlarge` | 126 vCPU / 824 GiB | `n2-highmem-128` |
+
+The cap is one node's *allocatable* memory, not its nominal size — a job that
+requests more is admitted by Kueue and then stays `Pending` forever. All
+figures are measured on real GKE 1.35 nodes (486.94 / 733.81 / 826.38 GiB),
+and the ceiling is `floor(measured) − 2 GiB` for GKE DaemonSet overhead and
+safety margin. The chart refuses to deploy if a ceiling exceeds the node it is
+paired with, so this cannot silently drift.
+
+> **AWS parity:** the same size label means the same per-job cap on both clouds
+> at `small` and `medium` only. At `large` AWS allows 733 GiB vs GCP's 731, and
+> at `xlarge` AWS allows 973 GiB (`r8i.32xlarge`, 1024 GiB nominal) vs GCP's
+> 824 — GCP's largest N2 highmem shape is `n2-highmem-128` at 864 GiB nominal.
+> The two clouds also reserve memory differently: GKE uses a tiered percentage
+> formula, EKS uses `255 MiB + 11 MiB × maxPods + 100 MiB`.
 
 Batch nodes are provisioned on demand by a custom **GKE ComputeClass**
 (`platforma-batch`) — there are no static batch pools. Cluster-wide Node
@@ -315,10 +335,15 @@ Active-job cost depends on which machine type the ComputeClass provisions:
 | `n2d-standard-32` | 32 / 128 GiB   | ~$1.40 | |
 | `n2d-highmem-32`  | 32 / 256 GiB   | ~$2.10 | |
 | `n2d-standard-64` | 64 / 256 GiB   | ~$2.75 | |
-| `n2d-highmem-64`  | 64 / 512 GiB   | ~$4.20 | primary host for max 62/484 jobs |
+| `n2d-highmem-64`  | 64 / 512 GiB   | ~$4.20 | primary host for small/medium max 62/484 jobs |
 | `n2-highmem-64`   | 64 / 512 GiB   | ~$4.70 | Intel fallback on n2d stockout |
 | `n2d-highmem-80`  | 80 / 640 GiB   | ~$5.25 | xlarge fallback |
-| `n2d-highmem-96`  | 96 / 768 GiB   | ~$6.30 | xlarge fallback, largest shape |
+| `n2d-highmem-96`  | 96 / 768 GiB   | ~$6.30 | host for `large` max 94/731 jobs |
+| `n2-highmem-128`  | 128 / 864 GiB  | _n/a_¹ | host for `xlarge` max 126/824 jobs, largest shape |
+
+¹ Price not listed because it could not be verified against the GCP SKU
+catalogue. Expect roughly 2× `n2-highmem-64` on vCPU and ~1.7× on RAM; confirm
+in the pricing calculator for your region before budgeting.
 
 (europe-west1 list prices; spot / commit / SUD discounts apply separately —
 always check the GCP price calculator for current numbers.) The priority list

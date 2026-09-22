@@ -65,8 +65,14 @@ kueue:
   # Max resources for a single job (rejects jobs that exceed this).
   # 484Gi = r7i.16xlarge EKS allocatable (~486 GiB) minus ~1 GiB EKS DaemonSet
   # overhead minus 1 GiB safety margin for customer-installed DaemonSets.
-  # Matches GCP per-job ceiling on n2d-highmem-64 so deployment_size means the
-  # same workload capacity on both clouds. Reduce further if you run heavier DS.
+  # This file is the MANUAL/helm install path and keeps the conservative
+  # r7i.16xlarge ceiling, which fits every deployment size. The CloudFormation
+  # stack does NOT read these values — it renders maxJobResources from the
+  # DeploymentSize mapping, where large/xlarge raise the cap to 94/733Gi
+  # (r7i.24xlarge) and 126/973Gi (r8i.32xlarge). Raise this only if your
+  # cluster actually has a batch node whose ALLOCATABLE can host the request:
+  # a job above allocatable is admitted by Kueue and then stays Pending
+  # forever. Reduce further if you run heavier DaemonSets.
   # gpuMemory/gpuCpu/gpuRam mirror the largest GPU node group provisioned by the CF
   # stack (gpu-96g → g6e.12xlarge: 48 vCPU / 384 GiB RAM / 48 GiB VRAM via 4 x L40S).
   # GPU jobs are ceiled to these instead of cpu/memory; CPU/RAM use the node's

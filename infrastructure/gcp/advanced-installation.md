@@ -442,16 +442,27 @@ deployment_size = "large"
 ui_pool_max_nodes      = 8       # preset large = 16; UI is still a static pool
 workspace_capacity_gb  = 8192    # preset large = 4096
 
-# Kueue caps for very large jobs (defaults: 62 CPU / 484Gi).
+# Kueue caps for very large jobs. The DEFAULT is preset-driven:
+#   small/medium  62 CPU / 484Gi   (n2d-highmem-64)
+#   large         94 CPU / 731Gi   (n2d-highmem-96)
+#   xlarge       126 CPU / 824Gi   (n2-highmem-128)
 # 484Gi = measured GKE allocatable on n2d-highmem-64 (486.94 GiB)
-# minus ~1 GiB GKE DaemonSet overhead minus 1 GiB safety margin.
-# Raising this requires a machine in batch_machine_priorities whose
-# allocatable can host the request. n2d/n2-highmem-96 (~730 GiB) are the
-# largest shapes in the default list, but they sit in the xlarge fallback
-# tier: anything above ~484 GiB will only ever land there, and above
-# ~607 GiB only on the two -96 shapes.
+# minus ~1 GiB GKE DaemonSet overhead minus 1 GiB safety margin; the
+# large/xlarge are likewise MEASURED (733.81 / 826.38 GiB allocatable on
+# real GKE 1.35 nodes). Overriding requires a machine in
+# batch_machine_priorities whose allocatable can host the request —
+# n2-highmem-128 (826.38 GiB) is the largest shape in the default list. A request above a shape's
+# allocatable passes Kueue admission and then sits Pending forever.
+# Overriding DOWNWARD is always safe -- e.g. cap jobs on this `large`
+# cluster at the small/medium ceiling:
 kueue_max_job_cpu     = 62
 kueue_max_job_memory  = "484Gi"
+#
+# Overriding UPWARD past the preset's shape is now REJECTED at deploy time:
+# the chart compares kueue.maxJobResources against kueue.largestNode (which
+# the installer derives from the preset) and fails the render rather than
+# letting Kueue admit a job no node can host. On `large` that means 94 /
+# 731Gi is the maximum; to go higher, move to deployment_size = "xlarge".
 
 # Override the Kueue ClusterQueue admission quota (the cluster-wide batch
 # envelope). Kueue won't admit more concurrent batch work than this,

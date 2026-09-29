@@ -1,0 +1,130 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Acm",
+      "Effect": "Allow",
+      "Action": "acm:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53Read",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:ListHostedZonesByName",
+        "route53:GetHostedZoneCount",
+        "route53:GetHostedZone",
+        "route53:ListResourceRecordSets",
+        "route53:ListTagsForResource",
+        "route53:GetChange"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53WriteCertValidationRecords",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeResourceRecordSets"
+      ],
+      "Resource": "arn:aws:route53:::hostedzone/<HOSTED_ZONE_ID>"
+    },
+    {
+      "Sid": "S3PlatformaBuckets",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::platforma-<CLUSTER_NAME>-*",
+        "arn:aws:s3:::platforma-<CLUSTER_NAME>-*/*"
+      ]
+    },
+    {
+      "Sid": "Ecr",
+      "Effect": "Allow",
+      "Action": "ecr:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "SecretsManagerForEcrPullThroughCache",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:ecr-pullthroughcache/*"
+    },
+    {
+      "Sid": "CodeBuild",
+      "Effect": "Allow",
+      "Action": "codebuild:*",
+      "Resource": [
+        "arn:aws:codebuild:<REGION>:<ACCOUNT_ID>:project/<CLUSTER_NAME>-helm-deployer",
+        "arn:aws:codebuild:<REGION>:<ACCOUNT_ID>:project/<CLUSTER_NAME>-platforma-deployer"
+      ]
+    },
+    {
+      "Sid": "CodeBuildAndLambdaList",
+      "Effect": "Allow",
+      "Action": [
+        "codebuild:ListProjects",
+        "lambda:ListFunctions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Lambda",
+      "Effect": "Allow",
+      "Action": "lambda:*",
+      "Resource": "arn:aws:lambda:<REGION>:<ACCOUNT_ID>:function:<CLUSTER_NAME>-helm-trigger"
+    },
+    {
+      "Sid": "LogsAccountLevelActions",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogGroups",
+        "logs:DescribeIndexPolicies",
+        "logs:DescribeResourcePolicies",
+        "logs:PutResourcePolicy",
+        "logs:DeleteResourcePolicy",
+        "logs:CreateLogDelivery",
+        "logs:PutBearerTokenAuthentication",
+        "ssm:DescribeParameters"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "LogsManageEksClusterLogGroup",
+      "Effect": "Allow",
+      "Action": "logs:*",
+      "Resource": [
+        "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/eks/<CLUSTER_NAME>/cluster",
+        "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/eks/<CLUSTER_NAME>/cluster:*"
+      ]
+    },
+    {
+      "Sid": "LogsReadDeployOutput",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:StartQuery",
+        "logs:GetQueryResults"
+      ],
+      "Resource": [
+        "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/codebuild/<CLUSTER_NAME>-helm-deployer:*",
+        "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/codebuild/<CLUSTER_NAME>-platforma-deployer:*",
+        "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<CLUSTER_NAME>-helm-trigger:*"
+      ]
+    },
+    {
+      "Sid": "SsmReadPlatformaSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath"
+      ],
+      "Resource": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<CLUSTER_NAME>/platforma/*"
+    }
+  ]
+}

@@ -8,6 +8,39 @@ Permissions required for deploying and running Platforma on AWS EKS.
 
 IAM actions required by the user or role deploying infrastructure (via CloudFormation or manually).
 
+### Ready-made policy documents
+
+Three managed-policy JSON files next to this document cover the deployer role
+(split into three because a single managed policy is capped at 6,144 characters):
+
+| File | Scope |
+|------|-------|
+| `deployer-policy-1-infra.json` | CloudFormation, EC2/VPC networking, EKS, EFS, KMS grants for default service encryption |
+| `deployer-policy-2-services.json` | ACM, Route53 (cert validation), S3 buckets, ECR, CodeBuild, Lambda, CloudWatch Logs, SSM parameters |
+| `deployer-policy-3-iam.json` | IAM roles/policies/OIDC provider created by the stack, `PassRole`, service-linked roles |
+
+Before attaching them, replace the placeholders with your values:
+
+| Placeholder | Value |
+|-------------|-------|
+| `<ACCOUNT_ID>` | 12-digit AWS account ID the stack is deployed into |
+| `<REGION>` | Deployment region, e.g. `eu-west-2` |
+| `<CLUSTER_NAME>` | The **Cluster name** stack parameter |
+| `<HOSTED_ZONE_ID>` | Route53 hosted zone ID used for ACM DNS validation |
+
+The S3 statement covers the stack-generated bucket (`platforma-<CLUSTER_NAME>-*`). If you pass a pre-existing bucket via the **S3 bucket name** parameter, add its ARN (bucket and `bucket/*`) to the `S3PlatformaBuckets` statement in `deployer-policy-2-services.json`.
+
+Set the four variables and run from the directory with the policy files; it writes `filled-deployer-policy-*.json` ready to attach:
+
+```bash
+ACCOUNT_ID=123456789012 REGION=eu-west-2 CLUSTER_NAME=platforma HOSTED_ZONE_ID=Z0123456789ABCDEFGHIJ
+for f in deployer-policy-*.json; do
+  sed -e "s/<ACCOUNT_ID>/$ACCOUNT_ID/g" -e "s/<REGION>/$REGION/g" \
+      -e "s/<CLUSTER_NAME>/$CLUSTER_NAME/g" -e "s/<HOSTED_ZONE_ID>/$HOSTED_ZONE_ID/g" \
+      "$f" > "filled-$f"
+done
+```
+
 ### EKS
 
 | Permission | Resource | Purpose |
@@ -62,6 +95,10 @@ IAM actions required by the user or role deploying infrastructure (via CloudForm
 | `ec2:CreateLaunchTemplate` | `*` | Node group launch templates |
 | `ec2:DescribeLaunchTemplateVersions` | `*` | Read launch templates |
 | `ec2:RunInstances` | `*` | Launch EC2 instances for node groups |
+| `ec2:DescribeNetworkInterfaces` | `*` | Read ENI state (EFS mount targets) |
+| `ec2:CreateNetworkInterface` | `*` | EFS mount targets create an ENI per subnet under the caller |
+| `ec2:DeleteNetworkInterface` | `*` | Cleanup of mount-target ENIs |
+| `ec2:ModifyNetworkInterfaceAttribute` | `*` | Attach mount-target ENI security groups |
 
 ### Auto Scaling
 
@@ -93,6 +130,7 @@ IAM actions required by the user or role deploying infrastructure (via CloudForm
 | `s3:PutBucketPolicy` | `*` | Set S3 bucket policy (HTTPS enforcement, access restriction) |
 | `s3:GetBucketPolicy` | `*` | Read bucket policy state |
 | `s3:DeleteBucketPolicy` | `*` | Cleanup |
+| `s3:TagResource` | Bucket | Tag the bucket (CloudFormation stack tag propagation) |
 
 ### ACM / Route53 (required — TLS certificate and DNS)
 

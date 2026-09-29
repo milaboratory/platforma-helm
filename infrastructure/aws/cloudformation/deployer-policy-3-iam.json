@@ -1,0 +1,108 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "IamReadOnlyGlobal",
+      "Effect": "Allow",
+      "Action": [
+        "iam:Get*",
+        "iam:List*",
+        "iam:SimulatePrincipalPolicy",
+        "iam:SimulateCustomPolicy",
+        "iam:GenerateServiceLastAccessedDetails"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "IamFullOnTemplateRoles",
+      "Effect": "Allow",
+      "Action": "iam:*",
+      "Resource": [
+        "arn:aws:iam::<ACCOUNT_ID>:role/<CLUSTER_NAME>-*",
+        "arn:aws:iam::<ACCOUNT_ID>:policy/<CLUSTER_NAME>-*",
+        "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/*"
+      ]
+    },
+    {
+      "Sid": "IamPassRoleToTemplateRoles",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/<CLUSTER_NAME>-*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "eks.amazonaws.com",
+            "ec2.amazonaws.com",
+            "codebuild.amazonaws.com",
+            "lambda.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyPassRoleOutsideTemplateServices",
+      "Effect": "Deny",
+      "Action": "iam:PassRole",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PassedToService": [
+            "eks.amazonaws.com",
+            "ec2.amazonaws.com",
+            "codebuild.amazonaws.com",
+            "lambda.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "IamCreateServiceLinkedRolesForTemplateServices",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "eks.amazonaws.com",
+            "eks-nodegroup.amazonaws.com",
+            "pullthroughcache.ecr.amazonaws.com",
+            "elasticfilesystem.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "IamManageServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteServiceLinkedRole",
+        "iam:GetServiceLinkedRoleDeletionStatus"
+      ],
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/aws-service-role/*"
+    },
+    {
+      "Sid": "SelfServiceAccessKeysForKubectl",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateAccessKey",
+        "iam:DeleteAccessKey",
+        "iam:UpdateAccessKey"
+      ],
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:user/${aws:username}"
+    },
+    {
+      "Sid": "ConsoleGlobalReads",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity",
+        "s3:ListAllMyBuckets",
+        "tag:GetResources",
+        "tag:GetTagKeys",
+        "codebuild:ListProjects",
+        "lambda:ListFunctions",
+        "resource-groups:ListGroups"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

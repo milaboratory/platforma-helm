@@ -511,6 +511,12 @@ kueue:
   # maxJobResources.memory / maxJobResources.gpuMemory.
   oomRetry: false
 
+  # -- Run job containers through the legacy job_script.sh shell entrypoint instead of the
+  # job-wrapper binary shipped in the backend image. The fallback for a wrapper defect: it
+  # disables the per-run CPU/RAM usage report (.pl/usage.json) and the kernel OOM signal it
+  # carries, so OOM detection returns to the completion-marker heuristic.
+  jobWrapperLegacy: false
+
   # -- Node pool topology — controls where jobs run
   # Set nodeSelector/tolerations to match your node groups.
   # In dedicated mode, these also configure Kueue ResourceFlavors.

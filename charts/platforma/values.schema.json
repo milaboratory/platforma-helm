@@ -875,6 +875,9 @@
         "oomRetry": {
           "type": "boolean"
         },
+        "jobWrapperLegacy": {
+          "type": "boolean"
+        },
         "maxJobResources": {
           "type": "object",
           "properties": {

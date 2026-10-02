@@ -78,10 +78,11 @@ data:
                     fsGroupChangePolicy: OnRootMismatch
                   restartPolicy: Never
                   <<- if eq .PlatformaQueue "ui-tasks" >>
-                  {{- with .Values.kueue.pools.ui.nodeSelector }}
+                  {{- /* Every pool pins kubernetes.io/arch: amd64 through platforma.jobNodeSelector:
+                         the job entrypoint (job-wrapper) is built for linux/amd64 only and refuses any
+                         other node, so the scheduler must not offer one. */}}
                   nodeSelector:
-                    {{- toYaml . | nindent 20 }}
-                  {{- end }}
+                    {{- include "platforma.jobNodeSelector" .Values.kueue.pools.ui.nodeSelector | nindent 20 }}
                   {{- with .Values.kueue.pools.ui.tolerations }}
                   tolerations:
                     {{- toYaml . | nindent 20 }}
@@ -89,6 +90,8 @@ data:
                   <<- else >>
                   {{- if .Values.kueue.pools.gpu.enabled }}
                   <<- if and .Resources .Resources.HasGPU >>
+                  nodeSelector:
+                    {{- include "platforma.jobNodeSelector" (dict) | nindent 20 }}
                   {{- /* GPU job: nodeAffinity routes to GPU nodes by VRAM.
                          Required Gt: hard minimum — node must have enough VRAM.
                          Preferred Lt: soft maximum — prefer smaller nodes to avoid waste,
@@ -115,20 +118,16 @@ data:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
                   <<- else >>
-                  {{- with .Values.kueue.pools.batch.nodeSelector }}
                   nodeSelector:
-                    {{- toYaml . | nindent 20 }}
-                  {{- end }}
+                    {{- include "platforma.jobNodeSelector" .Values.kueue.pools.batch.nodeSelector | nindent 20 }}
                   {{- with .Values.kueue.pools.batch.tolerations }}
                   tolerations:
                     {{- toYaml . | nindent 20 }}
                   {{- end }}
                   <<- end >>
                   {{- else }}
-                  {{- with .Values.kueue.pools.batch.nodeSelector }}
                   nodeSelector:
-                    {{- toYaml . | nindent 20 }}
-                  {{- end }}
+                    {{- include "platforma.jobNodeSelector" .Values.kueue.pools.batch.nodeSelector | nindent 20 }}
                   {{- with .Values.kueue.pools.batch.tolerations }}
                   tolerations:
                     {{- toYaml . | nindent 20 }}
@@ -138,8 +137,16 @@ data:
                   containers:
                     - name: << .ContainerName >>
                       image: << .Image >>
+                      <<- /* The container command is the backend's choice: job-wrapper, mounted
+                             read-only from the work storage (see the volumeMounts), or - with
+                             --k8s-job-wrapper-legacy, or on a backend without the wrapper - the
+                             job_script.sh entrypoint. */>>
+                      <<- if .Entrypoint >>
+                      command: << toJson .Entrypoint >>
+                      <<- else >>
                       command: ["/bin/sh"]
                       args: ["{{ include "platforma.path.scripts" . }}/job_script.sh"]
+                      <<- end >>
                       workingDir: << .WorkdirAbsPath | quote >>
                       env:
                         <<- /* Defaults come first: a block that sets any of these in its own
@@ -164,6 +171,11 @@ data:
                           value: << .HomePath | quote >>
                         - name: PL_JOB_CMD_AND_ARGS
                           value: << toShellCmd .Command | quote >>
+                        <<- /* The same command as a JSON array, for job-wrapper: the exact strings
+                               the backend built, which the wrapper execs without any shell
+                               re-parsing them. The shell line above stays for job_script.sh. */>>
+                        - name: PL_JOB_CMD_AND_ARGS_JSON
+                          value: << toJson .Command | quote >>
                         - name: PL_JOB_WORKDIR
                           value: << .WorkdirAbsPath >>
                         <<- if .StdOutRelativePath >>
@@ -255,6 +267,20 @@ data:
                         - name: workspace
                           mountPath: << .WorkdirAbsPath >>
                           subPath: {{ include "platforma.path.workStorageName" . }}/<< .WorkdirRelPath >>
+                        <<- /* job-wrapper, the container command, comes from the directory the
+                               backend staged it in on the work storage: a second, read-only mount
+                               of the workspace volume rather than a copy in each working directory.
+                               The container runs as the user the backend writes with, so a writable
+                               copy could be altered by the job that runs it, and the copy itself
+                               cost a write per job. The backend stages the directory before it
+                               creates any job: kubelet creates a missing subPath source as an empty
+                               directory, and the exec would then fail. */>>
+                        <<- if .JobWrapperDirRelPath >>
+                        - name: workspace
+                          mountPath: /opt/platforma/job-wrapper
+                          subPath: {{ include "platforma.path.workStorageName" . }}/<< .JobWrapperDirRelPath >>
+                          readOnly: true
+                        <<- end >>
                         - name: job-script
                           mountPath: {{ include "platforma.path.scripts" . }}/job_script.sh
                           subPath: job_script.sh

@@ -281,6 +281,11 @@ spec:
             {{- if .Values.kueue.oomRetry }}
             - "--k8s-oom-retry"
             {{- end }}
+            # Jobs run through the job-wrapper binary; set kueue.jobWrapperLegacy=true to fall back
+            # to the job_script.sh shell entrypoint.
+            {{- if .Values.kueue.jobWrapperLegacy }}
+            - "--k8s-job-wrapper-legacy"
+            {{- end }}
             # Queue runners (hardcoded — 4 fixed queues, always K8s backend)
             - "--queue-runner=ui-tasks:k8s"
             - "--queue-runner=light:k8s"

@@ -45,3 +45,23 @@ Scope / limits:
   {{- include "platforma.checkPoolNodeSelector" (dict "ctx" . "pool" "batch") -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+platforma.jobNodeSelector — the nodeSelector of a job pod: the pool's own selector with
+kubernetes.io/arch: amd64 applied last. job-wrapper, the job entrypoint, is built for
+linux/amd64 only and refuses any other node, so the scheduler must never offer one. The
+enforced key is merged after the pool's map (a duplicate YAML key would otherwise let the
+later, operator-supplied value win), and a pool selector that names another architecture
+fails the render instead of being silently overridden.
+
+Argument: the pool's nodeSelector map (may be empty or unset).
+*/ -}}
+{{- define "platforma.jobNodeSelector" -}}
+{{- $pool := default (dict) . -}}
+{{- $archKey := "kubernetes.io/arch" -}}
+{{- $arch := "amd64" -}}
+{{- if and (hasKey $pool $archKey) (ne (index $pool $archKey | toString) $arch) -}}
+{{- fail (printf "ERROR: a kueue.pools.*.nodeSelector sets %s=%s, but job pods run on %s nodes only:\n  the job entrypoint (job-wrapper) is built for linux/%s and refuses any other node.\n  Remove the key or set it to %s." $archKey (index $pool $archKey | toString) $arch $arch $arch) -}}
+{{- end -}}
+{{- toYaml (merge (dict $archKey $arch) $pool) -}}
+{{- end -}}

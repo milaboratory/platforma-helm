@@ -60,6 +60,11 @@
         "gcp"
       ]
     },
+    "infrastructureId": {
+      "type": "string",
+      "description": "Installer-issued identifier of the infrastructure, stamped on telemetry records (PL_INFRASTRUCTURE_ID). Empty = backend instance id stands in.",
+      "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
     "license": {
       "type": "object",
       "properties": {

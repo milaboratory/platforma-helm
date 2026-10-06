@@ -41,6 +41,15 @@ imagePullSecrets: []
 # -- Cloud environment (aws | gcp | "")
 environment: ""
 
+# -- Identifier of the infrastructure this Platforma belongs to, for the telemetry
+# it sends (block run records; the metrics collector, when installed, carries the
+# same value). The installer issues it ONCE per infrastructure, before any backend
+# exists, and reuses it on every update, so two backends in one cluster share it
+# and a backend that never starts is still accounted for. A UUID or a short slug
+# of [A-Za-z0-9._-] (max 64). Empty: the backend's own instance id stands in,
+# which only identifies a single-backend installation.
+infrastructureId: ""
+
 # =============================================================================
 # LICENSE
 # =============================================================================

@@ -105,6 +105,7 @@ See [values.yaml](charts/platforma/values.yaml) for all options.
 | Value | Description |
 |-------|-------------|
 | `environment` | Cloud environment: `aws`, `gcp`, or `""` (vanilla K8s). Controls StorageClass creation. |
+| `infrastructureId` | Installer-issued identifier of the infrastructure, stamped on the telemetry Platforma sends (`PL_INFRASTRUCTURE_ID`). Same value for every backend and collector of one installation. Empty: the backend's instance id stands in. |
 | `auth.htpasswd.secretName` or `auth.ldap.server` | Authentication method. At least one must be set. |
 | `storage.workspace.*` | Exactly one RWX workspace option must be enabled. |
 | `storage.main.s3.*` or `storage.main.gcs.*` | Primary storage bucket. |

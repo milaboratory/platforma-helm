@@ -250,6 +250,12 @@ aws ssm get-parameter \
   per-job ceiling from the size preset: small 62 vCPU / 484 GiB, medium/large 94 / 733 GiB, xlarge 126 / 973 GiB.
 - **GPU** — `enable_gpu` provisions scale-from-zero GPU node groups (no cost
   when idle). Set `false` in regions without g6/g6e capacity.
+- **AZRebalance** — the `infra` module suspends the ASG AZRebalance process on
+  every multi-AZ node group, because AWS would otherwise terminate a node with
+  running (non-retryable) jobs whenever the autoscaler empties an AZ. The AWS
+  provider cannot express this on a managed node group's ASG, so it is an
+  idempotent `aws autoscaling suspend-processes` call via `local-exec`: the AWS
+  CLI must be installed where `terraform apply` runs.
 - **Authentication** — `auth_method = "htpasswd"` (default) auto-generates a
   single `platforma` user (password in SSM) or accepts your own
   `htpasswd_content` (bcrypt recommended, e.g. `htpasswd -nB user`).

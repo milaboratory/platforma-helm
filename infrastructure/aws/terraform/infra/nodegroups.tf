@@ -15,6 +15,10 @@
 # work without extra tagging — except the GPU VRAM node-template label, which CF
 # applies to the ASG via a post-create script and we apply with
 # aws_autoscaling_group_tag below.
+#
+# Every multi-AZ node group also gets the ASG AZRebalance process suspended
+# (terraform_data.suspend_az_rebalance at the bottom of this file). CF does the
+# same from its deployer buildspec.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -395,5 +399,44 @@ resource "aws_autoscaling_group_tag" "gpu_node_template" {
     key                 = each.value.key
     value               = each.value.value
     propagate_at_launch = true
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Suspend AZRebalance on every multi-AZ node-group ASG.
+#
+# EKS managed node groups leave AZRebalance enabled. Whenever the Cluster
+# Autoscaler empties one AZ, AWS launches a replacement instance there and then
+# terminates an instance in another AZ to even the count — regardless of the
+# pods running on it. Platforma jobs are not retryable, and the pod annotation
+# cluster-autoscaler.kubernetes.io/safe-to-evict only stops the CA, not AWS. A
+# job killed this way surfaces as "Exited with code -1" (no completion marker).
+#
+# The AWS provider has no resource for suspended processes on an ASG it does
+# not own (the managed node group owns it), so this is an idempotent CLI call.
+# Requires the AWS CLI on the machine running terraform, with the same
+# credentials as the provider. Re-runs when the node group's ASG is replaced.
+# The single-AZ system group is left out: AZRebalance is a no-op there.
+# -----------------------------------------------------------------------------
+locals {
+  az_rebalance_asg_names = merge(
+    { "ui" = aws_eks_node_group.ui.resources[0].autoscaling_groups[0].name },
+    { for k, ng in aws_eks_node_group.batch : k => ng.resources[0].autoscaling_groups[0].name },
+    { for k, ng in aws_eks_node_group.gpu : k => ng.resources[0].autoscaling_groups[0].name },
+  )
+}
+
+resource "terraform_data" "suspend_az_rebalance" {
+  for_each = local.az_rebalance_asg_names
+
+  triggers_replace = [each.value]
+
+  provisioner "local-exec" {
+    command = join(" ", [
+      "aws autoscaling suspend-processes",
+      "--auto-scaling-group-name '${each.value}'",
+      "--scaling-processes AZRebalance",
+      "--region '${var.region}'",
+    ])
   }
 }

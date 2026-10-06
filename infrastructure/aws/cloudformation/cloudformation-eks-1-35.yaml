@@ -3206,12 +3206,14 @@ Resources:
                     - 'arn:aws:s3:::${AssetBucket}/*'
                     - AssetBucket: !Select [0, !Split ['/', !Select [1, !Split ['s3://', !Ref DeployerAssetBaseUrl]]]]
                 - !Ref 'AWS::NoValue'
-              # Tag GPU ASGs for Cluster Autoscaler scale-from-zero
+              # Tag GPU ASGs for Cluster Autoscaler scale-from-zero, and suspend
+              # AZRebalance on every node-group ASG (see Block 3 in the buildspec).
               - Effect: Allow
                 Action:
                   - autoscaling:CreateOrUpdateTags
                   - autoscaling:DescribeTags
                   - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:SuspendProcesses
                   - eks:ListNodegroups
                   - eks:DescribeNodegroup
                 Resource: '*'
@@ -3503,6 +3505,46 @@ Resources:
                         "ResourceId=$ASG_NAME,ResourceType=auto-scaling-group,Key=k8s.io/cluster-autoscaler/node-template/taint/nvidia.com/gpu,Value=present:NoSchedule,PropagateAtLaunch=true" \
                         --region $REGION
                     fi
+                  done
+
+                  # Suspend AZRebalance on every node-group ASG. EKS managed node groups
+                  # leave it enabled, and whenever the Cluster Autoscaler empties one AZ
+                  # AWS launches a replacement there and then terminates an instance in
+                  # another AZ to even the count — regardless of the pods running on it.
+                  # Platforma jobs are not retryable, and the pod annotation
+                  # cluster-autoscaler.kubernetes.io/safe-to-evict only stops the CA,
+                  # not AWS itself. A job killed this way surfaces as "Exited with
+                  # code -1" with no completion marker. Suspending the process is
+                  # idempotent; single-AZ groups (system, platforma) are unaffected.
+                  # Every call is checked: a silent failure here would leave the
+                  # process enabled while the deployer reports success.
+                  NG_NAMES=$(aws eks list-nodegroups --cluster-name $CLUSTER_NAME --region $REGION --query 'nodegroups[]' --output text) \
+                    || { echo "ERROR: list-nodegroups failed" >&2; exit 1; }
+                  [ -n "$NG_NAMES" ] || { echo "ERROR: no node groups found in cluster $CLUSTER_NAME" >&2; exit 1; }
+                  for NG_NAME in $NG_NAMES; do
+                    # TriggerHelmDeploy references every node group, so they are
+                    # normally ACTIVE here; still tolerate one that is mid-create
+                    # (e.g. a replacement during a stack update) by waiting for
+                    # its ASG for up to 15 minutes before giving up.
+                    ASG_NAME=""
+                    for _ in $(seq 1 30); do
+                      ASG_NAME=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG_NAME --region $REGION --query 'nodegroup.resources.autoScalingGroups[0].name' --output text) \
+                        || { echo "ERROR: describe-nodegroup $NG_NAME failed" >&2; exit 1; }
+                      if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then break; fi
+                      echo "nodegroup $NG_NAME has no ASG yet (status: $(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NG_NAME --region $REGION --query 'nodegroup.status' --output text)), waiting 30s"
+                      sleep 30
+                    done
+                    if [ -z "$ASG_NAME" ] || [ "$ASG_NAME" = "None" ]; then
+                      echo "ERROR: nodegroup $NG_NAME still has no ASG after 15 minutes" >&2
+                      exit 1
+                    fi
+                    echo "Suspending AZRebalance on ASG $ASG_NAME (nodegroup $NG_NAME)"
+                    aws autoscaling suspend-processes --auto-scaling-group-name "$ASG_NAME" --scaling-processes AZRebalance --region $REGION \
+                      || { echo "ERROR: suspend-processes failed for $ASG_NAME" >&2; exit 1; }
+                    SUSPENDED=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG_NAME" --region $REGION \
+                      --query 'length(AutoScalingGroups[0].SuspendedProcesses[?ProcessName==`AZRebalance`])' --output text) \
+                      || { echo "ERROR: describe-auto-scaling-groups failed for $ASG_NAME" >&2; exit 1; }
+                    [ "$SUSPENDED" = "1" ] || { echo "ERROR: AZRebalance is still enabled on $ASG_NAME" >&2; exit 1; }
                   done
 
                 # --- Block 4: EXTERNAL DNS (before ALB to avoid mutating webhook race) ---
@@ -4365,6 +4407,31 @@ Resources:
     Properties:
       ServiceToken: !GetAtt TriggerHelmDeployFunction.Arn
       CodeBuildProject: !Sub '${ClusterName}-helm-deployer'
+      # The deployer suspends AZRebalance on every node-group ASG (buildspec
+      # Block 3), so it must run after every node group exists. Referencing
+      # them here does two things: Ref inside Fn::If is a condition-aware
+      # dependency (DependsOn cannot name a conditional resource), and a
+      # changed node-group set re-triggers the deployer, which then covers the
+      # new group. The Lambda ignores this property otherwise.
+      NodeGroups: !Join
+        - ','
+        - - !Ref SystemNodeGroupV5
+          - !Ref PlatformaNodeGroupV1
+          - !Ref UiNodeGroupV2
+          - !Ref Batch16c64gNodeGroupV2
+          - !Ref Batch32c128gNodeGroupV2
+          - !Ref Batch64c256gNodeGroupV2
+          - !Ref Batch32c256gNodeGroupV2
+          - !Ref Batch64c512gNodeGroupV2
+          - !If [BigBatchTiers, !Ref Batch96c768gNodeGroupV2, '-']
+          - !If [XlargeBatchTier, !Ref Batch128c1024gNodeGroupV2, '-']
+          - !If [Gpu3gEnabled, !Ref Gpu3gNodeGroup, '-']
+          - !If [Gpu6gEnabled, !Ref Gpu6gNodeGroup, '-']
+          - !If [Gpu12gEnabled, !Ref Gpu12gNodeGroup, '-']
+          - !If [Gpu16gEnabled, !Ref Gpu16gNodeGroup, '-']
+          - !If [Gpu24gEnabled, !Ref Gpu24gNodeGroup, '-']
+          - !If [Gpu48gEnabled, !Ref Gpu48gNodeGroup, '-']
+          - !If [Gpu96gEnabled, !Ref Gpu96gNodeGroup, '-']
       # --- Trigger properties ---
       # CF re-invokes this resource whenever ANY property value changes.
       # Version properties MUST match HelmDeployerProject env vars above.
@@ -4380,7 +4447,7 @@ Resources:
       ExternalDnsVersion: '1.20.0'
       AlbControllerVersion: '3.0.0'
       # Bump for non-version buildspec changes (new flags, RBAC, install order)
-      BuildSpecRevision: '3'
+      BuildSpecRevision: '4'
 
   TriggerPlatformaDeploy:
     Type: AWS::CloudFormation::CustomResource

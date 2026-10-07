@@ -40,7 +40,9 @@ normalize_identifier_inputs() {
   for _lc_var in PROJECT_ID DNS_ZONE_PROJECT DEPLOYMENT_NAME IM_LOCATION REGION \
                  ZONE_SUFFIX DEPLOYMENT_SIZE SSO_PROVIDER DOMAIN_NAME DNS_ZONE_NAME; do
     _lc_val="${!_lc_var:-}"
-    [[ -n "${_lc_val}" ]] && printf -v "${_lc_var}" '%s' "${_lc_val,,}"
+    if [[ -n "${_lc_val}" ]]; then
+      printf -v "${_lc_var}" '%s' "${_lc_val,,}"
+    fi
   done
 }
 normalize_identifier_inputs

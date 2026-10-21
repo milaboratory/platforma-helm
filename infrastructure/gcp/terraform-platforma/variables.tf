@@ -287,6 +287,46 @@ variable "batch_pool_max_nodes_overrides" {
   default     = {}
 }
 
+variable "batch_zones" {
+  type        = list(string)
+  description = <<-EOT
+    Zones the batch ComputeClass may create nodes in, e.g.
+    ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"].
+    Empty (default) = only the cluster's own zone.
+
+    The cluster stays zonal — control plane, system/ui/platforma pools and
+    their disks remain in the cluster zone. Only auto-created batch node
+    pools spread, so a GCE stockout ("GCE out of resources") in one zone
+    no longer blocks every batch job. All zones must be in var.region.
+    Batch pods reach the zonal Filestore workspace from any zone in the
+    region; that traffic is billed as inter-zone egress.
+
+    Requires GKE >= 1.33.1-gke.1545000 (ComputeClass
+    spec.priorityDefaults.location.zones).
+  EOT
+  default     = []
+
+  validation {
+    condition     = alltrue([for z in var.batch_zones : can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", z))])
+    error_message = "batch_zones entries must be full zone names, e.g. \"us-central1-a\"."
+  }
+}
+
+variable "kueue_provisioning_request_enabled" {
+  type        = bool
+  description = <<-EOT
+    Gate batch admission on a ProvisioningRequest
+    (best-effort-atomic-scale-up): Kueue admits a batch job only after the
+    autoscaler has confirmed nodes for all of its pods. Prevents admitting
+    jobs that fit the aggregate quota but no single node.
+
+    Set false to admit on Kueue quota alone; pods then wait as Pending
+    while the autoscaler scales up. Use when ProvisioningRequests misbehave
+    on the cluster (e.g. repeated booking expiry during a stockout).
+  EOT
+  default     = true
+}
+
 variable "ui_pool_max_nodes" {
   type        = number
   description = "Match the infra module for symmetric tfvars; not used by this module directly."

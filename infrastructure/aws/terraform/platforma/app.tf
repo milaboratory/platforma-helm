@@ -333,7 +333,7 @@ locals {
         }
       }
       provisioningRequest = {
-        enabled = true
+        enabled = var.kueue_provisioning_request_enabled
       }
       dedicated = {
         resources = {

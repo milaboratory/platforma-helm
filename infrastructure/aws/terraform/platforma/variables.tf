@@ -68,6 +68,21 @@ variable "enable_gpu" {
   default     = true
 }
 
+variable "kueue_provisioning_request_enabled" {
+  type        = bool
+  description = <<-EOT
+    Gate batch admission on a ProvisioningRequest
+    (best-effort-atomic-scale-up): Kueue admits a batch job only after the
+    Cluster Autoscaler has confirmed nodes for all of its pods. Prevents
+    admitting jobs that fit the aggregate quota but no single node.
+
+    Set false to admit on Kueue quota alone; pods then wait as Pending
+    while the autoscaler scales up. The ProvisioningRequest CRD, the
+    autoscaler flag and its RBAC (controllers.tf) stay installed either way.
+  EOT
+  default     = true
+}
+
 # -----------------------------------------------------------------------------
 # Ingress / DNS — must match infra
 # -----------------------------------------------------------------------------

@@ -250,6 +250,9 @@ aws ssm get-parameter \
   per-job ceiling from the size preset: small 62 vCPU / 484 GiB, medium/large 94 / 733 GiB, xlarge 126 / 973 GiB.
 - **GPU** — `enable_gpu` provisions scale-from-zero GPU node groups (no cost
   when idle). Set `false` in regions without g6/g6e capacity.
+- **ProvisioningRequest admission** — `kueue_provisioning_request_enabled`
+  (default `true`) makes Kueue admit a batch job only after the Cluster
+  Autoscaler confirms nodes for it. Set `false` to admit on Kueue quota alone.
 - **AZRebalance** — the `infra` module suspends the ASG AZRebalance process on
   every multi-AZ node group, because AWS would otherwise terminate a node with
   running (non-retryable) jobs whenever the autoscaler empties an AZ. The AWS

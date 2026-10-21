@@ -517,6 +517,9 @@ resource "helm_release" "platforma" {
             gpuRam    = local.effective_gpu_max_job_ram
             gpuMemory = local.effective_gpu_max_job_memory
           } : {})
+          provisioningRequest = {
+            enabled = var.kueue_provisioning_request_enabled
+          }
           pools = {
             ui = {
               nodeSelector = {

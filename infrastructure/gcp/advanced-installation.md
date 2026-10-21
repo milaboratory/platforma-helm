@@ -479,6 +479,32 @@ the matching `<FAMILY>-CPUS` quota request in `terraform-infra/quotas.tf`, the
 `<family>_cpus_quota` preset key, and the `PRESET_<FAMILY>_CPUS` table in
 `cloudshell/install.sh` (the recipe is spelled out in a comment there).
 
+#### Batch nodes in several zones
+
+The cluster is zonal, and by default the ComputeClass only creates batch nodes
+in the cluster's zone. When GCE runs out of a machine type there, scale-up
+fails with `GCE out of resources` and batch jobs wait. Let batch nodes use
+other zones of the region (`terraform-platforma` only; the cluster itself is
+not recreated):
+
+```hcl
+batch_zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
+```
+
+The control plane, the system/ui/platforma pools and their disks stay in the
+cluster zone. Batch pods read the zonal Filestore workspace across zones, which
+is billed as inter-zone traffic. Requires GKE 1.33.1-gke.1545000 or later.
+
+#### Turning off ProvisioningRequest admission
+
+By default Kueue admits a batch job only after the autoscaler confirms nodes
+for it through a ProvisioningRequest. To admit on Kueue quota alone and let
+pods wait as Pending during scale-up:
+
+```hcl
+kueue_provisioning_request_enabled = false
+```
+
 > **Deprecated:** `batch_pool_max_nodes_overrides` is now a no-op (there are no
 > per-shape pools). The variable is kept for tfvars backwards-compatibility but
 > does nothing. Use `kueue_batch_queue_cpu` / `kueue_batch_queue_memory` to

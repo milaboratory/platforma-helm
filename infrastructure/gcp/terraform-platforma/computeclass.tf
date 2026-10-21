@@ -85,7 +85,16 @@ resource "kubectl_manifest" "batch_compute_class" {
     metadata = {
       name = "platforma-batch"
     }
-    spec = {
+    spec = merge(length(var.batch_zones) > 0 ? {
+      # Default zones for every priority rule. Without it GKE only creates
+      # nodes in the zonal cluster's own zone, and a stockout there blocks
+      # all batch work even when other zones in the region have capacity.
+      priorityDefaults = {
+        location = {
+          zones = var.batch_zones
+        }
+      }
+      } : {}, {
       priorities = [
         for mt in local.batch_machine_priorities : {
           machineType = mt
@@ -115,8 +124,15 @@ resource "kubectl_manifest" "batch_compute_class" {
           role = "batch"
         }
       }
-    }
+    })
   })
+
+  lifecycle {
+    precondition {
+      condition     = alltrue([for z in var.batch_zones : startswith(z, "${var.region}-")])
+      error_message = "batch_zones must all be in region ${var.region}; got ${jsonencode(var.batch_zones)}."
+    }
+  }
 
   # The cluster (and its GKE-managed ComputeClass CRD) must exist first.
   depends_on = [

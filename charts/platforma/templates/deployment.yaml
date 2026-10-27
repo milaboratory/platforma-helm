@@ -254,6 +254,12 @@ spec:
             {{- if hasKey .Values.kueue "imagePullMaxRetries" }}
             - "--k8s-image-pull-max-retries={{ .Values.kueue.imagePullMaxRetries }}"
             {{- end }}
+            {{- if and .Values.kueue.pools.gpu.enabled (hasKey .Values.kueue "gpuScheduleTimeout") }}
+            - "--k8s-gpu-schedule-timeout={{ .Values.kueue.gpuScheduleTimeout }}"
+            {{- end }}
+            {{- if hasKey .Values.jobs "maxJobAttempts" }}
+            - "--runner-max-job-attempts={{ .Values.jobs.maxJobAttempts }}"
+            {{- end }}
             - "--runner-enable-docker"
             # GPU availability (K8s never auto-probes; explicit on/off based on the GPU pool).
             # When GPU is enabled, --runner-max-gpu-memory-request is required by the

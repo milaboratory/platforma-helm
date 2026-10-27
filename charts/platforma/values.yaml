@@ -505,6 +505,14 @@ kueue:
   # already cached the image. When unset, the backend default (2) applies; 0 disables.
   imagePullMaxRetries: 2
 
+  # -- How long a job that needs a GPU may wait for a GPU node before the backend gives up on
+  # it and reports 'GPU missed', which a block can handle by running the step without a GPU.
+  # Counts from job creation until the pod is scheduled, queue time included. Must stay below
+  # the AppWrapper warmupGracePeriodDuration of the job template (30m): past that the
+  # AppWrapper fails the job first and the run is reported as an image-pull failure instead.
+  # Only applied when kueue.pools.gpu.enabled is true; a CPU job waits as before. 0 disables.
+  gpuScheduleTimeout: 10m
+
   # -- Enable OOM retries for K8s jobs.
   # Off by default: an out-of-memory job fails immediately with its original error.
   # When enabled, an OOM-killed job is re-run with doubled memory, capped at
@@ -837,6 +845,12 @@ jobs:
   # -- Secret mounted into every job pod
   # Contains credentials jobs need at runtime (license key, etc.).
   secretName: "platforma-license"
+
+  # -- Maximum number of attempts a block may make for one command, counting the first run.
+  # A block declares what to run when a command fails (out of memory, no GPU, a known exit
+  # code); this is the deployment's ceiling on how many times it may try, whatever the block
+  # says. 1 disables fallbacks. Must be >= 1.
+  maxJobAttempts: 3
 
   # -- Scratch (temporary) disk space for job commands.
   #

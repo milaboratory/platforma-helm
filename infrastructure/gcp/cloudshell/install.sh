@@ -1866,8 +1866,8 @@ build_tfvars_json_full() {
   fi
 
   # Helm chart override — when both env vars are set, the deployment pulls the
-  # chart from an OCI registry (typically a test GAR repo at
-  # europe-west3-docker.pkg.dev/<project-id>/platforma) instead
+  # chart from an OCI registry (for example
+  # <region>-docker.pkg.dev/<project-id>/<repo>) instead
   # of the chart bundled from the local checkout. submit_deployment() skips the
   # chart-bundling step when HELM_CHART_REPOSITORY is set.
   if [[ -n "${HELM_CHART_REPOSITORY:-}" ]]; then

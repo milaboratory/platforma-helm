@@ -12,8 +12,8 @@
 # Override the bucket/prefix for your own project via:
 #   tofu init -backend-config="bucket=YOUR-tfstate" -backend-config="prefix=YOUR-prefix"
 #
-# This file is EXCLUDED from the Infrastructure Manager source bundle (CI
-# packaging in Phase 4 strips it); IM manages state internally and rejects
+# This file is EXCLUDED from the Infrastructure Manager source bundle (install.sh
+# strips it); IM manages state internally and rejects
 # bundles that include their own backend block.
 # =============================================================================
 

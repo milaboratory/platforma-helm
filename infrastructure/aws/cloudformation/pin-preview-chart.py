@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Pin the preview template's chart, image and asset-base parameter defaults.
 
-Does not talk to ECR or S3. Used by pl's publish-infra job so the copy under
+Does not talk to ECR or S3. Used by the preview publish job so the copy under
 pr/<version>/ deploys the chart, image and assets that job just published
 without the operator retyping any of them.
 
-The image is optional: build-docker.yaml pushes an image for a commit only when
+The image is optional: CI pushes an image for a commit only when
 that commit changes what goes into one, so a branch whose latest commits touch
 only the chart has no image under the current version. Passing an empty value
 leaves PlatformaImage empty, which selects the chart's appVersion image — the

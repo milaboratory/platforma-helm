@@ -17,8 +17,8 @@
 #   4th, so treat the timing as indicative, not re-measured.
 #
 #   The priority list, whenUnsatisfiable and activeMigration settings below
-#   are ported from a production deployment, where they were shaped by real
-#   stockouts and real job shapes — see the per-field notes.
+#   are tuned for GCE stockouts and typical Platforma job shapes — see the
+#   per-field notes.
 #
 # Behavior:
 #   - priorities[] (presets.tf batch_machine_priorities) is an ordered
@@ -43,8 +43,8 @@
 #     back to the cluster's default machine configuration instead of giving up,
 #     turning a permanent stall into a possibly-suboptimal node. Trade-off: such
 #     nodes ignore the curated priorities above, so watch for unexpected machine
-#     types after a stockout. Observed in production (GCE reported "out of
-#     resources" for a whole zone and nothing was created at all).
+#     types after a stockout. GCE can report "out of resources" for a whole
+#     zone, and then the autoscaler creates no node at all.
 #     NOTE: the fallback is REAL, not inert, and it is E2. The GKE docs are
 #     explicit: "In Standard clusters that use node pool auto-creation, GKE
 #     might create a new node pool that uses the default E2 machine series to

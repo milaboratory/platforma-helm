@@ -64,3 +64,42 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "platforma.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.kueue.instanceStats }}
+---
+# =============================================================================
+# Kueue read access for the instance statistics
+# =============================================================================
+# The runner reads the quota, the usage and the workload counts of the
+# ClusterQueues the jobs run in (--k8s-kueue-cluster-queue). Read only, and only
+# these two queues. The name carries the namespace: ClusterRoles are
+# cluster-scoped, and releases with the same name may run in different namespaces.
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "platforma.fullname" . }}-{{ .Release.Namespace }}-kueue-capacity
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: ["clusterqueues"]
+    resourceNames:
+      - {{ include "platforma.kueue.uiClusterQueueName" . | quote }}
+      - {{ include "platforma.kueue.batchClusterQueueName" . | quote }}
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "platforma.fullname" . }}-{{ .Release.Namespace }}-kueue-capacity
+  labels:
+    {{- include "platforma.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "platforma.fullname" . }}-{{ .Release.Namespace }}-kueue-capacity
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "platforma.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

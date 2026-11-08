@@ -23,6 +23,7 @@ data:
       labels:
         platforma.bio/job-id: << .JobID >>
         platforma.bio/resource-id: << .ResourceID >>
+        platforma.bio/instance-id: "<< .InstanceID >>"
         app.kubernetes.io/managed-by: platforma
         app.kubernetes.io/instance: {{ .Release.Name }}
         # Queue label for Kueue - maps Platforma queue to Kueue LocalQueue
@@ -54,6 +55,7 @@ data:
               labels:
                 platforma.bio/job-id: << .JobID >>
                 platforma.bio/resource-id: << .ResourceID >>
+                platforma.bio/instance-id: "<< .InstanceID >>"
                 app.kubernetes.io/managed-by: platforma
             spec:
               backoffLimit: 0  # AppWrapper handles retries
@@ -65,6 +67,7 @@ data:
                   labels:
                     platforma.bio/job-id: << .JobID >>
                     platforma.bio/resource-id: << .ResourceID >>
+                    platforma.bio/instance-id: "<< .InstanceID >>"
                     app.kubernetes.io/managed-by: platforma
                 spec:
                   serviceAccountName: {{ include "platforma.jobServiceAccountName" . }}

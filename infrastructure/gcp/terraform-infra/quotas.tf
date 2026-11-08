@@ -144,8 +144,8 @@ resource "google_cloud_quotas_quota_preference" "platforma" {
   # Region-scope the preference name. A QuotaPreference is a project-GLOBAL
   # resource keyed by name, but the regional quotas it targets differ per region
   # (dimensions.region). Without the suffix, two deployments in the same project
-  # but different regions (e.g. prod in euw4, farm in euw3 — or three parallel
-  # test installs) collide on the same name and silently overwrite each other's
+  # but different regions (e.g. one install in europe-west4 and one in europe-west3, or several
+  # parallel test installs) collide on the same name and silently overwrite each other's
   # requests. The global CPU quota (no region dimension) keeps its bare name.
   name          = "platforma-${replace(each.key, "_", "-")}${lookup(each.value.dimensions, "region", "") != "" ? "-${each.value.dimensions.region}" : ""}"
   service       = each.value.service

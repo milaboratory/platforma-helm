@@ -336,7 +336,7 @@ person. Each federated library therefore declares the provider its cloud trust i
 built on:
 
 ```
---data-library-gcs-federation-auth-provider=onco=logto
+--data-library-gcs-federation-auth-provider=refs=logto
 --data-library-s3-federation-auth-provider=archive=okta
 ```
 
@@ -355,7 +355,7 @@ cloud STS endpoint, because only a JWT carrying a `sub` claim is accepted and wh
 token that is depends on the IdP:
 
 ```
---data-library-gcs-federation-auth-token=onco=access_token
+--data-library-gcs-federation-auth-token=refs=access_token
 --data-library-s3-federation-auth-token=archive=id_token
 ```
 
@@ -373,8 +373,8 @@ When the provider is Google, its access token is already a Google credential and
 can go to Cloud Storage directly — no pool, no provider, no attribute mapping:
 
 ```
---data-library-gcs-service-account=ssopoc=authenticated-user
---data-library-gcs-auth-provider=ssopoc=google
+--data-library-gcs-service-account=demo=authenticated-user
+--data-library-gcs-auth-provider=demo=google
 ```
 
 Cloud Storage then evaluates IAM for the plain `user:<email>` principal, so grants

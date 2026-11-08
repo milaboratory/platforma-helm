@@ -283,6 +283,11 @@ spec:
             {{- else }}
             - "--runner-gpu-available=disabled"
             {{- end }}
+            # Instance statistics from the Kueue ClusterQueues; kueue.instanceStats also creates the ClusterRole to read them.
+            {{- if .Values.kueue.instanceStats }}
+            - "--k8s-kueue-cluster-queue={{ include "platforma.kueue.uiClusterQueueName" . }}"
+            - "--k8s-kueue-cluster-queue={{ include "platforma.kueue.batchClusterQueueName" . }}"
+            {{- end }}
             # OOM retries are off by default; set kueue.oomRetry=true to enable them.
             {{- if .Values.kueue.oomRetry }}
             - "--k8s-oom-retry"

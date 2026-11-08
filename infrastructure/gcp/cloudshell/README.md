@@ -63,8 +63,7 @@ preset values there, also update:
 - The lookup tables in [`install.sh`](install.sh) (`PRESET_CPUS_GLOBAL`,
   `PRESET_N2D_CPUS`, `PRESET_PD_SSD_GB`, `PRESET_INSTANCES`,
   `PRESET_FILESTORE_GB`) — used for the auto-detect / warn-if-too-low logic.
-- The user-facing copy of this table in `infrastructure/gcp/README.md`
-  (Phase 7 runbook).
+- The user-facing copy of this table in `infrastructure/gcp/README.md`.
 
 ### Quota collision handling
 

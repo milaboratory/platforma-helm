@@ -882,6 +882,9 @@
         "jobWrapperLegacy": {
           "type": "boolean"
         },
+        "instanceStats": {
+          "type": "boolean"
+        },
         "maxJobResources": {
           "type": "object",
           "properties": {

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Publish sibling files under assets/ to s3://platforma-cloudformation.
 #
-#   preview (pl CI):    CFN_PREFIX=pr/<version>  -> .../pr/<version>/assets/
+#   preview (CI):       CFN_PREFIX=pr/<version>  -> .../pr/<version>/assets/
 #   release (helm CI):  CFN_PREFIX unset         -> .../assets/
 #
 # Does not upload cloudformation-eks-1-35.yaml. Preview YAML is written by
-# pl's publish-infra workflow under the same CFN_PREFIX. Production YAML
+# the preview publish workflow under the same CFN_PREFIX. Production YAML
 # is written only by the platforma-helm release workflow at the bucket root.
 set -euo pipefail
 
@@ -22,7 +22,7 @@ else
   ASSETS_KEY="assets"
 fi
 
-# PutObject-only IAM (pl's pr/ policy) cannot s3 sync: sync lists the prefix.
+# PutObject-only IAM (preview CI policy) cannot s3 sync: sync lists the prefix.
 upload_tree() {
   local src="$1" dest="$2"
   local file rel

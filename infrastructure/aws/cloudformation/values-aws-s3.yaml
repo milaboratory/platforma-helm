@@ -64,7 +64,7 @@ ingress:
 kueue:
   # Max resources for a single job (rejects jobs that exceed this).
   # 484Gi = r7i.16xlarge EKS allocatable (~486 GiB) minus ~1 GiB EKS DaemonSet
-  # overhead minus 1 GiB safety margin for customer-installed DaemonSets.
+  # overhead minus 1 GiB safety margin for operator-installed DaemonSets.
   # This file is the MANUAL/helm install path and keeps the conservative
   # r7i.16xlarge ceiling, which fits every deployment size. The CloudFormation
   # stack does NOT read these values — it renders maxJobResources from the

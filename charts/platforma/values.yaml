@@ -481,6 +481,13 @@ kueue:
   # -- Mode: dedicated (chart creates all resources) or shared (uses existing queues)
   mode: dedicated # dedicated | shared
 
+  # -- Read the CPU, RAM and job statistics of the instance from the Kueue ClusterQueues
+  # of the install. In shared mode they cover every install on these queues. This creates a
+  # ClusterRole and a ClusterRoleBinding to read (get) the two ClusterQueues. Set to false
+  # when the deployer may not create cluster-scoped RBAC; the statistics then come from the
+  # runner, without a total.
+  instanceStats: true
+
   # -- Maximum resources a single job can request
   # Jobs requesting more than this are rejected. Increase if you have large-memory nodes.
   # gpuMemory/gpuCpu/gpuRam are required when kueue.pools.gpu.enabled=true (chart fails to

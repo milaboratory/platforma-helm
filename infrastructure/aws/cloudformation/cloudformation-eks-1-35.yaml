@@ -716,10 +716,10 @@ Mappings:
     EKS:
       Version: "1.35"
     Platforma:
-      Version: "4.7.0"
+      Version: "5.0.0"
   # Git and the production S3 object share this unversioned /assets prefix, so
   # a deployer left on the default reads the same files this repo holds. The
-  # publish-infra job writes a TTL'd copy under pr/<version>/ and points a
+  # preview publish job writes a TTL'd copy under pr/<version>/ and points a
   # preview stack at it; it must never overwrite the production object.
   DeployerAssets:
     Public:
@@ -785,7 +785,7 @@ Mappings:
   #
   # 484Gi = r7i.16xlarge EKS allocatable (~486 GiB) minus ~1 GiB EKS DaemonSet
   # overhead (aws-node, kube-proxy, ebs-csi) minus 1 GiB safety margin for
-  # customer-installed DaemonSets (Datadog, Falco, Wiz, etc.). The large/xlarge
+  # operator-installed DaemonSets (Datadog, Falco, Wiz, etc.). The large/xlarge
   # figures were MEASURED the same way: both shapes were booted on
   # a test cluster (eu-central-1, EKS 1.35 / AL2023, 2026-09-21) and read off
   # .status.allocatable.memory, then the same ~3 GiB margin applied. A job
@@ -4636,7 +4636,7 @@ Resources:
   # =========================================================================
   # Caches container images from Quay.io (upstream of containers.pl-open.science)
   # in a same-region ECR registry for lower pull latency and to avoid
-  # overloading the upstream HAProxy with first-boot image downloads.
+  # overloading the upstream registry with first-boot image downloads.
   #
   # The cache prefix is namespaced with the cluster name so multiple
   # Platforma stacks in the same AWS account/region coexist — AWS allows

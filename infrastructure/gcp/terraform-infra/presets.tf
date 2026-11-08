@@ -24,8 +24,8 @@ locals {
   #
   # Read off real GKE 1.35 nodes with
   #   kubectl get node <n> -o jsonpath='{.status.allocatable.{cpu,memory}}'
-  # (n2d-highmem-64 on a test cluster; n2d-highmem-96 and n2-highmem-128 on
-  # a test cluster, europe-west3-a, 2026-09-21). Values are floor(measured):
+  # (n2d-highmem-64, n2d-highmem-96 and n2-highmem-128 on test clusters,
+  # europe-west3-a, 2026-09-21). Values are floor(measured):
   # 486.94 / 733.81 / 826.38 GiB. Do not add a row without booting the shape.
   #
   # The per-job ceiling is DERIVED from this table (floor - 2), so changing a
@@ -132,10 +132,9 @@ locals {
   # envelope with 8 vCPU nodes would need 4x these numbers (small: 40 nodes,
   # 8000 GiB), which is past the ~2x threshold where Google stops
   # auto-approving quota increases and sends them to human review -- a real
-  # cost on every first install, to cover a mix the workload contradicts. On
-  # a production cluster the only batch pool the ComputeClass has ever
-  # auto-created is n2d-highmem-64, and the measured job shape there (16 vCPU /
-  # 73-87 GiB) cannot fit an 8 vCPU node at all.
+  # cost on every first install, to cover a mix the workload contradicts. A
+  # typical Platforma batch job (16 vCPU / 73-87 GiB) cannot fit an 8 vCPU
+  # node at all.
   #
   # The accepted trade-off: an unusual wave of very small jobs can exhaust
   # SSD-TOTAL-GB before the Kueue envelope is full, leaving admitted pods
@@ -146,9 +145,9 @@ locals {
   # lockstep, or the pre-flight quota check will disagree with reality.
   #
   # The xlarge tier is the fallback for when the large tier is exhausted in
-  # every zone. Ported from a production deployment, where a large job
-  # stalled with no.scale.up.nap.pod.zonal.resources.exceeded in all three
-  # zones and there was nothing above the large tier to fall back to.
+  # every zone. Without it, a large job can stall with
+  # no.scale.up.nap.pod.zonal.resources.exceeded in all zones, with nothing
+  # above the large tier to fall back to.
   #
   # On-demand only (no spot). All entries are N2D or N2, so no GCP quota beyond
   # the N2D_CPUS / N2_CPUS already requested in quotas.tf. Adding a new family

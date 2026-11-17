@@ -87,11 +87,19 @@ masterSecret:
 # Helm fails if neither is configured.
 
 auth:
-  # -- Allow clients to list the users known to the server (used by the
-  # "pick a user" project-sharing affordance). Set to false on multitenant
-  # instances so users of one tenant cannot enumerate users of another:
-  # AuthAPI.ListUsers then returns an empty list and the userListing capability
-  # is not advertised.
+  # -- Which client roles can get the list of users of the server.
+  # The Desktop App uses the list for the "pick a user" project-sharing affordance;
+  # a user who cannot get the list types the recipient's login instead.
+  #   users  - all users can get the list;
+  #   admins - only administrators can get the list. Use on multitenant instances,
+  #            so that users of one tenant cannot see users of other tenants;
+  #   nobody - nobody can get the list.
+  # Renders '--show-user-list-to'.
+  showUserListTo: users
+
+  # -- DEPRECATED: use auth.showUserListTo. 'false' still works and hides the
+  # list from everybody (the same as showUserListTo: nobody), whatever
+  # showUserListTo is set to.
   showUserList: true
 
   # -- Multi-provider authentication (backend >= 4.3.0): any number of providers

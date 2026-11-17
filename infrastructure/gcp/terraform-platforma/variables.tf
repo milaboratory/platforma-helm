@@ -404,11 +404,11 @@ variable "htpasswd_content" {
 variable "show_user_list" {
   type        = bool
   description = <<-EOT
-    Allow clients to list the users known to the server (used by the
-    "pick a user" project-sharing affordance). Set to false on multitenant
-    instances so users of one tenant cannot enumerate users of another:
-    AuthAPI.ListUsers returns an empty list and the userListing capability
-    is not advertised.
+    Show the list of users of the server to all users (used by the
+    "pick a user" project-sharing affordance; other users type the
+    recipient's login). true - all users can get the list; false - only
+    administrators can get the list, so that on a multitenant instance users
+    of one tenant cannot see users of other tenants.
   EOT
   default     = true
 }

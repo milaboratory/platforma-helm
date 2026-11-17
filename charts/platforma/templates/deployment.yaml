@@ -389,7 +389,9 @@ spec:
             {{- end }}
             {{- end }}
             {{- if not .Values.auth.showUserList }}
-            - "--no-show-user-list"
+            - "--show-user-list-to=nobody"
+            {{- else if .Values.auth.showUserListTo }}
+            - "--show-user-list-to={{ .Values.auth.showUserListTo }}"
             {{- end }}
             {{- if .Values.masterSecret.secretName }}
             - "--master-secret-file={{ include "platforma.path.secrets" . }}/master-secret/{{ .Values.masterSecret.secretKey }}"

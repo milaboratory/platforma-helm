@@ -469,8 +469,8 @@ resource "helm_release" "platforma" {
         }
 
         auth = {
-          showUserList = var.show_user_list
-          providers    = local.auth_providers
+          showUserListTo = var.show_user_list ? "users" : "admins"
+          providers      = local.auth_providers
         }
 
         masterSecret = {

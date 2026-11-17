@@ -79,7 +79,13 @@
     "auth": {
       "type": "object",
       "properties": {
+        "showUserListTo": {
+          "description": "Which client roles can get the list of users of the server: users, admins or nobody.",
+          "type": "string",
+          "enum": ["users", "admins", "nobody"]
+        },
         "showUserList": {
+          "description": "DEPRECATED: use showUserListTo. false hides the list from everybody, the same as showUserListTo: nobody.",
           "type": "boolean"
         },
         "providers": {

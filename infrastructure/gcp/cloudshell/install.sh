@@ -1687,10 +1687,10 @@ build_tfvars_json_full() {
     doc="$(echo "${doc}" | jq --arg v "${RESOURCE_NAME_PREFIX}" '. + {resource_name_prefix: $v}')"
   fi
 
-  # Hidden override: disable user listing on multitenant instances. Set
-  # SHOW_USER_LIST=false so users of one tenant cannot enumerate users of
-  # another (AuthAPI.ListUsers returns an empty list and the userListing
-  # capability is not advertised). Default true — user listing stays on.
+  # Hidden override: who sees the list of users. Unset keeps the Terraform
+  # default true: all users see the list. SHOW_USER_LIST=false shows the list
+  # only to administrators, so users of one tenant cannot see users of other
+  # tenants.
   if [[ -n "${SHOW_USER_LIST:-}" ]]; then
     doc="$(echo "${doc}" | jq --argjson v "${SHOW_USER_LIST}" '. + {show_user_list: $v}')"
   fi
